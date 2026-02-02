@@ -1,10 +1,9 @@
 use std::sync::{
-    Arc,
     atomic::{AtomicBool, Ordering},
+    Arc,
 };
 
 use ez_ffmpeg::{
-    AVMediaType, FfmpegContext, FfmpegScheduler, Frame,
     core::{
         context::{input::Input, output::Output},
         filter::{
@@ -13,6 +12,7 @@ use ez_ffmpeg::{
         },
         scheduler::ffmpeg_scheduler::Running,
     },
+    AVMediaType, FfmpegContext, FfmpegScheduler, Frame,
 };
 use ffmpeg_sys_next::AVFrame;
 use tokio_util::sync::CancellationToken;
@@ -197,11 +197,11 @@ pub fn build_output(config: &OutputConfig) -> Option<Output> {
             Some(output)
         }
 
-        // RawPacket output: use write callback to capture encoded packets
+        // RawPacket output: use FrameFilter to capture frame info + write callback for packet data
         (OutputDest::RawPacket { sink }, encode_option) => {
             let sink_clone = sink.clone();
 
-            // Get codec info from encode config
+            // Get codec info and dimensions from encode config
             let codec_id = encode_option
                 .as_ref()
                 .map(|e| match e.codec.as_str() {
@@ -211,21 +211,46 @@ pub fn build_output(config: &OutputConfig) -> Option<Output> {
                 })
                 .unwrap_or(0);
 
+            let width = encode_option.as_ref().and_then(|e| e.width).unwrap_or(0);
+            let height = encode_option.as_ref().and_then(|e| e.height).unwrap_or(0);
+
+            // Use a shared queue to pass frame metadata from FrameFilter to write_callback
+            type FrameInfo = (i64, i64, bool, u32, u32); // (pts, dts, is_key, width, height)
+            let frame_info_queue = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<
+                FrameInfo,
+            >::new()));
+            let queue_for_filter = frame_info_queue.clone();
+            let queue_for_callback = frame_info_queue.clone();
+
+            // Create a FrameFilter to capture frame metadata before encoding
+            let packet_frame_filter = RawPacketFrameFilter::new(queue_for_filter);
+
+            // Build video pipeline with the frame filter
+            let video_pipeline: FramePipelineBuilder = AVMediaType::AVMEDIA_TYPE_VIDEO.into();
+            let video_pipeline =
+                video_pipeline.filter("packet-frame-capture", Box::new(packet_frame_filter));
+
             let mut output = Output::new_by_write_callback(move |buf| {
-                // Create a VideoRawFrame for the encoded packet
+                // Try to get frame metadata from the queue
+                let (pts, dts, is_key, w, h) = {
+                    let mut queue = queue_for_callback.lock().unwrap();
+                    queue.pop_front().unwrap_or((0, 0, false, width, height))
+                };
+
                 let frame = VideoRawFrame::new(
                     buf.to_vec(),
-                    0,     // width unknown for encoded data
-                    0,     // height unknown for encoded data
-                    0,     // format not applicable
-                    0,     // pts not available in write callback
-                    0,     // dts not available in write callback
-                    false, // is_key not available
+                    w,
+                    h,
+                    0, // format not applicable for encoded data
+                    pts,
+                    dts,
+                    is_key,
                     codec_id,
                 );
                 let _ = sink_clone.writer.try_send(frame);
                 buf.len() as i32
-            });
+            })
+            .set_frame_pipelines(vec![video_pipeline]);
 
             // Apply encoding if specified
             if let Some(encode_config) = encode_option {
@@ -299,7 +324,7 @@ pub fn dest_name(dest: &OutputDest) -> String {
 }
 
 // ============================================================================
-// Custom Frame Filter for RawFrame Output
+// Custom Frame Filters
 // ============================================================================
 
 /// Frame filter that captures decoded frames and sends them to a sink
@@ -336,6 +361,56 @@ impl FrameFilter for RawFrameFilter {
         }
 
         // Pass through the frame for further processing
+        Ok(Some(frame))
+    }
+}
+
+// ============================================================================
+// Frame Filter for RawPacket Output (captures frame metadata before encoding)
+// ============================================================================
+
+type FrameInfoQueue = Arc<std::sync::Mutex<std::collections::VecDeque<(i64, i64, bool, u32, u32)>>>;
+
+/// Frame filter that captures frame metadata (pts, dts, key_frame, width, height)
+/// and passes it to a shared queue for use by the write callback
+struct RawPacketFrameFilter {
+    queue: FrameInfoQueue,
+}
+
+impl RawPacketFrameFilter {
+    fn new(queue: FrameInfoQueue) -> Self {
+        Self { queue }
+    }
+}
+
+impl FrameFilter for RawPacketFrameFilter {
+    fn media_type(&self) -> AVMediaType {
+        AVMediaType::AVMEDIA_TYPE_VIDEO
+    }
+
+    fn filter_frame(
+        &mut self,
+        frame: Frame,
+        _ctx: &FrameFilterContext,
+    ) -> Result<Option<Frame>, String> {
+        // Extract frame metadata and push to queue
+        unsafe {
+            let ptr = frame.as_ptr();
+            if !ptr.is_null() && !frame.is_empty() {
+                let av_frame = &*ptr;
+                let pts = av_frame.pts;
+                let dts = av_frame.pkt_dts;
+                let is_key = av_frame.key_frame != 0;
+                let width = av_frame.width as u32;
+                let height = av_frame.height as u32;
+
+                if let Ok(mut queue) = self.queue.lock() {
+                    queue.push_back((pts, dts, is_key, width, height));
+                }
+            }
+        }
+
+        // Pass through the frame for encoding
         Ok(Some(frame))
     }
 }
