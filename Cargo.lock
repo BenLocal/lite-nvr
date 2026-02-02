@@ -989,7 +989,6 @@ dependencies = [
  "bytes",
  "env_logger",
  "ez-ffmpeg",
- "ffmpeg-next",
  "futures",
  "log",
  "reqwest",

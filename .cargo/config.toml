@@ -1,10 +1,36 @@
 [env]
 FFMPEG_DIR = { value = "ffmpeg", relative = true }
 
+# Linux x86_64
 [target.x86_64-unknown-linux-gnu]
 rustflags = [
     "-C",
     "link-arg=-Wl,-rpath-link,ffmpeg/lib",
     "-C",
-    "link-arg=-Wl,-rpath,ffmpeg/lib",
+    "link-arg=-Wl,-rpath,$ORIGIN/../ffmpeg/lib",
 ]
+
+# Linux aarch64
+[target.aarch64-unknown-linux-gnu]
+rustflags = [
+    "-C",
+    "link-arg=-Wl,-rpath-link,ffmpeg/lib",
+    "-C",
+    "link-arg=-Wl,-rpath,$ORIGIN/../ffmpeg/lib",
+]
+
+# macOS x86_64
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-rpath,@executable_path/../ffmpeg/lib"]
+
+# macOS aarch64 (Apple Silicon)
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-rpath,@executable_path/../ffmpeg/lib"]
+
+# Windows x86_64 MSVC
+[target.x86_64-pc-windows-msvc]
+rustflags = []
+
+# Windows aarch64 MSVC
+[target.aarch64-pc-windows-msvc]
+rustflags = []
