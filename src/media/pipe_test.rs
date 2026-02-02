@@ -7,7 +7,7 @@ use std::sync::Arc;
 use super::{Pipe, build_output, dest_name};
 use crate::media::{
     stream::RawSinkSource,
-    types::{EncodeConfig, InputConfig, OutputConfig, OutputDest, PipeConfig},
+    types::{EncodeConfig, InputConfig, OutputConfig, OutputDest, PipeConfig, VideoRawFrame},
 };
 
 // ------------------------------------------------------------------------
@@ -25,6 +25,19 @@ fn test_builder_input_url() {
         InputConfig::Network { url } => {
             assert_eq!(url, "rtsp://localhost:8554/stream");
         }
+        _ => panic!("Expected Network input"),
+    }
+
+    let config = PipeConfig::builder()
+        .input_file("test_video.mp4")
+        .add_remux_output("rtmp://localhost/live/test", "flv")
+        .build();
+
+    match &config.input {
+        InputConfig::File { path } => {
+            assert_eq!(path, "test_video.mp4");
+        }
+        _ => panic!("Expected File input"),
     }
 }
 
@@ -389,8 +402,11 @@ async fn test_raw_sink_source_send_receive() {
     let sink = Arc::new(RawSinkSource::new());
     let test_data = vec![1u8, 2, 3, 4, 5];
 
+    // Create a VideoRawFrame
+    let frame = VideoRawFrame::new(test_data.clone(), 640, 480, 0, 0, 0, true, 0);
+
     // Send data
-    sink.writer.send(test_data.clone()).await.unwrap();
+    sink.writer.send(frame).await.unwrap();
 
     // Receive data
     use futures::StreamExt;

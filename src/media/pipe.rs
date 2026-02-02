@@ -1,7 +1,3 @@
-// ============================================================================
-// Pipeline Implementation using ez-ffmpeg
-// ============================================================================
-
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -18,11 +14,12 @@ use ez_ffmpeg::{
         scheduler::ffmpeg_scheduler::Running,
     },
 };
+use ffmpeg_sys_next::AVFrame;
 use tokio_util::sync::CancellationToken;
 
 use crate::media::{
     stream::RawSinkSource,
-    types::{EncodeConfig, InputConfig, OutputConfig, OutputDest, PipeConfig},
+    types::{EncodeConfig, InputConfig, OutputConfig, OutputDest, PipeConfig, VideoRawFrame},
 };
 
 /// Pipeline: Optimized media processing using ez-ffmpeg
@@ -64,6 +61,7 @@ impl Pipe {
 
         let input_url = match &self.config.input {
             InputConfig::Network { url } => url.clone(),
+            InputConfig::File { path } => path.clone(),
         };
 
         log::info!("Pipe: starting with input {}", input_url);
@@ -93,7 +91,7 @@ impl Pipe {
 /// Run the FFmpeg pipeline
 fn run_ffmpeg_pipeline(input_url: &str, outputs: &[OutputConfig], cancel: CancellationToken) {
     // Build input
-    let input: Input = Input::new(input_url.to_string());
+    let input: Input = Input::new(input_url.to_string()).set_stream_loop(-1);
 
     // Build outputs
     let mut ez_outputs: Vec<Output> = Vec::new();
@@ -203,8 +201,29 @@ pub fn build_output(config: &OutputConfig) -> Option<Output> {
         (OutputDest::RawPacket { sink }, encode_option) => {
             let sink_clone = sink.clone();
 
+            // Get codec info from encode config
+            let codec_id = encode_option
+                .as_ref()
+                .map(|e| match e.codec.as_str() {
+                    "h264" => 27,           // AV_CODEC_ID_H264
+                    "hevc" | "h265" => 173, // AV_CODEC_ID_HEVC
+                    _ => 0,
+                })
+                .unwrap_or(0);
+
             let mut output = Output::new_by_write_callback(move |buf| {
-                let _ = sink_clone.writer.try_send(buf.to_vec());
+                // Create a VideoRawFrame for the encoded packet
+                let frame = VideoRawFrame::new(
+                    buf.to_vec(),
+                    0,     // width unknown for encoded data
+                    0,     // height unknown for encoded data
+                    0,     // format not applicable
+                    0,     // pts not available in write callback
+                    0,     // dts not available in write callback
+                    false, // is_key not available
+                    codec_id,
+                );
+                let _ = sink_clone.writer.try_send(frame);
                 buf.len() as i32
             });
 
@@ -311,9 +330,9 @@ impl FrameFilter for RawFrameFilter {
             }
         }
 
-        // Extract frame data
-        if let Some(data) = extract_frame_data(&frame) {
-            let _ = self.sink.writer.try_send(data);
+        // Extract frame data and create VideoRawFrame
+        if let Some(video_frame) = extract_video_raw_frame(&frame) {
+            let _ = self.sink.writer.try_send(video_frame);
         }
 
         // Pass through the frame for further processing
@@ -321,8 +340,8 @@ impl FrameFilter for RawFrameFilter {
     }
 }
 
-/// Extract raw pixel data from a Frame
-fn extract_frame_data(frame: &Frame) -> Option<Vec<u8>> {
+/// Extract VideoRawFrame from a Frame
+fn extract_video_raw_frame(frame: &Frame) -> Option<VideoRawFrame> {
     unsafe {
         let ptr = frame.as_ptr();
         if ptr.is_null() {
@@ -330,23 +349,41 @@ fn extract_frame_data(frame: &Frame) -> Option<Vec<u8>> {
         }
 
         let av_frame = &*ptr;
-        let width = av_frame.width as usize;
-        let height = av_frame.height as usize;
+        let width = av_frame.width as u32;
+        let height = av_frame.height as u32;
 
         if width == 0 || height == 0 {
             return None;
         }
 
-        // Calculate total size based on format (assuming YUV420P)
-        // Y plane: width * height
-        // U plane: (width/2) * (height/2)
-        // V plane: (width/2) * (height/2)
-        let y_size = width * height;
-        let uv_size = (width / 2) * (height / 2);
-        let total_size = y_size + uv_size * 2;
+        let format = av_frame.format;
+        let pts = av_frame.pts;
+        let pkt_dts = av_frame.pkt_dts;
+        let key_frame = av_frame.key_frame != 0;
 
-        let mut data = Vec::with_capacity(total_size);
+        // Extract pixel data based on format (assuming YUV420P for now)
+        let data = extract_pixel_data(av_frame, width as usize, height as usize);
 
+        Some(VideoRawFrame::new(
+            data, width, height, format, pts, pkt_dts, key_frame,
+            0, // codec_id not available in decoded frame
+        ))
+    }
+}
+
+/// Extract raw pixel data from AVFrame
+unsafe fn extract_pixel_data(av_frame: &AVFrame, width: usize, height: usize) -> Vec<u8> {
+    // Calculate total size based on format (assuming YUV420P)
+    // Y plane: width * height
+    // U plane: (width/2) * (height/2)
+    // V plane: (width/2) * (height/2)
+    let y_size = width * height;
+    let uv_size = (width / 2) * (height / 2);
+    let total_size = y_size + uv_size * 2;
+
+    let mut data = Vec::with_capacity(total_size);
+
+    unsafe {
         // Copy Y plane
         let y_linesize = av_frame.linesize[0] as usize;
         let y_data = av_frame.data[0];
@@ -379,9 +416,9 @@ fn extract_frame_data(frame: &Frame) -> Option<Vec<u8>> {
                 data.extend_from_slice(slice);
             }
         }
-
-        Some(data)
     }
+
+    data
 }
 
 // ============================================================================
@@ -404,6 +441,12 @@ impl PipeConfigBuilder {
     /// Set network input source
     pub fn input_url(mut self, url: impl Into<String>) -> Self {
         self.input = Some(InputConfig::Network { url: url.into() });
+        self
+    }
+
+    /// Set file input source
+    pub fn input_file(mut self, path: impl Into<String>) -> Self {
+        self.input = Some(InputConfig::File { path: path.into() });
         self
     }
 

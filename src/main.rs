@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use futures::StreamExt as _;
+use jpeg_encoder::{ColorType, Encoder};
 use tokio_util::sync::CancellationToken;
+
+use crate::media::{pipe::Pipe, stream::RawSinkSource, types::PipeConfig};
 
 mod api;
 mod media;
@@ -24,7 +27,7 @@ async fn main() -> ! {
     api::start_api_server(cancel_clone);
 
     // just for testing
-    //test_pipe().await;
+    test_pipe().await;
 
     loop {
         tokio::select! {
@@ -40,26 +43,49 @@ async fn main() -> ! {
     std::process::exit(0);
 }
 
-// async fn test_pipe() {
-//     let input = PipeInput::Network("http://172.31.169.114:1234/A/video/xin.mp4".to_string());
-//     let raw_source = Arc::new(RawSinkSource::new());
+async fn test_pipe() {
+    let raw_source = Arc::new(RawSinkSource::new());
+    let config = PipeConfig::builder()
+        .input_file("scripts/test.mp4")
+        .add_raw_frame_output(raw_source.clone())
+        .build();
 
-//     let raw_source_clone = raw_source.clone();
-//     tokio::spawn(async move {
-//         let mut stream = RawSinkSource::as_stream(raw_source_clone);
-//         while let Some(frame) = stream.next().await {
-//             println!("frame: {}", frame.to_string());
-//         }
-//     });
+    let raw_source_clone = raw_source.clone();
+    tokio::spawn(async move {
+        let mut stream = RawSinkSource::as_stream(raw_source_clone);
+        let mut frame_count = 0u32;
+        while let Some(frame) = stream.next().await {
+            println!(
+                "frame: {} ({}x{})",
+                frame.to_string(),
+                frame.width,
+                frame.height
+            );
 
-//     let outputs = vec![
-//         PipeOutput::Network("rtsp://172.31.169.114:8554/shiben/3".to_string()),
-//         PipeOutput::Raw(raw_source),
-//     ];
-//     let config = PipeConfig::new(input, outputs);
+            // Convert YUV420P to RGB and save as JPEG
+            let rgb_data = frame.to_rgb();
+            let filename = format!("frame_{:04}.jpg", frame_count);
+            let encoder = Encoder::new_file(&filename, 90).unwrap();
+            encoder
+                .encode(
+                    &rgb_data,
+                    frame.width as u16,
+                    frame.height as u16,
+                    ColorType::Rgb,
+                )
+                .unwrap();
 
-//     let pipe = new_pipe("test", config).await;
-//     tokio::spawn(async move {
-//         pipe.start().await;
-//     });
-// }
+            println!("Saved {}", filename);
+            frame_count += 1;
+            if frame_count >= 10 {
+                println!("Saved {} frames, stopping...", frame_count);
+                break;
+            }
+        }
+    });
+
+    let pipe = Pipe::new(config);
+    tokio::spawn(async move {
+        pipe.start().await;
+    });
+}

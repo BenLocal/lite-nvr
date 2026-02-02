@@ -8,8 +8,8 @@ use std::{
 use crate::media::types::VideoRawFrame;
 
 pub struct RawSinkSource {
-    pub writer: tokio::sync::mpsc::Sender<Vec<u8>>,
-    inner: Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>,
+    pub writer: tokio::sync::mpsc::Sender<VideoRawFrame>,
+    inner: Mutex<tokio::sync::mpsc::Receiver<VideoRawFrame>>,
 }
 
 impl RawSinkSource {
@@ -45,7 +45,9 @@ impl Stream for RawFrameStream<'_> {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut guard = self.source.inner.lock().unwrap();
-        guard.poll_recv(cx).map(|opt| opt.map(VideoRawFrame::new))
+        guard
+            .poll_recv(cx)
+            .map(|opt| opt.map(|frame| frame.clone()))
     }
 }
 
@@ -54,7 +56,9 @@ impl Stream for RawSinkSource {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut guard = self.get_mut().inner.lock().unwrap();
-        guard.poll_recv(cx).map(|opt| opt.map(VideoRawFrame::new))
+        guard
+            .poll_recv(cx)
+            .map(|opt| opt.map(|frame| frame.clone()))
     }
 }
 
@@ -67,7 +71,9 @@ impl Stream for RawSinkSourceStream {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let source = &self.0;
         let mut guard = source.inner.lock().unwrap();
-        guard.poll_recv(cx).map(|opt| opt.map(VideoRawFrame::new))
+        guard
+            .poll_recv(cx)
+            .map(|opt| opt.map(|frame| frame.clone()))
     }
 }
 
@@ -78,7 +84,7 @@ impl RawSinkSource {
     }
 }
 
-impl Sink<Vec<u8>> for RawSinkSource {
+impl Sink<VideoRawFrame> for RawSinkSource {
     type Error = std::io::Error;
 
     fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -89,7 +95,7 @@ impl Sink<Vec<u8>> for RawSinkSource {
         }
     }
 
-    fn start_send(self: Pin<&mut Self>, item: Vec<u8>) -> Result<(), Self::Error> {
+    fn start_send(self: Pin<&mut Self>, item: VideoRawFrame) -> Result<(), Self::Error> {
         self.get_mut()
             .writer
             .try_send(item)
