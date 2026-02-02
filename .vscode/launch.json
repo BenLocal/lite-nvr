@@ -12,7 +12,12 @@
                 "args": [
                     "run",
                     "--bin=lite-nvr"
-                ]
+                ],
+                "env": {
+                    "LD_LIBRARY_PATH": "${workspaceFolder}/ffmpeg/lib",
+                    "RUST_BACKTRACE": "1",
+                    "RUST_LOG": "debug"
+                }
             },
             "args": []
         },

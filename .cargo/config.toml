@@ -1,2 +1,10 @@
 [env]
-FFMPEG_DIR = { value = "ffmpeg", description = "Path to the FFmpeg directory", relative = true }
+FFMPEG_DIR = { value = "ffmpeg", relative = true }
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+    "-C",
+    "link-arg=-Wl,-rpath-link,ffmpeg/lib",
+    "-C",
+    "link-arg=-Wl,-rpath,ffmpeg/lib",
+]

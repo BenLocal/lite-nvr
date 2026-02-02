@@ -5,10 +5,15 @@ edition = "2024"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
+log = "0.4"
+env_logger = "0.11"
+ffmpeg-next = "7"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.13", features = ["json"] }
-ez-ffmpeg = "0.7"
+ez-ffmpeg = { version = "0.7", features = ["async"] }
 axum = "0.8"
 tokio-util = "0.7"
+futures = "0.3"
+bytes = "1"
