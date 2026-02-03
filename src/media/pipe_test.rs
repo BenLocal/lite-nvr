@@ -1,18 +1,10 @@
-// ============================================================================
-// Pipeline Tests
-// ============================================================================
-
 use std::sync::Arc;
 
-use super::{Pipe, build_output, dest_name};
+use super::{build_output, dest_name, Pipe};
 use crate::media::{
     stream::RawSinkSource,
     types::{EncodeConfig, InputConfig, OutputConfig, OutputDest, PipeConfig, VideoRawFrame},
 };
-
-// ------------------------------------------------------------------------
-// PipeConfigBuilder Tests
-// ------------------------------------------------------------------------
 
 #[test]
 fn test_builder_input_url() {
@@ -72,7 +64,7 @@ fn test_builder_add_rtsp_output_with_encode() {
 
     let config = PipeConfig::builder()
         .input_url("rtsp://localhost/stream")
-        .add_rtsp_output("rtsp://localhost:8554/out", encode_config)
+        .add_rtsp_output("rtsp://localhost:8554/out", Some(encode_config))
         .build();
 
     assert_eq!(config.outputs.len(), 1);
@@ -413,7 +405,7 @@ async fn test_raw_sink_source_send_receive() {
     let mut stream = RawSinkSource::as_stream(sink);
     let received = stream.next().await.unwrap();
 
-    assert_eq!(received.data(), test_data.as_slice());
+    assert_eq!(&received.data, test_data.as_slice());
 }
 
 // ------------------------------------------------------------------------

@@ -20,6 +20,7 @@
 //! 2. Outputs with the same encoding config share a single Encoder
 //! 3. DecodedFrame can be consumed by raw frame sinks
 
+#[allow(dead_code)]
 pub mod pipe;
 pub mod stream;
 pub mod types;

@@ -127,7 +127,7 @@ pub struct PipeConfig {
     pub outputs: Vec<OutputConfig>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct VideoRawFrame {
     pub data: Bytes,
     pub width: u32,
@@ -164,8 +164,14 @@ impl VideoRawFrame {
         }
     }
 
-    pub fn data(&self) -> &[u8] {
-        &self.data
+    pub fn new_encoded(data: Vec<u8>, width: u32, height: u32, codec_id: i32) -> Self {
+        Self {
+            data: Bytes::from(data),
+            width: width,
+            height: height,
+            codec_id: codec_id,
+            ..Default::default()
+        }
     }
 
     /// Convert YUV frame to RGB24 data
