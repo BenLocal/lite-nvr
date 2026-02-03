@@ -100,10 +100,12 @@ impl Hash for EncodeConfig {
 pub enum OutputDest {
     /// Network streaming (RTSP/RTMP/HLS...)
     Network { url: String, format: String },
-    /// Raw frame data sink
+    /// Raw frame data sink，only for decoded frame
     RawFrame { sink: Arc<RawSinkSource> },
-    /// Encoded packet sink
+    /// Encoded packet sink，only for encoded packet
     RawPacket { sink: Arc<RawSinkSource> },
+    // /// zlm server frame
+    // ZlmServer { url: String },
 }
 
 /// Configuration for a single output

@@ -1,10 +1,6 @@
-use std::{
-    pin::pin,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    time::Duration,
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
 };
 
 use ez_ffmpeg::{
@@ -160,27 +156,9 @@ fn run_ffmpeg_pipeline(input_url: &str, outputs: &[OutputConfig], cancel: Cancel
 
 /// Build an ez-ffmpeg Output from OutputConfig
 pub fn build_output(config: &OutputConfig) -> Option<Output> {
-    match (&config.dest, &config.encode) {
-        // Network output without re-encoding (remux)
-        (OutputDest::Network { url, format }, None) => {
-            let mut output = Output::new(url.clone());
-            output = output.set_format(format);
-            // Copy codec for remux
-            output = output.set_video_codec("copy");
-            output = output.set_audio_codec("copy");
-            Some(output)
-        }
-
-        // Network output with re-encoding
-        (OutputDest::Network { url, format }, Some(encode_config)) => {
-            let mut output = Output::new(url.clone());
-            output = output.set_format(format);
-            output = apply_encode_config(output, encode_config);
-            Some(output)
-        }
-
-        // RawFrame output: use FrameFilter to capture decoded frames
-        (OutputDest::RawFrame { sink }, _) => {
+    let mut output = match &config.dest {
+        OutputDest::Network { url, format } => Output::new(url.clone()).set_format(format),
+        OutputDest::RawFrame { sink } => {
             let sink_clone = sink.clone();
 
             // Create a custom filter to capture frames
@@ -197,52 +175,41 @@ pub fn build_output(config: &OutputConfig) -> Option<Output> {
             })
             .set_format("rawvideo")
             .add_frame_pipeline(pipeline_builder);
-
-            Some(output)
+            output
         }
-
-        // RawPacket output: use FrameFilter to capture frame info + write callback for packet data
-        (OutputDest::RawPacket { sink }, encode_option) => {
+        OutputDest::RawPacket { sink } => {
             let sink_clone = sink.clone();
-
-            // Get codec info and dimensions from encode config
-            let codec_id = encode_option
+            let codec_id = config
+                .encode
                 .as_ref()
                 .map(|e| match e.codec.as_str() {
-                    "h264" => 27,           // AV_CODEC_ID_H264
-                    "hevc" | "h265" => 173, // AV_CODEC_ID_HEVC
+                    // AV_CODEC_ID_H264
+                    "h264" => 27,
+                    // AV_CODEC_ID_HEVC
+                    "hevc" | "h265" => 173,
                     _ => 0,
                 })
                 .unwrap_or(0);
 
-            let width = encode_option.as_ref().and_then(|e| e.width).unwrap_or(0);
-            let height = encode_option.as_ref().and_then(|e| e.height).unwrap_or(0);
+            let width = config.encode.as_ref().and_then(|e| e.width).unwrap_or(0);
+            let height = config.encode.as_ref().and_then(|e| e.height).unwrap_or(0);
 
             let mut output = Output::new_by_write_callback(move |buf| {
                 let frame = VideoRawFrame::new_encoded(buf.to_vec(), width, height, codec_id);
                 let _ = sink_clone.writer.try_send(frame);
                 buf.len() as i32
             });
-
-            // Apply encoding if specified
-            if let Some(encode_config) = encode_option {
-                output = apply_encode_config(output, encode_config);
-            }
-
-            // Set format based on codec
-            let format = encode_option
-                .as_ref()
-                .map(|e| match e.codec.as_str() {
-                    "h264" => "h264",
-                    "hevc" | "h265" => "hevc",
-                    _ => "rawvideo",
-                })
-                .unwrap_or("rawvideo");
-            output = output.set_format(format);
-
-            Some(output)
+            output
         }
-    }
+    };
+
+    output = if let Some(encode_config) = &config.encode {
+        apply_encode_config(output, encode_config)
+    } else {
+        output.set_video_codec("copy").set_audio_codec("copy")
+    };
+
+    Some(output)
 }
 
 /// Apply encoding configuration to an Output

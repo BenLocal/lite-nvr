@@ -18,7 +18,8 @@ pub(crate) fn start_api_server(cancel: CancellationToken) {
             .route("/", get(index))
             .route("/pipe/list", get(list_pipes))
             .route("/pipe/add", post(add_pipe))
-            .route("/pipe/remove/{id}", get(remove_pipe));
+            .route("/pipe/remove/{id}", get(remove_pipe))
+            .route("/pipe/status/{id}", get(get_pipe_status));
 
         let listener = TcpListener::bind("0.0.0.0:8080").await.unwrap();
         println!("API server started on port 8080");
@@ -94,4 +95,12 @@ async fn remove_pipe(Path(id): Path<String>) -> Json<String> {
         return Json(e.to_string());
     }
     Json("success".to_string())
+}
+
+async fn get_pipe_status(Path(id): Path<String>) -> Json<String> {
+    let pipe = manager::get_pipe(&id).await;
+    if let Some(pipe) = pipe {
+        return Json(pipe.is_started().to_string());
+    }
+    Json("not found".to_string())
 }
