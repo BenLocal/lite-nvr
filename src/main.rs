@@ -1,6 +1,7 @@
 use tokio_util::sync::CancellationToken;
 
 mod api;
+mod manager;
 mod media;
 
 /// 初始化 ez_ffmpeg 详细日志：env_logger (Rust log) + FFmpeg av_log

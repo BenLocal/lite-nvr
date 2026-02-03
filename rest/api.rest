@@ -1,0 +1,24 @@
+@HOST = http://localhost:8080
+
+### List pipes
+GET {{HOST}}/pipe/list
+
+### Add pipe
+POST {{HOST}}/pipe/add
+Content-Type: application/json
+
+{
+    "id": "test",
+    "input": {
+        "url": "rtsp://172.31.169.114:8554/ff/d4jkxuesheng.mp4"
+    },
+    "outputs": [
+        {
+            "url": "rtsp://172.31.169.114:8554/shiben/2",
+            "format": "rtsp"
+        }
+    ]
+}
+
+### Remove pipe
+GET {{HOST}}/pipe/remove/test

@@ -142,8 +142,8 @@ fn run_ffmpeg_pipeline(input_url: &str, outputs: &[OutputConfig], cancel: Cancel
     // Wait for completion or cancellation
     loop {
         if cancel.is_cancelled() {
-            log::info!("Pipe: aborting scheduler");
-            scheduler.abort();
+            log::info!("Pipe: stopping scheduler");
+            scheduler.stop();
             break;
         }
 
