@@ -14,7 +14,7 @@ Content-Type: application/json
     },
     "outputs": [
         {
-            "url": "rtsp://172.31.169.114:8554/shiben/2",
+            "url": "rtsp://127.0.0.1:8554/shiben/2",
             "format": "rtsp"
         }
     ]

@@ -14,7 +14,7 @@
                     "--bin=lite-nvr"
                 ],
                 "env": {
-                    "LD_LIBRARY_PATH": "${workspaceFolder}/ffmpeg/lib",
+                    "LD_LIBRARY_PATH": "${workspaceFolder}/ffmpeg/lib:${workspaceFolder}/zlm/lib",
                     "RUST_BACKTRACE": "1",
                     "RUST_LOG": "debug"
                 }
@@ -31,7 +31,7 @@
                     "--bin=lite-nvr"
                 ],
                 "env": {
-                    "LD_LIBRARY_PATH": "${workspaceFolder}/ffmpeg/lib",
+                    "LD_LIBRARY_PATH": "${workspaceFolder}/ffmpeg/lib:${workspaceFolder}/zlm/lib",
                     "RUST_BACKTRACE": "1",
                     "RUST_LOG": "debug"
                 }
