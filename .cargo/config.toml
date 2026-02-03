@@ -1,5 +1,6 @@
 [env]
 FFMPEG_DIR = { value = "ffmpeg", relative = true }
+ZLM_DIR = { value = "zlm", relative = true }
 
 # Linux x86_64
 [target.x86_64-unknown-linux-gnu]

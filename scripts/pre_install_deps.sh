@@ -7,6 +7,8 @@ set -euo pipefail
 
 FFMPEG_VERSION="7.1"
 FFMPEG_BASE_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
+ZLM_VERSION="autobuild-2026-02-02"
+ZLM_BASE_URL="https://github.com/BenLocal/ZLMediaKit-Build/releases/download"
 
 # Detect OS and Architecture
 detect_platform() {
@@ -53,6 +55,19 @@ get_ffmpeg_url() {
             ;;
         *)
             echo ""
+            ;;
+    esac
+}
+
+get_zlm_url() {
+    local platform="$1"
+
+    case "${platform}" in
+        linux-x64)
+            echo "${ZLM_BASE_URL}/${ZLM_VERSION}/zlmediakit_master_linux_amd64_latest.tar.gz"
+            ;;
+        linux-arm64)
+            echo "${ZLM_BASE_URL}/${ZLM_VERSION}/zlmediakit_master_linux_arm64_latest.tar.gz"
             ;;
     esac
 }
