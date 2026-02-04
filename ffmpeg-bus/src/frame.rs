@@ -23,6 +23,10 @@ impl RawAudioFrame {
     pub fn format(&self) -> ffmpeg_next::format::Sample {
         self.frame.format()
     }
+
+    pub fn get_mut(&mut self) -> &mut ffmpeg_next::frame::Audio {
+        Arc::make_mut(&mut self.frame)
+    }
 }
 
 impl From<ffmpeg_next::frame::Audio> for RawAudioFrame {
@@ -57,5 +61,13 @@ impl RawVideoFrame {
 
     pub fn format(&self) -> ffmpeg_next::format::Pixel {
         self.frame.format()
+    }
+
+    pub fn pts(&self) -> Option<i64> {
+        self.frame.pts()
+    }
+
+    pub fn get_mut(&mut self) -> &mut ffmpeg_next::frame::Video {
+        Arc::make_mut(&mut self.frame)
     }
 }
