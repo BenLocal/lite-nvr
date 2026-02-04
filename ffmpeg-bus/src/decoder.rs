@@ -4,8 +4,10 @@ use ffmpeg_next::Rational;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    frame::{RawAudioFrame, RawFrame, RawVideoFrame},
-    packet::RawPacket,
+    frame::{
+        RawAudioFrame, RawFrame, RawFrameCmd, RawFrameReceiver, RawFrameSender, RawVideoFrame,
+    },
+    packet::{RawPacket, RawPacketCmd, RawPacketReceiver},
     stream::AvStream,
 };
 
@@ -35,13 +37,25 @@ impl DecoderType {
         Ok(())
     }
 
+    pub fn send_eof(&mut self) -> anyhow::Result<()> {
+        match self {
+            DecoderType::Video(video_decoder) => {
+                video_decoder.send_eof()?;
+            }
+            DecoderType::Audio(audio_decoder) => {
+                audio_decoder.send_eof()?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn receive_frame(&mut self) -> anyhow::Result<Option<RawFrame>> {
         match self {
             DecoderType::Video(video_decoder) => {
                 let mut frame = ffmpeg_next::frame::Video::empty();
                 match video_decoder.receive_frame(&mut frame) {
                     Ok(()) => Ok(Some(RawFrame::Video(RawVideoFrame::from(frame)))),
-                    Err(ffmpeg_next::Error::Eof) => Err(anyhow::anyhow!("read eof")),
+                    Err(ffmpeg_next::Error::Eof) => Ok(None),
                     Err(ffmpeg_next::Error::Other { errno })
                         if errno == ffmpeg_next::util::error::EAGAIN =>
                     {
@@ -54,7 +68,7 @@ impl DecoderType {
                 let mut frame = ffmpeg_next::frame::Audio::empty();
                 match audio_decoder.receive_frame(&mut frame) {
                     Ok(()) => Ok(Some(RawFrame::Audio(RawAudioFrame::from(frame)))),
-                    Err(ffmpeg_next::Error::Eof) => Err(anyhow::anyhow!("read eof")),
+                    Err(ffmpeg_next::Error::Eof) => Ok(None),
                     Err(ffmpeg_next::Error::Other { errno })
                         if errno == ffmpeg_next::util::error::EAGAIN =>
                     {
@@ -116,6 +130,10 @@ impl Decoder {
         self.inner.send_packet(packet, self.decoder_time_base)
     }
 
+    pub fn send_eof(&mut self) -> anyhow::Result<()> {
+        self.inner.send_eof()
+    }
+
     pub fn receive_frame(&mut self) -> anyhow::Result<Option<RawFrame>> {
         self.inner.receive_frame()
     }
@@ -127,7 +145,7 @@ impl Decoder {
 
 pub struct DecoderTask {
     cancel: CancellationToken,
-    raw_chan: tokio::sync::broadcast::Sender<RawFrame>,
+    raw_chan: RawFrameSender,
 }
 
 impl DecoderTask {
@@ -141,22 +159,24 @@ impl DecoderTask {
         }
     }
 
-    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<RawFrame> {
+    pub fn subscribe(&self) -> RawFrameReceiver {
         self.raw_chan.subscribe()
     }
 
-    pub async fn start(
-        &self,
-        decoder: Decoder,
-        mut decoder_receiver: tokio::sync::broadcast::Receiver<RawPacket>,
-    ) {
+    pub fn stop(&self) {
+        self.cancel.cancel();
+    }
+
+    pub async fn start(&self, decoder: Decoder, mut decoder_receiver: RawPacketReceiver) {
         let cancel_clone = self.cancel.clone();
         let sender_clone = self.raw_chan.clone();
         tokio::spawn(async move {
-            let (packet_tx, packet_rx) = std::sync::mpsc::channel::<RawPacket>();
+            let (packet_tx, packet_rx) = std::sync::mpsc::channel::<RawPacketCmd>();
             let current_stream_index = decoder.stream_index();
+
+            let handle_cancel = cancel_clone.clone();
             let handle = tokio::task::spawn_blocking(move || {
-                Self::decoder_loop(decoder, packet_rx, sender_clone)
+                Self::decoder_loop(decoder, handle_cancel, packet_rx, sender_clone)
             });
             loop {
                 tokio::select! {
@@ -164,10 +184,18 @@ impl DecoderTask {
                         break;
                     }
                     Ok(packet) = decoder_receiver.recv() => {
-                        if packet.index() != current_stream_index {
-                            continue;
+                        match packet {
+                            RawPacketCmd::Data(packet) => {
+                                if packet.index() != current_stream_index {
+                                    continue;
+                                }
+                                let _ = packet_tx.send(RawPacketCmd::Data(packet));
+                            }
+                            RawPacketCmd::EOF => {
+                                let _ = packet_tx.send(RawPacketCmd::EOF);
+                                break;
+                            }
                         }
-                        let _ =  packet_tx.send(packet);
                     }
                 }
             }
@@ -177,23 +205,39 @@ impl DecoderTask {
 
     fn decoder_loop(
         mut decoder: Decoder,
-        packet_rx: std::sync::mpsc::Receiver<RawPacket>,
-        out_sender: tokio::sync::broadcast::Sender<RawFrame>,
+        cancel: CancellationToken,
+        packet_rx: std::sync::mpsc::Receiver<RawPacketCmd>,
+        out_sender: RawFrameSender,
     ) {
         loop {
+            if cancel.is_cancelled() {
+                break;
+            }
+            let mut eof = false;
             match packet_rx.recv_timeout(Duration::from_millis(1)) {
                 Ok(packet) => {
-                    if let Err(e) = decoder.send_packet(packet) {
-                        log::error!("send packet error: {}", e);
-                        continue;
-                    }
+                    match packet {
+                        RawPacketCmd::Data(packet) => {
+                            if let Err(e) = decoder.send_packet(packet) {
+                                log::error!("send packet error: {}", e);
+                                continue;
+                            }
+                        }
+                        RawPacketCmd::EOF => {
+                            if let Err(e) = decoder.send_eof() {
+                                log::error!("decoder send eof error: {}", e);
+                            }
+                            eof = true;
+                        }
+                    };
+
                     'outer: loop {
                         match decoder.receive_frame() {
                             Ok(Some(RawFrame::Video(frame))) => {
-                                let _ = out_sender.send(RawFrame::Video(frame));
+                                let _ = out_sender.send(RawFrameCmd::Data(RawFrame::Video(frame)));
                             }
                             Ok(Some(RawFrame::Audio(frame))) => {
-                                let _ = out_sender.send(RawFrame::Audio(frame));
+                                let _ = out_sender.send(RawFrameCmd::Data(RawFrame::Audio(frame)));
                             }
                             Ok(None) => break 'outer,
                             Err(e) => {
@@ -203,10 +247,14 @@ impl DecoderTask {
                         }
                     }
                 }
-                Err(e) => {
-                    log::error!("receive packet error: {}", e);
-                }
+                Err(_) => (),
+            }
+
+            if eof {
+                break;
             }
         }
+        println!("video decode frame: EOF");
+        let _ = out_sender.send(RawFrameCmd::EOF);
     }
 }

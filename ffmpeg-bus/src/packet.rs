@@ -2,6 +2,15 @@ use std::sync::Arc;
 
 use ffmpeg_next::Rational;
 
+pub type RawPacketSender = tokio::sync::broadcast::Sender<RawPacketCmd>;
+pub type RawPacketReceiver = tokio::sync::broadcast::Receiver<RawPacketCmd>;
+
+#[derive(Clone)]
+pub enum RawPacketCmd {
+    Data(RawPacket),
+    EOF,
+}
+
 #[derive(Clone)]
 pub struct RawPacket {
     packet: Arc<ffmpeg_next::codec::packet::Packet>,
@@ -27,6 +36,15 @@ impl RawPacket {
 
     pub fn time_base(&self) -> Rational {
         self.time_base
+    }
+
+    pub fn set_duration(&mut self, duration: i64) {
+        if let Some(p) = Arc::get_mut(&mut self.packet) {
+            p.set_duration(duration);
+        } else {
+            // If Arc is shared, we clone (make_mut)
+            Arc::make_mut(&mut self.packet).set_duration(duration);
+        }
     }
 
     pub fn get_mut(&mut self) -> &mut ffmpeg_next::codec::packet::Packet {

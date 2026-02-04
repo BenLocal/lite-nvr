@@ -1,5 +1,14 @@
 use std::sync::Arc;
 
+pub type RawFrameSender = tokio::sync::broadcast::Sender<RawFrameCmd>;
+pub type RawFrameReceiver = tokio::sync::broadcast::Receiver<RawFrameCmd>;
+
+#[derive(Clone)]
+pub enum RawFrameCmd {
+    Data(RawFrame),
+    EOF,
+}
+
 #[derive(Clone)]
 pub enum RawFrame {
     Video(RawVideoFrame),

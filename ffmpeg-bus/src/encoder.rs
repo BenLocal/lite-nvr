@@ -3,7 +3,12 @@ use std::time::Duration;
 use ffmpeg_next::{Dictionary, Rational, picture};
 use tokio_util::sync::CancellationToken;
 
-use crate::{frame::RawFrame, packet::RawPacket, stream::AvStream};
+use crate::{
+    frame::{RawFrame, RawFrameCmd, RawFrameReceiver},
+    packet::{RawPacket, RawPacketCmd, RawPacketReceiver, RawPacketSender},
+    scaler::Scaler,
+    stream::AvStream,
+};
 
 pub enum EncoderType {
     Video(ffmpeg_next::codec::encoder::Video),
@@ -35,6 +40,14 @@ impl EncoderType {
         Ok(())
     }
 
+    pub fn send_eof(&mut self) -> anyhow::Result<()> {
+        match self {
+            EncoderType::Video(encoder) => encoder.send_eof()?,
+            EncoderType::Audio(encoder) => encoder.send_eof()?,
+        }
+        Ok(())
+    }
+
     pub fn encoder_receive_packet(
         &mut self,
         time_base: Rational,
@@ -52,6 +65,7 @@ impl EncoderType {
             {
                 Ok(None)
             }
+            Err(ffmpeg_next::Error::Eof) => Ok(None),
             Err(err) => Err(err.into()),
         }
     }
@@ -72,6 +86,7 @@ pub struct Encoder {
     encoder_time_base: Rational,
     interleaved: bool,
     frame_index: i64,
+    scaler: Option<Scaler>,
 }
 
 impl Encoder {
@@ -93,34 +108,103 @@ impl Encoder {
         encoder.set_width(settings.width);
         encoder.set_height(settings.height);
         encoder.set_format(settings.pixel_format);
-        encoder.set_frame_rate(Some((30, 1)));
+        encoder.set_frame_rate(Some(stream.rate()));
         encoder.set_time_base(ffmpeg_next::util::mathematics::rescale::TIME_BASE);
 
-        let encoder = encoder.open_with(options.unwrap_or_default())?;
+        let mut opts = options.unwrap_or_default();
+        opts.set("preset", "ultrafast");
+        opts.set("tune", "zerolatency");
+        let encoder = encoder.open_with(opts)?;
         let encoder_time_base: Rational = unsafe { (*encoder.0.as_ptr()).time_base.into() };
+
         Ok(Self {
             stream: stream.clone(),
             inner: EncoderType::Video(encoder),
             encoder_time_base: encoder_time_base,
             interleaved: false,
             frame_index: 0,
+            scaler: None,
         })
     }
 
-    pub fn send_frame(&mut self, frame: RawFrame) -> anyhow::Result<()> {
-        self.inner.send_frame(frame, self.frame_index)?;
+    fn rescale_pts(&self, pts: i64) -> i64 {
+        let src_tb = self.stream.time_base();
+        let dst_tb = self.encoder_time_base;
+        let num = src_tb.0 as i128 * dst_tb.1 as i128;
+        let den = src_tb.1 as i128 * dst_tb.0 as i128;
+        if den == 0 {
+            pts
+        } else {
+            (pts as i128 * num / den) as i64
+        }
+    }
+
+    pub fn send_frame(&mut self, mut frame: RawFrame) -> anyhow::Result<()> {
+        let sending_frame = match (&mut frame, &self.inner) {
+            (RawFrame::Video(f), EncoderType::Video(e)) => {
+                let f = f.get_mut();
+
+                if let Some(pts) = f.pts() {
+                    let new_pts = self.rescale_pts(pts);
+                    f.set_pts(Some(new_pts));
+                }
+
+                if f.format() != e.format() {
+                    if self.scaler.is_none() {
+                        self.scaler =
+                            Some(Scaler::new(ffmpeg_next::software::scaling::Context::get(
+                                f.format(),
+                                f.width(),
+                                f.height(),
+                                e.format(),
+                                e.width(),
+                                e.height(),
+                                ffmpeg_next::software::scaling::flag::Flags::empty(),
+                            )?));
+                    }
+
+                    let mut converted = ffmpeg_next::frame::Video::empty();
+                    self.scaler.as_mut().unwrap().run(f, &mut converted)?;
+                    converted.set_pts(f.pts());
+                    Some(RawFrame::Video(converted.into()))
+                } else {
+                    None
+                }
+            }
+            (RawFrame::Audio(_), EncoderType::Audio(_)) => None,
+            _ => None,
+        };
+
+        if let Some(converted) = sending_frame {
+            self.inner.send_frame(converted, self.frame_index)?;
+        } else {
+            self.inner.send_frame(frame, self.frame_index)?;
+        }
         self.frame_index += 1;
         Ok(())
     }
 
+    pub fn send_eof(&mut self) -> anyhow::Result<()> {
+        self.inner.send_eof()
+    }
+
     pub fn encoder_receive_packet(&mut self) -> anyhow::Result<Option<RawPacket>> {
-        self.inner.encoder_receive_packet(self.encoder_time_base)
+        let rate = self.stream.rate();
+        let mut pkt = self.inner.encoder_receive_packet(self.encoder_time_base)?;
+
+        if let Some(ref mut p) = pkt {
+            if rate.0 > 0 {
+                let duration = 1_000_000i64 * rate.1 as i64 / rate.0 as i64;
+                p.set_duration(duration);
+            }
+        }
+        Ok(pkt)
     }
 }
 
 pub struct EncoderTask {
     cancel: CancellationToken,
-    raw_chan: tokio::sync::broadcast::Sender<RawPacket>,
+    raw_chan: RawPacketSender,
 }
 
 impl EncoderTask {
@@ -134,22 +218,24 @@ impl EncoderTask {
         }
     }
 
-    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<RawPacket> {
+    pub fn subscribe(&self) -> RawPacketReceiver {
         self.raw_chan.subscribe()
     }
 
-    pub async fn start(
-        &self,
-        encoder: Encoder,
-        mut encoder_receiver: tokio::sync::broadcast::Receiver<RawFrame>,
-    ) {
+    pub fn stop(&self) {
+        self.cancel.cancel();
+    }
+
+    pub async fn start(&self, encoder: Encoder, mut encoder_receiver: RawFrameReceiver) {
         let cancel_clone = self.cancel.clone();
         let sender_clone = self.raw_chan.clone();
 
         tokio::spawn(async move {
-            let (tx, rx) = std::sync::mpsc::channel::<RawFrame>();
-            let handle =
-                tokio::task::spawn_blocking(move || Self::encoder_loop(encoder, rx, sender_clone));
+            let (tx, rx) = std::sync::mpsc::channel::<RawFrameCmd>();
+            let handle_cancel = cancel_clone.clone();
+            let handle = tokio::task::spawn_blocking(move || {
+                Self::encoder_loop(encoder, handle_cancel, rx, sender_clone)
+            });
             loop {
                 tokio::select! {
                     _ = cancel_clone.cancelled() => {
@@ -161,48 +247,62 @@ impl EncoderTask {
                 }
             }
             let _ = handle.await;
+            println!("encoder task finished");
         });
     }
 
     fn encoder_loop(
         mut encoder: Encoder,
-        rx: std::sync::mpsc::Receiver<RawFrame>,
-        out: tokio::sync::broadcast::Sender<RawPacket>,
+        cancel: CancellationToken,
+        rx: std::sync::mpsc::Receiver<RawFrameCmd>,
+        out: RawPacketSender,
     ) {
         loop {
+            if cancel.is_cancelled() {
+                break;
+            }
+            let mut eof = false;
             match rx.recv_timeout(Duration::from_millis(1)) {
                 Ok(frame) => {
-                    if let RawFrame::Video(frame) = &frame {
-                        println!(
-                            "send video decode frame: width: {}, height: {}, format: {:?}, pts: {:?}",
-                            frame.width(),
-                            frame.height(),
-                            frame.format(),
-                            frame.pts()
-                        );
-                    }
-                    if let Err(e) = encoder.send_frame(frame) {
-                        log::error!("send packet error: {}", e);
-                        continue;
-                    }
+                    match frame {
+                        RawFrameCmd::Data(frame) => {
+                            if let Err(e) = encoder.send_frame(frame) {
+                                eprintln!("send packet error: {}", e);
+                                continue;
+                            }
+                        }
+                        RawFrameCmd::EOF => {
+                            if let Err(e) = encoder.send_eof() {
+                                eprintln!("send eof error: {}", e);
+                            }
+                            eof = true;
+                        }
+                    };
 
-                    loop {
+                    'outer: loop {
                         match encoder.encoder_receive_packet() {
                             Ok(Some(packet)) => {
-                                let _ = out.send(packet);
+                                let _ = out.send(RawPacketCmd::Data(packet));
                             }
-                            Ok(None) => break,
+                            Ok(None) => {
+                                break 'outer;
+                            }
                             Err(e) => {
-                                log::error!("receive packet error: {}", e);
-                                break;
+                                eprintln!("receive packet error: {}", e);
+                                break 'outer;
                             }
                         }
                     }
+
+                    if eof {
+                        break;
+                    }
                 }
-                Err(e) => {
-                    log::error!("receive frame error: {}", e);
-                }
+                Err(_) => (),
             }
         }
+
+        println!("video encode packet: EOF");
+        let _ = out.send(RawPacketCmd::EOF);
     }
 }

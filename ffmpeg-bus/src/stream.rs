@@ -4,6 +4,7 @@ pub struct AvStream {
     index: usize,
     parameters: Parameters,
     time_base: Rational,
+    rate: Rational,
 }
 
 impl AvStream {
@@ -15,6 +16,9 @@ impl AvStream {
     }
     pub fn time_base(&self) -> Rational {
         self.time_base
+    }
+    pub fn rate(&self) -> Rational {
+        self.rate
     }
 
     pub fn is_video(&self) -> bool {
@@ -32,6 +36,7 @@ impl From<stream::Stream<'_>> for AvStream {
             index: stream.index(),
             parameters: stream.parameters(),
             time_base: stream.time_base(),
+            rate: stream.avg_frame_rate(),
         }
     }
 }
@@ -42,6 +47,7 @@ impl Clone for AvStream {
             index: self.index,
             parameters: self.parameters.clone(),
             time_base: self.time_base,
+            rate: self.rate,
         }
     }
 }

@@ -3,11 +3,14 @@ use std::collections::HashMap;
 use ffmpeg_next::Dictionary;
 use tokio_util::sync::CancellationToken;
 
-use crate::{packet::RawPacket, stream::AvStream};
+use crate::{
+    packet::{RawPacket, RawPacketCmd, RawPacketReceiver, RawPacketSender},
+    stream::AvStream,
+};
 
 pub struct AvInputTask {
     cancel: CancellationToken,
-    raw_chan: tokio::sync::broadcast::Sender<RawPacket>,
+    raw_chan: RawPacketSender,
 }
 
 impl AvInputTask {
@@ -32,20 +35,20 @@ impl AvInputTask {
                         break;
                     }
                     match input.read_packet() {
-                        Ok(Some(packet)) => {
+                        Some(packet) => {
                             // Attempt to send, ignore send error (receiver dropped)
-                            let _ = sender_clone.send(packet.into());
+                            let _ = sender_clone.send(RawPacketCmd::Data(packet));
                         }
-                        Ok(None) => {
+                        None => {
                             // End of stream, break the loop
-                            break;
-                        }
-                        Err(e) => {
-                            log::error!("read packet error: {}", e);
+                            println!("end of input stream");
+                            let _ = sender_clone.send(RawPacketCmd::EOF);
                             break;
                         }
                     }
                 }
+
+                drop(sender_clone);
             });
 
             tokio::select! {
@@ -60,12 +63,12 @@ impl AvInputTask {
         });
     }
 
-    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<RawPacket> {
+    pub fn subscribe(&self) -> RawPacketReceiver {
         self.raw_chan.subscribe()
     }
 
-    pub fn get_cancel(&self) -> CancellationToken {
-        self.cancel.clone()
+    pub fn stop(&self) {
+        self.cancel.cancel();
     }
 }
 
@@ -96,14 +99,15 @@ impl AvInput {
         self.streams.clone()
     }
 
-    pub fn read_packet(&mut self) -> anyhow::Result<Option<RawPacket>> {
+    pub fn read_packet(&mut self) -> Option<RawPacket> {
         loop {
             match self.inner.packets().next() {
                 Some((stream, packet)) => {
-                    return Ok(Some((packet, stream.time_base()).into()));
+                    return Some((packet, stream.time_base()).into());
                 }
                 None => {
-                    return Err(anyhow::anyhow!("read eof"));
+                    // End of stream, break the loop
+                    return None;
                 }
             }
         }
