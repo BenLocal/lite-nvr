@@ -35,7 +35,7 @@ async fn main() -> anyhow::Result<()> {
     //  decoder
     let decoder = Decoder::new(streams.get(&0).unwrap())?;
     let decoder_task = DecoderTask::new();
-    let mut decoder_receiver = decoder_task.subscribe();
+    //let mut decoder_receiver = decoder_task.subscribe();
     // tokio::spawn(async move {
     //     while let Ok(frame) = decoder_receiver.recv().await {
     //         if let RawFrame::Video(frame) = frame {
