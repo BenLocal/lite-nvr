@@ -5,11 +5,11 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::media::frame::VideoRawFrame;
+use crate::frame::VideoFrame;
 
 pub struct RawSinkSource {
-    pub writer: tokio::sync::mpsc::Sender<VideoRawFrame>,
-    inner: Mutex<tokio::sync::mpsc::Receiver<VideoRawFrame>>,
+    pub writer: tokio::sync::mpsc::Sender<VideoFrame>,
+    inner: Mutex<tokio::sync::mpsc::Receiver<VideoFrame>>,
 }
 
 impl RawSinkSource {
@@ -41,7 +41,7 @@ pub struct RawFrameStream<'a> {
 }
 
 impl Stream for RawFrameStream<'_> {
-    type Item = VideoRawFrame;
+    type Item = VideoFrame;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut guard = self.source.inner.lock().unwrap();
@@ -52,7 +52,7 @@ impl Stream for RawFrameStream<'_> {
 }
 
 impl Stream for RawSinkSource {
-    type Item = VideoRawFrame;
+    type Item = VideoFrame;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut guard = self.get_mut().inner.lock().unwrap();
@@ -66,7 +66,7 @@ impl Stream for RawSinkSource {
 pub struct RawSinkSourceStream(pub Arc<RawSinkSource>);
 
 impl Stream for RawSinkSourceStream {
-    type Item = VideoRawFrame;
+    type Item = VideoFrame;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let source = &self.0;
@@ -84,7 +84,7 @@ impl RawSinkSource {
     }
 }
 
-impl Sink<VideoRawFrame> for RawSinkSource {
+impl Sink<VideoFrame> for RawSinkSource {
     type Error = std::io::Error;
 
     fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -95,7 +95,7 @@ impl Sink<VideoRawFrame> for RawSinkSource {
         }
     }
 
-    fn start_send(self: Pin<&mut Self>, item: VideoRawFrame) -> Result<(), Self::Error> {
+    fn start_send(self: Pin<&mut Self>, item: VideoFrame) -> Result<(), Self::Error> {
         self.get_mut()
             .writer
             .try_send(item)

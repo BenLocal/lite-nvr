@@ -95,8 +95,8 @@ impl AvInput {
         })
     }
 
-    pub fn streams(&self) -> HashMap<usize, AvStream> {
-        self.streams.clone()
+    pub fn streams(&self) -> &HashMap<usize, AvStream> {
+        &self.streams
     }
 
     pub fn read_packet(&mut self) -> Option<RawPacket> {

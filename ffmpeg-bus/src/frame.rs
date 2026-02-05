@@ -1,4 +1,7 @@
+use std::fmt::{Display, Formatter};
 use std::sync::Arc;
+
+use bytes::Bytes;
 
 pub type RawFrameSender = tokio::sync::broadcast::Sender<RawFrameCmd>;
 pub type RawFrameReceiver = tokio::sync::broadcast::Receiver<RawFrameCmd>;
@@ -78,5 +81,113 @@ impl RawVideoFrame {
 
     pub fn get_mut(&mut self) -> &mut ffmpeg_next::frame::Video {
         Arc::make_mut(&mut self.frame)
+    }
+
+    pub fn data(&self) -> Bytes {
+        Bytes::copy_from_slice(self.frame.data(0))
+    }
+
+    pub fn is_key(&self) -> bool {
+        self.frame.is_key()
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct VideoFrame {
+    pub data: Bytes,
+    pub width: u32,
+    pub height: u32,
+    // AVPixelFormat
+    pub format: i32,
+    pub pts: i64,
+    pub dts: i64,
+    pub is_key: bool,
+    // AVCodecID
+    pub codec_id: i32,
+}
+
+impl VideoFrame {
+    pub fn new(
+        data: Vec<u8>,
+        width: u32,
+        height: u32,
+        format: i32,
+        pts: i64,
+        dts: i64,
+        is_key: bool,
+        codec_id: i32,
+    ) -> Self {
+        Self {
+            data: Bytes::from(data),
+            width,
+            height,
+            format,
+            pts,
+            dts,
+            is_key,
+            codec_id,
+        }
+    }
+
+    pub fn new_encoded(data: Vec<u8>, width: u32, height: u32, codec_id: i32) -> Self {
+        Self {
+            data: Bytes::from(data),
+            width: width,
+            height: height,
+            codec_id: codec_id,
+            ..Default::default()
+        }
+    }
+}
+
+impl Display for VideoFrame {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(
+            f,
+            "VideoFrame data_len: {}, width: {}, height: {}, format: {}, pts: {}, dts: {}, is_key: {}, codec_id: {}",
+            self.data.len(),
+            self.width,
+            self.height,
+            self.format,
+            self.pts,
+            self.dts,
+            self.is_key,
+            self.codec_id
+        )
+    }
+}
+
+impl Clone for VideoFrame {
+    fn clone(&self) -> Self {
+        Self {
+            data: self.data.clone(),
+            width: self.width,
+            height: self.height,
+            format: self.format,
+            pts: self.pts,
+            dts: self.dts,
+            is_key: self.is_key,
+            codec_id: self.codec_id,
+        }
+    }
+}
+
+impl TryFrom<RawFrame> for VideoFrame {
+    type Error = anyhow::Error;
+    fn try_from(value: RawFrame) -> Result<Self, Self::Error> {
+        if let RawFrame::Video(frame) = value {
+            Ok(Self {
+                data: frame.data(),
+                width: frame.width(),
+                height: frame.height(),
+                format: frame.format() as i32,
+                pts: frame.pts().unwrap_or(0),
+                dts: 0,
+                is_key: frame.is_key(),
+                codec_id: ffmpeg_next::codec::Id::None as i32,
+            })
+        } else {
+            Err(anyhow::anyhow!("not a video frame"))
+        }
     }
 }
