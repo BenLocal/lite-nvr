@@ -41,7 +41,15 @@ impl AvInputTask {
                         }
                         None => {
                             // End of stream, break the loop
-                            println!("end of input stream");
+                            println!("end of read input stream:");
+                            for (index, stream) in input.streams.iter() {
+                                println!(
+                                    "stream index: {}, stream id: {:#?}, time_base: {:#?}",
+                                    index,
+                                    stream.parameters().id(),
+                                    stream.time_base()
+                                );
+                            }
                             let _ = sender_clone.send(RawPacketCmd::EOF);
                             break;
                         }
@@ -53,11 +61,11 @@ impl AvInputTask {
 
             tokio::select! {
                 _ = handle => {
-                    println!("read packet task finished");
+                    println!("read input packet task finished");
                     cancel_clone.cancel();
                 }
                 _ = cancel_clone.cancelled() => {
-                    println!("read packet task cancelled");
+                    println!("read input packet task cancelled");
                 }
             }
         });

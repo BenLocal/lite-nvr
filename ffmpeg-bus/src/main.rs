@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
         println!("end of output stream");
     });
 
-    println!("start");
+    println!("start bus");
     tokio::signal::ctrl_c().await?;
     println!("ctrl+c received");
     bus.stop();

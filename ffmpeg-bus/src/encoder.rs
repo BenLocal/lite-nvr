@@ -302,7 +302,11 @@ impl EncoderTask {
             }
         }
 
-        println!("video encode packet: EOF");
+        println!(
+            "end of av encode task loop, stream base_time: {:#?}, encoder_time_base: {:#?}",
+            encoder.stream.time_base(),
+            encoder.encoder_time_base
+        );
         let _ = out.send(RawPacketCmd::EOF);
     }
 }

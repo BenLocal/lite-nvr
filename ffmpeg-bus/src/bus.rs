@@ -133,11 +133,13 @@ impl Bus {
         };
 
         let streams = input.streams();
+        println!("start add input streams: ");
         for (index, stream) in streams {
             println!(
-                "stream index: {}, stream: {:#?}",
+                "stream index: {}, stream id: {:#?}, time_base: {:#?}",
                 index,
-                stream.parameters().id()
+                stream.parameters().id(),
+                stream.time_base()
             );
             state.input_stream_map.push(stream.clone());
         }

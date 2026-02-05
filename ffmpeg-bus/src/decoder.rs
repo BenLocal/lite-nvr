@@ -254,7 +254,11 @@ impl DecoderTask {
                 break;
             }
         }
-        println!("video decode frame: EOF");
+        println!(
+            "end of av decode task loop, stream base_time: {:#?}, decoder_time_base: {:#?}",
+            decoder.stream.time_base(),
+            decoder.decoder_time_base
+        );
         let _ = out_sender.send(RawFrameCmd::EOF);
     }
 }
