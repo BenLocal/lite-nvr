@@ -1,4 +1,10 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    pin::Pin,
+    task::{Context, Poll},
+};
+
+use futures::Stream;
 
 use bytes::Bytes;
 use ffmpeg_next::{
@@ -98,10 +104,10 @@ pub struct AvOutputStream {
     have_written_header: bool,
     have_written_trailer: bool,
     context: Box<PacketContext>,
-    receiver: std::sync::mpsc::Receiver<OutputMessage>,
+    receiver: tokio::sync::mpsc::UnboundedReceiver<OutputMessage>,
 }
 
-pub type PacketBufferType = std::sync::mpsc::Sender<OutputMessage>;
+pub type PacketBufferType = tokio::sync::mpsc::UnboundedSender<OutputMessage>;
 
 pub struct OutputMessage {
     data: Bytes,
@@ -114,7 +120,7 @@ impl AvOutputStream {
 
     pub fn new(format: &str) -> anyhow::Result<Self> {
         let mut inner = output_raw(format)?;
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut context = Box::new(PacketContext {
             buffer: sender,
             current_pts: None,
@@ -158,9 +164,23 @@ impl AvOutputStream {
             self.have_written_trailer = true;
             self.inner.write_trailer()?;
         }
-        // Clean up the custom IO context
-        output_raw_packetized_buf_end(&mut self.inner);
         Ok(())
+    }
+}
+
+impl Drop for AvOutputStream {
+    fn drop(&mut self) {
+        // Clean up the custom IO context when the stream is dropped
+        output_raw_packetized_buf_end(&mut self.inner);
+    }
+}
+
+impl Stream for AvOutputStream {
+    type Item = OutputMessage;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        this.receiver.poll_recv(cx)
     }
 }
 
