@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
+use crate::output::OutputMessage;
+
 pub type RawFrameSender = tokio::sync::broadcast::Sender<RawFrameCmd>;
 pub type RawFrameReceiver = tokio::sync::broadcast::Receiver<RawFrameCmd>;
 
@@ -188,6 +190,21 @@ impl TryFrom<RawFrame> for VideoFrame {
             })
         } else {
             Err(anyhow::anyhow!("not a video frame"))
+        }
+    }
+}
+
+impl From<OutputMessage> for VideoFrame {
+    fn from(value: OutputMessage) -> Self {
+        Self {
+            data: value.data,
+            width: 0,
+            height: 0,
+            format: 0,
+            pts: value.pts.unwrap_or(0),
+            dts: value.dts.unwrap_or(0),
+            is_key: false,
+            codec_id: 0,
         }
     }
 }

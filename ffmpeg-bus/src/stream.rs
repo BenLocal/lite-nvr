@@ -1,5 +1,8 @@
 use ffmpeg_next::{Rational, codec::Parameters, format::stream};
 
+unsafe impl Send for AvStream {}
+unsafe impl Sync for AvStream {}
+
 pub struct AvStream {
     index: usize,
     parameters: Parameters,

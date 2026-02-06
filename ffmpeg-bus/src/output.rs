@@ -6,21 +6,24 @@ use std::{
 
 use futures::Stream;
 
+use crate::{packet::RawPacket, stream::AvStream};
 use bytes::Bytes;
+use std::ffi::CString;
 use ffmpeg_next::{
     Dictionary, Rational,
     ffi::{
-        AVIOContext, av_free, av_malloc, avformat_alloc_output_context2, avio_alloc_context,
-        avio_flush,
+        av_opt_set, av_free, av_malloc, avformat_alloc_output_context2, avio_alloc_context,
+        avio_flush, AVIOContext, AV_OPT_SEARCH_CHILDREN,
     },
     format::context::Output,
 };
 
-use crate::{packet::RawPacket, stream::AvStream};
-
 pub struct AvOutput {
     inner: Output,
+    /// input stream index -> AvStream (for time_base etc.)
     output_streams: HashMap<usize, AvStream>,
+    /// input stream index -> output stream index (in inner)
+    output_stream_index: HashMap<usize, usize>,
     interleaved: bool,
     have_written_header: bool,
     have_written_trailer: bool,
@@ -36,6 +39,7 @@ impl AvOutput {
         Ok(Self {
             inner: output,
             output_streams: HashMap::new(),
+            output_stream_index: HashMap::new(),
             interleaved: false,
             have_written_header: false,
             have_written_trailer: false,
@@ -48,6 +52,8 @@ impl AvOutput {
             .inner
             .add_stream(ffmpeg_next::encoder::find(codec_parameters.id()))?;
         writer_stream.set_parameters(codec_parameters.clone());
+        let out_idx = writer_stream.index();
+        self.output_stream_index.insert(stream.index(), out_idx);
         self.output_streams.insert(stream.index(), stream.clone());
         Ok(())
     }
@@ -56,11 +62,16 @@ impl AvOutput {
         self.output_streams.get(&stream_index).unwrap().time_base()
     }
 
+    /// Write a packet. `input_stream_index` is the input stream index (packet.stream() from input).
     pub fn write_packet(
         &mut self,
-        writer_stream_index: usize,
+        input_stream_index: usize,
         mut packet: RawPacket,
     ) -> anyhow::Result<()> {
+        let out_idx = match self.output_stream_index.get(&input_stream_index) {
+            Some(&i) => i,
+            None => return Err(anyhow::anyhow!("stream not found: {}", input_stream_index)),
+        };
         if !self.have_written_header {
             self.inner.write_header()?;
             self.have_written_header = true;
@@ -68,13 +79,9 @@ impl AvOutput {
         let time_base = packet.time_base();
 
         let p = packet.get_mut();
-        let destination_stream = match self.output_streams.get(&writer_stream_index) {
-            Some(stream) => stream,
-            None => return Err(anyhow::anyhow!("stream not found")),
-        };
-        p.set_stream(destination_stream.index());
+        p.set_stream(out_idx);
         p.set_position(-1);
-        let out_time_base = self.inner.stream(writer_stream_index).unwrap().time_base();
+        let out_time_base = self.inner.stream(out_idx).unwrap().time_base();
         p.rescale_ts(time_base, out_time_base);
         if self.interleaved {
             p.write_interleaved(&mut self.inner)?;
@@ -105,14 +112,90 @@ pub struct AvOutputStream {
     have_written_trailer: bool,
     context: Box<PacketContext>,
     receiver: tokio::sync::mpsc::UnboundedReceiver<OutputMessage>,
+    /// Input stream index we're muxing (only one stream supported for now).
+    input_stream_index: Option<usize>,
 }
 
 pub type PacketBufferType = tokio::sync::mpsc::UnboundedSender<OutputMessage>;
 
 pub struct OutputMessage {
-    data: Bytes,
-    pts: Option<i64>,
-    dts: Option<i64>,
+    pub data: Bytes,
+    pub pts: Option<i64>,
+    pub dts: Option<i64>,
+}
+
+/// Writer half of a split `AvOutputStream`. Used to write packets from a separate task.
+pub struct AvOutputStreamWriter {
+    inner: Output,
+    have_written_header: bool,
+    have_written_trailer: bool,
+    context: Box<PacketContext>,
+    /// Input stream index we're muxing (only write packets with this stream index).
+    input_stream_index: Option<usize>,
+}
+
+impl AvOutputStreamWriter {
+    pub fn write_packet(&mut self, mut packet: RawPacket) -> anyhow::Result<()> {
+        let input_stream_index = match self.input_stream_index {
+            Some(idx) => idx,
+            None => return Err(anyhow::anyhow!("no stream added to output")),
+        };
+        if packet.index() != input_stream_index {
+            return Ok(());
+        }
+
+        if !self.have_written_header {
+            self.inner.write_header()?;
+            self.have_written_header = true;
+        }
+
+        self.context.current_pts = packet.pts();
+        self.context.current_dts = packet.dts();
+
+        let time_base = packet.time_base();
+        let p = packet.get_mut();
+        p.set_stream(0);
+        p.set_position(-1);
+        let out_time_base = self.inner.stream(0).unwrap().time_base();
+        p.rescale_ts(time_base, out_time_base);
+        p.write(&mut self.inner)?;
+
+        self.context.current_pts = None;
+        self.context.current_dts = None;
+
+        Ok(())
+    }
+
+    pub fn finish(&mut self) -> anyhow::Result<()> {
+        if self.have_written_header && !self.have_written_trailer {
+            self.have_written_trailer = true;
+            self.inner.write_trailer()?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for AvOutputStreamWriter {
+    fn drop(&mut self) {
+        let _ = self.finish();
+        output_raw_packetized_buf_end(&mut self.inner);
+    }
+}
+
+/// Reader half of a split `AvOutputStream`. Implements `Stream` and yields encoded packets.
+pub struct AvOutputStreamReader {
+    receiver: tokio::sync::mpsc::UnboundedReceiver<OutputMessage>,
+}
+
+impl Stream for AvOutputStreamReader {
+    type Item = OutputMessage;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.receiver.poll_recv(cx)
+    }
 }
 
 impl AvOutputStream {
@@ -120,6 +203,9 @@ impl AvOutputStream {
 
     pub fn new(format: &str) -> anyhow::Result<Self> {
         let mut inner = output_raw(format)?;
+        if format == "mp4" {
+            set_mp4_movflags(&mut inner)?;
+        }
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut context = Box::new(PacketContext {
             buffer: sender,
@@ -136,52 +222,62 @@ impl AvOutputStream {
             have_written_trailer: false,
             context,
             receiver,
+            input_stream_index: None,
         })
     }
 
-    pub fn write_packet(&mut self, mut packet: RawPacket) -> anyhow::Result<()> {
-        if !self.have_written_header {
-            self.inner.write_header()?;
-            self.have_written_header = true;
-        }
-
-        // Set current PTS/DTS in context before writing
-        self.context.current_pts = packet.pts();
-        self.context.current_dts = packet.dts();
-
-        let p = packet.get_mut();
-        p.write(&mut self.inner)?;
-
-        // Clear PTS/DTS after writing
-        self.context.current_pts = None;
-        self.context.current_dts = None;
-
+    /// Add one output stream (e.g. video). Must be called before writing. Only one stream is supported.
+    pub fn add_stream(&mut self, stream: &AvStream) -> anyhow::Result<()> {
+        let codec_parameters = stream.parameters();
+        let mut writer_stream = self
+            .inner
+            .add_stream(ffmpeg_next::encoder::find(codec_parameters.id()))?;
+        writer_stream.set_parameters(codec_parameters.clone());
+        self.input_stream_index = Some(stream.index());
         Ok(())
     }
 
-    pub fn finish(&mut self) -> anyhow::Result<()> {
-        if self.have_written_header && !self.have_written_trailer {
-            self.have_written_trailer = true;
-            self.inner.write_trailer()?;
+    /// Split into writer (for `write_packet` in another task) and reader (for consuming as `Stream`).
+    pub fn into_split(self) -> (AvOutputStreamWriter, AvOutputStreamReader) {
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe {
+            let inner = std::ptr::read(&this.inner);
+            let have_written_header = this.have_written_header;
+            let have_written_trailer = this.have_written_trailer;
+            let context = std::ptr::read(&this.context);
+            let receiver = std::ptr::read(&this.receiver);
+            let input_stream_index = this.input_stream_index;
+            (
+                AvOutputStreamWriter {
+                    inner,
+                    have_written_header,
+                    have_written_trailer,
+                    context,
+                    input_stream_index,
+                },
+                AvOutputStreamReader { receiver },
+            )
         }
-        Ok(())
     }
 }
 
-impl Drop for AvOutputStream {
-    fn drop(&mut self) {
-        // Clean up the custom IO context when the stream is dropped
-        output_raw_packetized_buf_end(&mut self.inner);
+/// Set movflags for MP4 so the muxer works with non-seekable output (e.g. our custom IO).
+/// Without this, the muxer would need to seek to write moov and would produce an invalid file.
+fn set_mp4_movflags(output: &mut Output) -> anyhow::Result<()> {
+    unsafe {
+        let name = CString::new("movflags").unwrap();
+        let value = CString::new("frag_keyframe+empty_moov").unwrap();
+        let ret = av_opt_set(
+            output.as_mut_ptr() as *mut std::ffi::c_void,
+            name.as_ptr(),
+            value.as_ptr(),
+            AV_OPT_SEARCH_CHILDREN,
+        );
+        if ret != 0 {
+            return Err(anyhow::anyhow!("av_opt_set movflags failed: {}", ret));
+        }
     }
-}
-
-impl Stream for AvOutputStream {
-    type Item = OutputMessage;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        this.receiver.poll_recv(cx)
-    }
+    Ok(())
 }
 
 /// ------------------------------------------------------------
