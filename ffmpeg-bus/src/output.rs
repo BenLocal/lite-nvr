@@ -1,12 +1,20 @@
 use std::collections::HashMap;
 
-use ffmpeg_next::{Dictionary, Rational};
+use bytes::Bytes;
+use ffmpeg_next::{
+    Dictionary, Rational,
+    ffi::{
+        AVIOContext, av_free, av_malloc, avformat_alloc_output_context2, avio_alloc_context,
+        avio_flush,
+    },
+    format::context::Output,
+};
 
 use crate::{packet::RawPacket, stream::AvStream};
 
 pub struct AvOutput {
-    inner: ffmpeg_next::format::context::Output,
-    streams: HashMap<usize, AvStream>,
+    inner: Output,
+    output_streams: HashMap<usize, AvStream>,
     interleaved: bool,
     have_written_header: bool,
     have_written_trailer: bool,
@@ -21,7 +29,7 @@ impl AvOutput {
         let output = ffmpeg_next::format::output(url)?;
         Ok(Self {
             inner: output,
-            streams: HashMap::new(),
+            output_streams: HashMap::new(),
             interleaved: false,
             have_written_header: false,
             have_written_trailer: false,
@@ -34,12 +42,12 @@ impl AvOutput {
             .inner
             .add_stream(ffmpeg_next::encoder::find(codec_parameters.id()))?;
         writer_stream.set_parameters(codec_parameters.clone());
-        self.streams.insert(stream.index(), stream.clone());
+        self.output_streams.insert(stream.index(), stream.clone());
         Ok(())
     }
 
     fn stream_time_base(&mut self, stream_index: usize) -> Rational {
-        self.streams.get(&stream_index).unwrap().time_base()
+        self.output_streams.get(&stream_index).unwrap().time_base()
     }
 
     pub fn write_packet(
@@ -54,7 +62,7 @@ impl AvOutput {
         let time_base = packet.time_base();
 
         let p = packet.get_mut();
-        let destination_stream = match self.streams.get(&writer_stream_index) {
+        let destination_stream = match self.output_streams.get(&writer_stream_index) {
             Some(stream) => stream,
             None => return Err(anyhow::anyhow!("stream not found")),
         };
@@ -77,4 +85,204 @@ impl AvOutput {
         }
         Ok(())
     }
+}
+
+pub struct AvOutputStream {
+    inner: Output,
+    have_written_header: bool,
+    have_written_trailer: bool,
+    buffer: PacketBufferType,
+    receiver: std::sync::mpsc::Receiver<OutputMessage>,
+}
+
+pub type PacketBufferType = std::sync::mpsc::Sender<OutputMessage>;
+
+pub struct OutputMessage {
+    data: Bytes,
+    pts: Option<i64>,
+    dts: Option<i64>,
+}
+
+impl AvOutputStream {
+    const PACKET_SIZE: usize = 1024;
+
+    pub fn new(format: &str) -> anyhow::Result<Self> {
+        let inner = output_raw(format)?;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        Ok(Self {
+            inner,
+            have_written_header: false,
+            have_written_trailer: false,
+            buffer: sender,
+            receiver,
+        })
+    }
+
+    pub fn write_packet(&mut self, mut packet: RawPacket) -> anyhow::Result<()> {
+        if !self.have_written_header {
+            self.inner.write_header()?;
+            self.have_written_header = true;
+        }
+        let p = packet.get_mut();
+        p.write(&mut self.inner)?;
+        Ok(())
+    }
+
+    pub fn finish(&mut self) -> anyhow::Result<()> {
+        if self.have_written_header && !self.have_written_trailer {
+            self.have_written_trailer = true;
+            self.inner.write_trailer()?;
+        }
+        Ok(())
+    }
+}
+
+/// ------------------------------------------------------------
+/// Helper functions for raw output
+/// Copy from https://github.com/oddity-ai/video-rs/blob/main/src/ffi.rs
+/// ------------------------------------------------------------
+
+/// This function is similar to the existing bindings in ffmpeg-next like `output` and `output_as`,
+/// but does not assume that it is opening a file-like context. Instead, it opens a raw output,
+/// without a file attached.
+///
+/// Combined with the `output_raw_buf_start` and `output_raw_buf_end` functions, this can be used to
+/// write to a buffer instead of a file.
+///
+/// # Arguments
+///
+/// * `format` - String to indicate the container format, like "mp4".
+///
+/// # Example
+///
+/// ```ignore
+/// let output = ffi::output_raw("mp4");
+///
+/// output_raw_buf_start(&mut output);
+/// output.write_header()?;
+/// let buf output_raw_buf_end(&mut output);
+/// println!("{}", buf.len());
+/// ```
+fn output_raw(format: &str) -> anyhow::Result<Output> {
+    unsafe {
+        let mut output_ptr = std::ptr::null_mut();
+        let format = std::ffi::CString::new(format).unwrap();
+        match avformat_alloc_output_context2(
+            &mut output_ptr,
+            std::ptr::null_mut(),
+            format.as_ptr(),
+            std::ptr::null(),
+        ) {
+            0 => Ok(Output::wrap(output_ptr)),
+            e => Err(anyhow::anyhow!("failed to alloc output context: {}", e)),
+        }
+    }
+}
+
+/// This function initializes an IO context for the `Output` that packetizes individual writes. Each
+/// write is pushed onto a packet buffer (a collection of buffers, each being a packet).
+///
+/// The callee must invoke `output_raw_packetized_buf_end` soon after calling this function. The
+/// `Vec` pointed to by `packet_buffer` must live between invocation of this function and
+/// `output_raw_packetized_buf_end`!
+///
+/// Not calling `output_raw_packetized_buf_end` after calling this function will result in memory
+/// leaking.
+///
+/// # Arguments
+///
+/// * `output` - Output context to start write on.
+/// * `packet_buffer` - Packet buffer to push buffers onto. Must live until
+///   `output_raw_packetized_buf`.
+/// * `max_packet_size` - Maximum size per packet.
+pub fn output_raw_packetized_buf_start(
+    output: &mut Output,
+    packet_buffer: &mut PacketBufferType,
+    max_packet_size: usize,
+) {
+    unsafe {
+        let buffer = av_malloc(max_packet_size) as *mut u8;
+
+        // Create a custom IO context around our buffer.
+        let io: *mut AVIOContext = avio_alloc_context(
+            buffer,
+            max_packet_size.try_into().unwrap(),
+            // Set stream to WRITE.
+            1,
+            // Pass on a pointer *UNSAFE* to the packet buffer, assuming the packet buffer will live
+            // long enough.
+            packet_buffer as *mut PacketBufferType as *mut std::ffi::c_void,
+            // No `read_packet`.
+            None,
+            // Passthrough for `write_packet`.
+            // XXX: Doing a manual transmute here to match the expected callback function
+            // signature. Since it changed since ffmpeg 7 and we don't know during compile time
+            // what verion we're dealing with, this trick will convert to the either the signature
+            // where the buffer argument is `*const u8` or `*mut u8`.
+            #[allow(clippy::missing_transmute_annotations)]
+            Some(std::mem::transmute::<*const (), _>(
+                output_raw_buf_start_callback as _,
+            )),
+            // No `seek`.
+            None,
+        );
+
+        // Setting `max_packet_size` will let the underlying IO stream know that this buffer must be
+        // treated as packetized.
+        (*io).max_packet_size = max_packet_size.try_into().unwrap();
+
+        // Assign IO to output context.
+        (*output.as_mut_ptr()).pb = io;
+    }
+}
+
+/// This function cleans up the IO context used for packetized writing created by
+/// `output_raw_packetized_buf_start`.
+///
+/// # Arguments
+///
+/// * `output` - Output context to end write on.
+pub fn output_raw_packetized_buf_end(output: &mut Output) {
+    unsafe {
+        let output_pb = (*output.as_mut_ptr()).pb;
+
+        // One last flush (might incur write, most likely won't).
+        avio_flush(output_pb);
+
+        // Note: No need for handling `opaque` as it is managed by Rust code anyway and will be
+        // freed by it.
+
+        // We do need to free the buffer itself though (we allocatd it manually earlier).
+        av_free((*output_pb).buffer as *mut std::ffi::c_void);
+        // And deallocate the entire IO context.
+        av_free(output_pb as *mut std::ffi::c_void);
+
+        // Reset the `pb` field or `avformat_close` will try to free it!
+        ((*output.as_mut_ptr()).pb) = std::ptr::null_mut::<AVIOContext>();
+    }
+}
+
+/// Passthrough function that is passed to `libavformat` in `avio_alloc_context` and pushes buffers
+/// from a packetized stream onto the packet buffer held in `opaque`.
+extern "C" fn output_raw_buf_start_callback(
+    opaque: *mut std::ffi::c_void,
+    buffer: *const u8,
+    buffer_size: i32,
+) -> i32 {
+    unsafe {
+        // Acquire a reference to the packet buffer transmuted from the `opaque` gotten through
+        // `libavformat`.
+        let packet_buffer: &mut PacketBufferType = &mut *(opaque as *mut PacketBufferType);
+        // Push the current packet onto the packet buffer.
+        let buf = std::slice::from_raw_parts(buffer, buffer_size as usize);
+        let data = Bytes::copy_from_slice(buf);
+        let _ = packet_buffer.send(OutputMessage {
+            data: data,
+            pts: None,
+            dts: None,
+        });
+    }
+
+    // Number of bytes written.
+    buffer_size
 }
