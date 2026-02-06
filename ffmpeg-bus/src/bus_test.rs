@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use futures::StreamExt;
 use tokio::io::AsyncWriteExt as _;
 
-use crate::bus::{Bus, InputConfig, OutputConfig, OutputDest};
+use crate::bus::{Bus, InputConfig, OutputAvType, OutputConfig, OutputDest};
 use crate::metadata::probe;
 
 /// Path to scripts/test.mp4 relative to workspace root (parent of ffmpeg-bus). Works regardless of cwd.
@@ -18,9 +18,9 @@ fn test_mp4_path() -> PathBuf {
 /// Requires scripts/test.mp4 (~5s, 10fps).
 #[tokio::test]
 async fn test_mux_h264() -> anyhow::Result<()> {
-    // try delete output.h264
-    if Path::new("output.h264").exists() {
-        std::fs::remove_file("output.h264").unwrap();
+    let file_name = "output.h264";
+    if Path::new(file_name).exists() {
+        std::fs::remove_file(file_name).unwrap();
     }
 
     let input_path = test_mp4_path();
@@ -37,16 +37,16 @@ async fn test_mux_h264() -> anyhow::Result<()> {
     bus.add_input(input_config).await?;
 
     // Mux to raw H.264 and write to output.h264
-    let output_config = OutputConfig {
-        id: "mux_h264".to_string(),
-        dest: OutputDest::Mux {
+    let output_config = OutputConfig::new(
+        "mux_h264".to_string(),
+        OutputAvType::Video,
+        OutputDest::Mux {
             format: "h264".to_string(),
         },
-        encode: None,
-    };
+    );
     let mut stream = bus.add_output(output_config).await?;
 
-    let mut file = tokio::fs::File::create("output.h264").await?;
+    let mut file = tokio::fs::File::create(file_name).await?;
     while let Some(frame) = stream.next().await {
         if let Some(frame) = frame {
             file.write_all(&frame.data).await?;
@@ -55,8 +55,49 @@ async fn test_mux_h264() -> anyhow::Result<()> {
     file.sync_all().await?;
 
     // Verify output.h264: decodable and frame count ~50 (5s @ 10fps)
-    verify_output_h264("output.h264", 5, 10).await?;
+    verify_output_h264(file_name, 5, 10).await?;
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_mux_aac() -> anyhow::Result<()> {
+    let file_name = "output.aac";
+    if Path::new(file_name).exists() {
+        std::fs::remove_file(file_name).unwrap();
+    }
+
+    let input_path = test_mp4_path();
+    if !input_path.exists() {
+        eprintln!("skip: {} not found", input_path.display());
+        return Ok(());
+    }
+
+    let bus = Bus::new("a");
+    let input_config = InputConfig::File {
+        path: input_path.to_string_lossy().into_owned(),
+    };
+    bus.add_input(input_config).await?;
+
+    // Mux to raw AAC and write to output.aac
+    let output_config = OutputConfig::new(
+        "mux_aac".to_string(),
+        OutputAvType::Audio,
+        OutputDest::Mux {
+            format: "adts".to_string(),
+        },
+    );
+    let mut stream = bus.add_output(output_config).await?;
+
+    let mut file = tokio::fs::File::create(file_name).await?;
+    while let Some(frame) = stream.next().await {
+        if let Some(frame) = frame {
+            file.write_all(&frame.data).await?;
+        }
+    }
+    file.sync_all().await?;
+
+    verify_output_aac(file_name, 5, 43).await?;
     Ok(())
 }
 
@@ -76,13 +117,13 @@ async fn test_mux_only_video_mp4() -> anyhow::Result<()> {
     };
     bus.add_input(input_config).await?;
 
-    let output_config = OutputConfig {
-        id: "mux_h264".to_string(),
-        dest: OutputDest::File {
+    let output_config = OutputConfig::new(
+        "mux_h264".to_string(),
+        OutputAvType::Video,
+        OutputDest::File {
             path: "output.mp4".to_string(),
         },
-        encode: None,
-    };
+    );
     let _stream = bus.add_output(output_config).await?;
 
     // Source is ~5s @ 10fps; wait for mux to finish (read + write) then verify
@@ -212,6 +253,57 @@ async fn verify_output_mp4(
             expected_fps
         );
     }
+
+    Ok(())
+}
+
+/// Verifies output.aac: openable with ffmpeg_next and packet count within reasonable range.
+/// AAC frames are typically 1024 samples. @ 44100Hz -> ~43 packets/sec.
+async fn verify_output_aac(
+    path: &str,
+    duration_sec: u32,
+    expected_packets_per_sec: u32,
+) -> anyhow::Result<()> {
+    let path = Path::new(path);
+    assert!(path.exists(), "output.aac should exist");
+    let size = std::fs::metadata(path)?.len();
+    assert!(size > 0, "output.aac should not be empty");
+
+    // 1. Open and read all packets (validates file is decodable)
+    let path_str = path.to_str().unwrap();
+    let mut input = ffmpeg_next::format::input(&path_str)
+        .map_err(|e| anyhow::anyhow!("output.aac should open without error: {}", e))?;
+
+    let nb_streams = input.nb_streams();
+    assert!(
+        nb_streams >= 1,
+        "output.aac should have at least one stream"
+    );
+
+    // 2. Count packets in the first stream
+    let stream_index = 0u32;
+    let mut packet_count: u32 = 0;
+    for (stream, _packet) in input.packets() {
+        if stream.index() == stream_index as usize {
+            packet_count += 1;
+        }
+    }
+
+    let expected_packets = duration_sec * expected_packets_per_sec;
+    // Allow larger margin for audio packets as buffering/padding can vary
+    let min_packets = expected_packets.saturating_sub(expected_packets / 2);
+    let max_packets = expected_packets + expected_packets / 2;
+
+    assert!(
+        packet_count >= min_packets && packet_count <= max_packets,
+        "output.aac packet count {} should be in [{}, {}] (expected ~{} for {}s @ {}pps)",
+        packet_count,
+        min_packets,
+        max_packets,
+        expected_packets,
+        duration_sec,
+        expected_packets_per_sec
+    );
 
     Ok(())
 }

@@ -6,6 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     decoder::{Decoder, DecoderTask},
+    encoder::{Encoder, EncoderTask, Settings},
     frame::{RawFrameCmd, VideoFrame},
     input::{AvInput, AvInputTask},
     output::{AvOutput, AvOutputStream},
@@ -83,12 +84,34 @@ impl Bus {
                         return Err(anyhow::anyhow!("{}", msg));
                     }
                 }
+                let input_stream = state
+                    .input_streams
+                    .iter()
+                    .find(|s| match output.av_type {
+                        OutputAvType::Video => s.is_video(),
+                        OutputAvType::Audio => s.is_audio(),
+                    })
+                    .ok_or(anyhow::anyhow!("stream not found"))?;
+                let input_stream_index = input_stream.index();
+                let need_decoder = Self::try_decoder(&output)?;
+                if need_decoder {
+                    Self::start_decoder_task(state, input_stream_index).await?;
+                }
+
+                let need_encoder = Self::try_encoder(&output)?;
+                if need_encoder {
+                    Self::start_encoder_task(state, input_stream_index).await?;
+                }
 
                 let stream_result = match &output.dest {
-                    OutputDest::Raw => Self::create_decoder_raw_output_stream(state).await,
-                    OutputDest::File { path } => Self::create_mux_to_file(state, path).await,
+                    OutputDest::Raw => {
+                        Self::create_decoder_raw_output_stream(state, input_stream_index).await
+                    }
+                    OutputDest::File { path } => {
+                        Self::create_mux_to_file(state, path, input_stream_index).await
+                    }
                     OutputDest::Mux { format } => {
-                        Self::create_mux_output_stream(state, format).await
+                        Self::create_mux_output_stream(state, format, input_stream_index).await
                     }
                     _ => {
                         let e = anyhow::anyhow!("unsupported output destination");
@@ -116,10 +139,32 @@ impl Bus {
         Ok(())
     }
 
+    fn try_decoder(output: &OutputConfig) -> anyhow::Result<bool> {
+        match output.dest {
+            OutputDest::Raw => Ok(true),
+            OutputDest::File { .. } => Ok(false),
+            OutputDest::Mux { .. } => Ok(false),
+            OutputDest::Net { .. } => Ok(true),
+        }
+    }
+
+    fn try_encoder(output: &OutputConfig) -> anyhow::Result<bool> {
+        if let OutputDest::Raw = output.dest {
+            return Ok(false);
+        }
+
+        if output.encode.is_some() {
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
     /// Mux to a real file path (seekable). Produces standard MP4 that any player can open.
     async fn create_mux_to_file(
         state: &mut BusState,
         path: &str,
+        input_stream_index: usize,
     ) -> anyhow::Result<VideoRawFrameStream> {
         let mut input_receiver = state
             .input_task
@@ -127,25 +172,25 @@ impl Bus {
             .ok_or(anyhow::anyhow!("input task not found"))?
             .subscribe();
 
-        let video_stream = state
-            .input_stream_map
+        let target_stream = state
+            .input_streams
             .iter()
-            .find(|s| s.is_video())
-            .ok_or(anyhow::anyhow!("no video stream in input"))?
+            .find(|s| s.index() == input_stream_index)
+            .ok_or(anyhow::anyhow!("no matching stream in input"))?
             .clone();
-        let video_stream_index = video_stream.index();
+        let target_stream_index = target_stream.index();
         let path_owned = path.to_string();
 
         let mut output = AvOutput::new(path, None, None)?;
-        output.add_stream(&video_stream)?;
+        output.add_stream(&target_stream)?;
 
         tokio::spawn(async move {
             let mut output = output;
             while let Ok(cmd) = input_receiver.recv().await {
                 match cmd {
                     RawPacketCmd::Data(packet) => {
-                        if packet.index() == video_stream_index {
-                            if let Err(e) = output.write_packet(video_stream_index, packet) {
+                        if packet.index() == target_stream_index {
+                            if let Err(e) = output.write_packet(target_stream_index, packet) {
                                 log::error!("mux to file write_packet error: {:#?}", e);
                             }
                         }
@@ -165,6 +210,7 @@ impl Bus {
     async fn create_mux_output_stream(
         state: &mut BusState,
         format: &str,
+        input_stream_index: usize,
     ) -> anyhow::Result<VideoRawFrameStream> {
         let mut input_receiver = state
             .input_task
@@ -172,14 +218,14 @@ impl Bus {
             .ok_or(anyhow::anyhow!("input task not found"))?
             .subscribe();
 
-        let video_stream = state
-            .input_stream_map
+        let target_stream = state
+            .input_streams
             .iter()
-            .find(|s| s.is_video())
-            .ok_or(anyhow::anyhow!("no video stream in input"))?;
-        let video_stream_index = video_stream.index();
+            .find(|s| s.index() == input_stream_index)
+            .ok_or(anyhow::anyhow!("no matching stream in input"))?;
+        let target_stream_index = target_stream.index();
         let mut stream = AvOutputStream::new(format)?;
-        stream.add_stream(&video_stream)?;
+        stream.add_stream(&target_stream)?;
         let (writer, reader) = stream.into_split();
 
         tokio::spawn(async move {
@@ -187,7 +233,7 @@ impl Bus {
             while let Ok(cmd) = input_receiver.recv().await {
                 match cmd {
                     RawPacketCmd::Data(packet) => {
-                        if packet.index() == video_stream_index {
+                        if packet.index() == target_stream_index {
                             if let Err(e) = writer.write_packet(packet) {
                                 log::error!("mux write_packet error: {:#?}", e);
                             }
@@ -207,22 +253,12 @@ impl Bus {
 
     async fn create_decoder_raw_output_stream(
         state: &mut BusState,
+        stream_index: usize,
     ) -> anyhow::Result<VideoRawFrameStream> {
-        let input_index = state
-            .input_stream_map
-            .iter()
-            .find(|s| s.is_video())
-            .ok_or(anyhow::anyhow!("stream not found"))?
-            .index();
-        // try to start decoder task
-        if !state.decoder_tasks.contains_key(&input_index) {
-            Self::start_decoder_task(state).await?;
-        }
-
         let stream = BroadcastStream::new(
             state
                 .decoder_tasks
-                .get(&input_index)
+                .get(&stream_index)
                 .ok_or(anyhow::anyhow!("decoder task not found"))?
                 .subscribe(),
         )
@@ -253,12 +289,42 @@ impl Bus {
         Ok(())
     }
 
-    async fn start_decoder_task(state: &mut BusState) -> anyhow::Result<()> {
+    async fn start_encoder_task(
+        state: &mut BusState,
+        input_stream_index: usize,
+    ) -> anyhow::Result<()> {
         let input_stream = state
-            .input_stream_map
+            .input_streams
             .iter()
-            .find(|s| s.is_video())
+            .find(|s| s.index() == input_stream_index)
             .ok_or(anyhow::anyhow!("stream not found"))?;
+        if state.encoder_tasks.contains_key(&input_stream_index) {
+            return Ok(());
+        }
+        let encoder_receiver = state
+            .decoder_tasks
+            .get(&input_stream_index)
+            .ok_or(anyhow::anyhow!("decoder task not found"))?
+            .subscribe();
+        let encoder = Encoder::new(input_stream, Settings::default(), None)?;
+        let encoder_task = EncoderTask::new();
+        encoder_task.start(encoder, encoder_receiver).await;
+        state.encoder_tasks.insert(input_stream_index, encoder_task);
+        Ok(())
+    }
+
+    async fn start_decoder_task(
+        state: &mut BusState,
+        input_stream_index: usize,
+    ) -> anyhow::Result<()> {
+        let input_stream = state
+            .input_streams
+            .iter()
+            .find(|s| s.index() == input_stream_index)
+            .ok_or(anyhow::anyhow!("stream not found"))?;
+        if state.decoder_tasks.contains_key(&input_stream_index) {
+            return Ok(());
+        }
         let decoder_receiver = state
             .input_task
             .as_ref()
@@ -267,9 +333,7 @@ impl Bus {
         let decoder = Decoder::new(input_stream)?;
         let decoder_task = DecoderTask::new();
         decoder_task.start(decoder, decoder_receiver).await;
-        state
-            .decoder_tasks
-            .insert(input_stream.index(), decoder_task);
+        state.decoder_tasks.insert(input_stream_index, decoder_task);
 
         Ok(())
     }
@@ -291,7 +355,7 @@ impl Bus {
                 stream.parameters().id(),
                 stream.time_base()
             );
-            state.input_stream_map.push(stream.clone());
+            state.input_streams.push(stream.clone());
         }
 
         state.input_task = Some(AvInputTask::new());
@@ -340,8 +404,9 @@ struct BusState {
     input_config: Option<InputConfig>,
     output_config: HashMap<String, OutputConfig>,
     input_task: Option<AvInputTask>,
-    input_stream_map: Vec<AvStream>,
+    input_streams: Vec<AvStream>,
     decoder_tasks: HashMap<usize, DecoderTask>,
+    encoder_tasks: HashMap<usize, EncoderTask>,
 }
 
 impl BusState {
@@ -350,8 +415,9 @@ impl BusState {
             input_config: None,
             output_config: HashMap::new(),
             input_task: None,
-            input_stream_map: Vec::new(),
+            input_streams: Vec::new(),
             decoder_tasks: HashMap::new(),
+            encoder_tasks: HashMap::new(),
         }
     }
 }
@@ -378,16 +444,46 @@ pub enum InputConfig {
     Raw { sink: Arc<RawSinkSource> },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputAvType {
+    Video,
+    Audio,
+}
+
 pub struct OutputConfig {
     pub id: String,
     pub dest: OutputDest,
+    pub av_type: OutputAvType,
     pub encode: Option<EncodeConfig>,
 }
 
+impl OutputConfig {
+    pub fn new(id: String, av_type: OutputAvType, dest: OutputDest) -> Self {
+        Self {
+            id,
+            dest,
+            av_type,
+            encode: None,
+        }
+    }
+
+    pub fn with_encode(mut self, encode: EncodeConfig) -> Self {
+        self.encode = Some(encode);
+        self
+    }
+}
+
 pub enum OutputDest {
+    ///! Mux to a network stream (no seekable), some times called live streaming
+    ///! eg: rtmp://localhost:1935/live/stream
+    ///! eg: udp://[IP_ADDRESS]
+    ///! eg: tcp://[IP_ADDRESS]
     Net { url: String },
+    /// Mux to a file (seekable). Produces standard MP4 that any player can open.
     File { path: String },
+    /// Raw video frames (only support decode, no encoding)
     Raw,
+    /// Mux to a stream (no seekable)
     Mux { format: String },
 }
 

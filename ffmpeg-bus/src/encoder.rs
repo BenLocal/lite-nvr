@@ -80,6 +80,18 @@ pub struct Settings {
     pub pixel_format: ffmpeg_next::format::Pixel,
 }
 
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            width: 1920,
+            height: 1080,
+            keyframe_interval: 25,
+            codec: None,
+            pixel_format: ffmpeg_next::format::Pixel::YUV420P,
+        }
+    }
+}
+
 pub struct Encoder {
     stream: AvStream,
     inner: EncoderType,

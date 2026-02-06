@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    pin::Pin,
-    task::{Context, Poll},
-};
+use std::{collections::HashMap, pin::Pin};
 
 use futures::Stream;
 

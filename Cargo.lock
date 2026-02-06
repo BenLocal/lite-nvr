@@ -1010,6 +1010,7 @@ dependencies = [
  "bytes",
  "env_logger",
  "ez-ffmpeg",
+ "ffmpeg-bus",
  "ffmpeg-sys-next",
  "futures",
  "jpeg-encoder",
