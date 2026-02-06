@@ -87,11 +87,17 @@ impl AvOutput {
     }
 }
 
+pub struct PacketContext {
+    buffer: PacketBufferType,
+    current_pts: Option<i64>,
+    current_dts: Option<i64>,
+}
+
 pub struct AvOutputStream {
     inner: Output,
     have_written_header: bool,
     have_written_trailer: bool,
-    buffer: PacketBufferType,
+    context: Box<PacketContext>,
     receiver: std::sync::mpsc::Receiver<OutputMessage>,
 }
 
@@ -107,13 +113,22 @@ impl AvOutputStream {
     const PACKET_SIZE: usize = 1024;
 
     pub fn new(format: &str) -> anyhow::Result<Self> {
-        let inner = output_raw(format)?;
+        let mut inner = output_raw(format)?;
         let (sender, receiver) = std::sync::mpsc::channel();
+        let mut context = Box::new(PacketContext {
+            buffer: sender,
+            current_pts: None,
+            current_dts: None,
+        });
+
+        // Initialize the custom IO context
+        output_raw_packetized_buf_start(&mut inner, &mut context, Self::PACKET_SIZE);
+
         Ok(Self {
             inner,
             have_written_header: false,
             have_written_trailer: false,
-            buffer: sender,
+            context,
             receiver,
         })
     }
@@ -123,8 +138,18 @@ impl AvOutputStream {
             self.inner.write_header()?;
             self.have_written_header = true;
         }
+
+        // Set current PTS/DTS in context before writing
+        self.context.current_pts = packet.pts();
+        self.context.current_dts = packet.dts();
+
         let p = packet.get_mut();
         p.write(&mut self.inner)?;
+
+        // Clear PTS/DTS after writing
+        self.context.current_pts = None;
+        self.context.current_dts = None;
+
         Ok(())
     }
 
@@ -133,6 +158,8 @@ impl AvOutputStream {
             self.have_written_trailer = true;
             self.inner.write_trailer()?;
         }
+        // Clean up the custom IO context
+        output_raw_packetized_buf_end(&mut self.inner);
         Ok(())
     }
 }
@@ -197,7 +224,7 @@ fn output_raw(format: &str) -> anyhow::Result<Output> {
 /// * `max_packet_size` - Maximum size per packet.
 pub fn output_raw_packetized_buf_start(
     output: &mut Output,
-    packet_buffer: &mut PacketBufferType,
+    packet_context: &mut Box<PacketContext>,
     max_packet_size: usize,
 ) {
     unsafe {
@@ -209,9 +236,9 @@ pub fn output_raw_packetized_buf_start(
             max_packet_size.try_into().unwrap(),
             // Set stream to WRITE.
             1,
-            // Pass on a pointer *UNSAFE* to the packet buffer, assuming the packet buffer will live
+            // Pass on a pointer *UNSAFE* to the packet context, assuming the packet context will live
             // long enough.
-            packet_buffer as *mut PacketBufferType as *mut std::ffi::c_void,
+            packet_context.as_mut() as *mut PacketContext as *mut std::ffi::c_void,
             // No `read_packet`.
             None,
             // Passthrough for `write_packet`.
@@ -270,16 +297,16 @@ extern "C" fn output_raw_buf_start_callback(
     buffer_size: i32,
 ) -> i32 {
     unsafe {
-        // Acquire a reference to the packet buffer transmuted from the `opaque` gotten through
+        // Acquire a reference to the packet context transmuted from the `opaque` gotten through
         // `libavformat`.
-        let packet_buffer: &mut PacketBufferType = &mut *(opaque as *mut PacketBufferType);
-        // Push the current packet onto the packet buffer.
+        let packet_context: &mut PacketContext = &mut *(opaque as *mut PacketContext);
+        // Push the current packet onto the packet buffer with PTS/DTS.
         let buf = std::slice::from_raw_parts(buffer, buffer_size as usize);
         let data = Bytes::copy_from_slice(buf);
-        let _ = packet_buffer.send(OutputMessage {
-            data: data,
-            pts: None,
-            dts: None,
+        let _ = packet_context.buffer.send(OutputMessage {
+            data,
+            pts: packet_context.current_pts,
+            dts: packet_context.current_dts,
         });
     }
 
