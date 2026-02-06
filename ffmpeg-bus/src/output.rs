@@ -8,15 +8,15 @@ use futures::Stream;
 
 use crate::{packet::RawPacket, stream::AvStream};
 use bytes::Bytes;
-use std::ffi::CString;
 use ffmpeg_next::{
     Dictionary, Rational,
     ffi::{
-        av_opt_set, av_free, av_malloc, avformat_alloc_output_context2, avio_alloc_context,
-        avio_flush, AVIOContext, AV_OPT_SEARCH_CHILDREN,
+        AV_OPT_SEARCH_CHILDREN, AVIOContext, av_free, av_malloc, av_opt_set,
+        avformat_alloc_output_context2, avio_alloc_context, avio_flush,
     },
     format::context::Output,
 };
+use std::ffi::CString;
 
 pub struct AvOutput {
     inner: Output,

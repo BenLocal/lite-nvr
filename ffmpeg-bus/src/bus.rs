@@ -43,9 +43,9 @@ impl Bus {
                     break;
                 },
                 Some(cmd) = rx.recv() => {
-                   if let Err(e) = Self::inner_command_handler(&mut state, cmd).await {
-                    log::error!("inner_command_handler error: {:#?}", e);
-                   }
+                    if let Err(e) = Self::inner_command_handler(&mut state, cmd).await {
+                        log::error!("inner_command_handler error: {:#?}", e);
+                    }
                 },
             }
         }
@@ -71,29 +71,45 @@ impl Bus {
             BusCommand::AddOutput { output, result } => {
                 let id = &output.id;
                 if state.output_config.contains_key(id) {
+                    let _ = result.send(Err(anyhow::anyhow!("output already exists")));
                     return Err(anyhow::anyhow!("output already exists"));
                 }
 
                 // try to start input task
                 if state.input_task.is_none() && state.input_config.is_some() {
-                    Self::start_input_task(state).await?;
+                    if let Err(e) = Self::start_input_task(state).await {
+                        let msg = format!("{:#}", e);
+                        let _ = result.send(Err(anyhow::anyhow!("{}", msg)));
+                        return Err(anyhow::anyhow!("{}", msg));
+                    }
                 }
 
-                let stream = match &output.dest {
-                    OutputDest::Raw => Self::create_decoder_raw_output_stream(state).await?,
-                    OutputDest::File { path } => {
-                        Self::create_mux_to_file(state, path).await?
-                    }
+                let stream_result = match &output.dest {
+                    OutputDest::Raw => Self::create_decoder_raw_output_stream(state).await,
+                    OutputDest::File { path } => Self::create_mux_to_file(state, path).await,
                     OutputDest::Mux { format } => {
-                        Self::create_mux_output_stream(state, format).await?
+                        Self::create_mux_output_stream(state, format).await
                     }
-                    _ => return Err(anyhow::anyhow!("unsupported output destination")),
+                    _ => {
+                        let e = anyhow::anyhow!("unsupported output destination");
+                        let _ = result.send(Err(anyhow::anyhow!("unsupported output destination")));
+                        return Err(e);
+                    }
                 };
 
-                state.output_config.insert(id.clone(), output);
-                result
-                    .send(Ok(stream))
-                    .map_err(|_| anyhow::anyhow!("send result error: receiver dropped"))?;
+                match stream_result {
+                    Ok(stream) => {
+                        state.output_config.insert(id.clone(), output);
+                        result
+                            .send(Ok(stream))
+                            .map_err(|_| anyhow::anyhow!("send result error: receiver dropped"))?;
+                    }
+                    Err(e) => {
+                        let msg = format!("{:#}", e);
+                        let _ = result.send(Err(anyhow::anyhow!("{}", msg)));
+                        return Err(anyhow::anyhow!("{}", msg));
+                    }
+                }
             }
         }
 
@@ -161,23 +177,25 @@ impl Bus {
             .iter()
             .find(|s| s.is_video())
             .ok_or(anyhow::anyhow!("no video stream in input"))?;
-
+        let video_stream_index = video_stream.index();
         let mut stream = AvOutputStream::new(format)?;
-        stream.add_stream(video_stream)?;
-        let (mut writer, reader) = stream.into_split();
+        stream.add_stream(&video_stream)?;
+        let (writer, reader) = stream.into_split();
 
         tokio::spawn(async move {
+            let mut writer = writer;
             while let Ok(cmd) = input_receiver.recv().await {
                 match cmd {
                     RawPacketCmd::Data(packet) => {
-                        if let Err(e) = writer.write_packet(packet) {
-                            log::error!("mux write_packet error: {:#?}", e);
+                        if packet.index() == video_stream_index {
+                            if let Err(e) = writer.write_packet(packet) {
+                                log::error!("mux write_packet error: {:#?}", e);
+                            }
                         }
                     }
                     RawPacketCmd::EOF => break,
                 }
             }
-
             if let Err(e) = writer.finish() {
                 log::error!("mux finish error: {:#?}", e);
             }
@@ -425,3 +443,7 @@ impl std::hash::Hash for EncodeConfig {
         self.pixel_format.hash(state);
     }
 }
+
+#[cfg(test)]
+#[path = "bus_test.rs"]
+mod bus_test;

@@ -5,13 +5,12 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug executable 'ffmpeg-bus'",
+            "name": "Debug unit tests in library 'ffmpeg_bus'",
             "type": "lldb",
             "request": "launch",
             "cargo": {
                 "args": [
-                    "run",
-                    "--bin=ffmpeg-bus",
+                    "test",
                     "--package=ffmpeg-bus"
                 ],
                 "env": {
@@ -19,8 +18,7 @@
                     "RUST_BACKTRACE": "1",
                     "RUST_LOG": "debug"
                 }
-            },
-            "args": []
+            }
         },
         {
             "name": "Debug executable 'lite-nvr'",

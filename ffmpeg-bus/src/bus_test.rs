@@ -1,0 +1,217 @@
+use std::path::{Path, PathBuf};
+
+use futures::StreamExt;
+use tokio::io::AsyncWriteExt as _;
+
+use crate::bus::{Bus, InputConfig, OutputConfig, OutputDest};
+use crate::metadata::probe;
+
+/// Path to scripts/test.mp4 relative to workspace root (parent of ffmpeg-bus). Works regardless of cwd.
+fn test_mp4_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("scripts")
+        .join("test.mp4")
+}
+
+/// Requires scripts/test.mp4 (~5s, 10fps).
+#[tokio::test]
+async fn test_mux_h264() -> anyhow::Result<()> {
+    // try delete output.h264
+    if Path::new("output.h264").exists() {
+        std::fs::remove_file("output.h264").unwrap();
+    }
+
+    let input_path = test_mp4_path();
+    if !input_path.exists() {
+        eprintln!("skip: {} not found", input_path.display());
+        return Ok(());
+    }
+
+    let bus = Bus::new("a");
+
+    let input_config = InputConfig::File {
+        path: input_path.to_string_lossy().into_owned(),
+    };
+    bus.add_input(input_config).await?;
+
+    // Mux to raw H.264 and write to output.h264
+    let output_config = OutputConfig {
+        id: "mux_h264".to_string(),
+        dest: OutputDest::Mux {
+            format: "h264".to_string(),
+        },
+        encode: None,
+    };
+    let mut stream = bus.add_output(output_config).await?;
+
+    let mut file = tokio::fs::File::create("output.h264").await?;
+    while let Some(frame) = stream.next().await {
+        if let Some(frame) = frame {
+            file.write_all(&frame.data).await?;
+        }
+    }
+    file.sync_all().await?;
+
+    // Verify output.h264: decodable and frame count ~50 (5s @ 10fps)
+    verify_output_h264("output.h264", 5, 10).await?;
+
+    Ok(())
+}
+
+/// Requires scripts/test.mp4 (~5s, 10fps).
+#[tokio::test]
+async fn test_mux_only_video_mp4() -> anyhow::Result<()> {
+    let input_path = test_mp4_path();
+    if !input_path.exists() {
+        eprintln!("skip: {} not found", input_path.display());
+        return Ok(());
+    }
+
+    let bus = Bus::new("a");
+
+    let input_config = InputConfig::File {
+        path: input_path.to_string_lossy().into_owned(),
+    };
+    bus.add_input(input_config).await?;
+
+    let output_config = OutputConfig {
+        id: "mux_h264".to_string(),
+        dest: OutputDest::File {
+            path: "output.mp4".to_string(),
+        },
+        encode: None,
+    };
+    let _stream = bus.add_output(output_config).await?;
+
+    // Source is ~5s @ 10fps; wait for mux to finish (read + write) then verify
+    tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+    verify_output_mp4("output.mp4", Some(5.0), Some(10)).await?;
+    Ok(())
+}
+
+/// Verifies output.h264: openable with ffmpeg_next and packet count within ±20% of duration_sec * fps.
+async fn verify_output_h264(path: &str, duration_sec: u32, fps: u32) -> anyhow::Result<()> {
+    let path = Path::new(path);
+    assert!(path.exists(), "output.h264 should exist");
+    let size = std::fs::metadata(path)?.len();
+    assert!(size > 0, "output.h264 should not be empty");
+
+    // 1. Open and read all packets (validates file is decodable)
+    let path_str = path.to_str().unwrap();
+    let mut input = ffmpeg_next::format::input(path_str)
+        .map_err(|e| anyhow::anyhow!("output.h264 should open without error: {}", e))?;
+
+    let nb_streams = input.nb_streams();
+    assert!(
+        nb_streams >= 1,
+        "output.h264 should have at least one stream"
+    );
+
+    // 2. Count packets in the first (video) stream; raw H.264 has a single stream
+    let video_stream_index = 0u32;
+    let mut packet_count: u32 = 0;
+    for (stream, _packet) in input.packets() {
+        if stream.index() == video_stream_index as usize {
+            packet_count += 1;
+        }
+    }
+
+    let expected_frames = duration_sec * fps;
+    let min_frames = expected_frames.saturating_sub(expected_frames / 5);
+    let max_frames = expected_frames + expected_frames / 5;
+
+    assert!(
+        packet_count >= min_frames && packet_count <= max_frames,
+        "output.h264 packet count {} should be in [{}, {}] (expected ~{} for {}s @ {}fps)",
+        packet_count,
+        min_frames,
+        max_frames,
+        expected_frames,
+        duration_sec,
+        fps
+    );
+
+    Ok(())
+}
+
+/// Verifies output.mp4: valid container, has duration, and at least one video stream.
+/// Optionally checks duration and packet count when expected_duration_sec and expected_fps are given.
+async fn verify_output_mp4(
+    path: &str,
+    expected_duration_sec: Option<f64>,
+    expected_fps: Option<u32>,
+) -> anyhow::Result<()> {
+    let path = Path::new(path);
+    assert!(path.exists(), "output.mp4 should exist");
+    let size = std::fs::metadata(path)?.len();
+    assert!(size > 0, "output.mp4 should not be empty");
+
+    let info = probe(path.to_str().unwrap())
+        .map_err(|e| anyhow::anyhow!("output.mp4 should be a valid container: {}", e))?;
+
+    assert!(
+        info.format.nb_streams >= 1,
+        "output.mp4 should have at least one stream, got {}",
+        info.format.nb_streams
+    );
+
+    let has_video = info.streams.iter().any(|s| s.codec_type == "video");
+    assert!(
+        has_video,
+        "output.mp4 should have at least one video stream"
+    );
+
+    let duration_sec = info
+        .format
+        .duration_sec
+        .ok_or_else(|| anyhow::anyhow!("output.mp4 should have duration metadata"))?;
+    assert!(
+        duration_sec > 0.0,
+        "output.mp4 duration should be positive, got {}",
+        duration_sec
+    );
+
+    if let (Some(expected_d), Some(expected_fps)) = (expected_duration_sec, expected_fps) {
+        let min_d = expected_d * 0.8;
+        let max_d = expected_d * 1.2;
+        assert!(
+            duration_sec >= min_d && duration_sec <= max_d,
+            "output.mp4 duration {}s should be in [{}, {}] (expected ~{}s)",
+            duration_sec,
+            min_d,
+            max_d,
+            expected_d
+        );
+
+        let expected_frames = (expected_d * expected_fps as f64).round() as u32;
+        let mut input = ffmpeg_next::format::input(path.to_str().unwrap())?;
+        let video_index = info
+            .streams
+            .iter()
+            .find(|s| s.codec_type == "video")
+            .map(|s| s.index)
+            .unwrap();
+        let mut packet_count: u32 = 0;
+        for (stream, _) in input.packets() {
+            if stream.index() == video_index {
+                packet_count += 1;
+            }
+        }
+        let min_frames = expected_frames.saturating_sub(expected_frames / 5);
+        let max_frames = expected_frames + expected_frames / 5;
+        assert!(
+            packet_count >= min_frames && packet_count <= max_frames,
+            "output.mp4 video packet count {} should be in [{}, {}] (expected ~{} for {}s @ {}fps)",
+            packet_count,
+            min_frames,
+            max_frames,
+            expected_frames,
+            expected_d,
+            expected_fps
+        );
+    }
+
+    Ok(())
+}
