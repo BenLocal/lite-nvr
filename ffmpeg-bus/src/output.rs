@@ -23,6 +23,8 @@ pub struct AvOutput {
     interleaved: bool,
     have_written_header: bool,
     have_written_trailer: bool,
+    /// output stream index -> last DTS written (enforce monotonically increasing DTS)
+    last_dts: HashMap<usize, i64>,
 }
 
 /// Allocate RTSP output context without opening AVIO. The RTSP muxer will open
@@ -80,6 +82,7 @@ impl AvOutput {
             interleaved: false,
             have_written_header: false,
             have_written_trailer: false,
+            last_dts: HashMap::new(),
         })
     }
 
@@ -120,10 +123,43 @@ impl AvOutput {
         let time_base = packet.time_base();
 
         let p = packet.get_mut();
+        // Ensure PTS/DTS are set (FFmpeg deprecates unset timestamps)
+        let pts = p.pts();
+        let dts = p.dts();
+        match (pts, dts) {
+            (None, None) => {
+                p.set_pts(Some(0));
+                p.set_dts(Some(0));
+            }
+            (None, Some(d)) => {
+                p.set_pts(Some(d));
+            }
+            (Some(_), None) => {
+                p.set_dts(p.pts());
+            }
+            (Some(_), Some(_)) => {}
+        }
+
         p.set_stream(out_idx);
         p.set_position(-1);
         let out_time_base = self.inner.stream(out_idx).unwrap().time_base();
         p.rescale_ts(time_base, out_time_base);
+
+        // Enforce monotonically increasing DTS (muxer requirement)
+        let dts = p.dts().unwrap_or(0);
+        let last = self.last_dts.get(&out_idx).copied();
+        let new_dts = match last {
+            Some(last) if dts <= last => last + 1,
+            _ => dts,
+        };
+        if new_dts != dts {
+            p.set_dts(Some(new_dts));
+            if p.pts().map(|x| x < new_dts).unwrap_or(true) {
+                p.set_pts(Some(new_dts));
+            }
+        }
+        self.last_dts.insert(out_idx, new_dts);
+
         if self.interleaved {
             p.write_interleaved(&mut self.inner)?;
         } else {
