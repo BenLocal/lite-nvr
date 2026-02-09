@@ -25,13 +25,54 @@ pub struct AvOutput {
     have_written_trailer: bool,
 }
 
+/// Allocate RTSP output context without opening AVIO. The RTSP muxer will open
+/// the URL when write_header() is called (FFmpeg design: do not call avio_open for RTSP).
+fn output_rtsp_alloc_only(url: &str) -> anyhow::Result<Output> {
+    unsafe {
+        let mut output_ptr = std::ptr::null_mut();
+        let url_c = CString::new(url).map_err(|e| anyhow::anyhow!("url CString: {}", e))?;
+        let format = CString::new("rtsp").unwrap();
+        match avformat_alloc_output_context2(
+            &mut output_ptr,
+            std::ptr::null_mut(),
+            format.as_ptr(),
+            url_c.as_ptr(),
+        ) {
+            0 => Ok(Output::wrap(output_ptr)),
+            e => Err(anyhow::anyhow!(
+                "avformat_alloc_output_context2(rtsp, url={:?}): {}",
+                url,
+                e
+            )),
+        }
+    }
+}
+
 impl AvOutput {
     pub fn new(
         url: &str,
-        _format: Option<String>,
-        _options: Option<Dictionary>,
+        format: Option<&str>,
+        options: Option<Dictionary>,
     ) -> anyhow::Result<Self> {
-        let output = ffmpeg_next::format::output(url)?;
+        let output = match (format, options) {
+            // RTSP: do not call avio_open; muxer opens URL in write_header().
+            (Some("rtsp"), _) => output_rtsp_alloc_only(url)
+                .map_err(|e| anyhow::anyhow!("output_rtsp_alloc_only(url={:?}): {}", url, e))?,
+            (Some(fmt), Some(opts)) => ffmpeg_next::format::output_as_with(url, fmt, opts)
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "output_as_with(url={:?}, format={:?}): {:?}",
+                        url,
+                        fmt,
+                        e
+                    )
+                })?,
+            (Some(fmt), None) => ffmpeg_next::format::output_as(url, fmt).map_err(|e| {
+                anyhow::anyhow!("output_as(url={:?}, format={:?}): {:?}", url, fmt, e)
+            })?,
+            (None, _) => ffmpeg_next::format::output(url)
+                .map_err(|e| anyhow::anyhow!("output(url={:?}): {:?}", url, e))?,
+        };
         Ok(Self {
             inner: output,
             output_streams: HashMap::new(),
@@ -44,9 +85,13 @@ impl AvOutput {
 
     pub fn add_stream(&mut self, stream: &AvStream) -> anyhow::Result<()> {
         let codec_parameters = stream.parameters();
+        let codec_id = codec_parameters.id();
+        let encoder = ffmpeg_next::encoder::find(codec_id)
+            .ok_or_else(|| anyhow::anyhow!("encoder not found for codec_id {:?}", codec_id))?;
         let mut writer_stream = self
             .inner
-            .add_stream(ffmpeg_next::encoder::find(codec_parameters.id()))?;
+            .add_stream(encoder)
+            .map_err(|e| anyhow::anyhow!("add_stream(codec_id={:?}): {:?}", codec_id, e))?;
         writer_stream.set_parameters(codec_parameters.clone());
         let out_idx = writer_stream.index();
         self.output_stream_index.insert(stream.index(), out_idx);

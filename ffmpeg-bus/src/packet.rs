@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use bytes::Bytes;
 use ffmpeg_next::Rational;
 
 pub type RawPacketSender = tokio::sync::broadcast::Sender<RawPacketCmd>;
@@ -32,6 +33,17 @@ impl RawPacket {
 
     pub fn index(&self) -> usize {
         self.packet.stream()
+    }
+
+    pub fn data(&self) -> Bytes {
+        self.packet
+            .data()
+            .map(Bytes::copy_from_slice)
+            .unwrap_or_default()
+    }
+
+    pub fn is_key(&self) -> bool {
+        self.packet.is_key()
     }
 
     pub fn time_base(&self) -> Rational {

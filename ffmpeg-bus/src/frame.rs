@@ -4,6 +4,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use crate::output::OutputMessage;
+use crate::packet::RawPacket;
 
 pub type RawFrameSender = tokio::sync::broadcast::Sender<RawFrameCmd>;
 pub type RawFrameReceiver = tokio::sync::broadcast::Receiver<RawFrameCmd>;
@@ -204,6 +205,21 @@ impl From<OutputMessage> for VideoFrame {
             pts: value.pts.unwrap_or(0),
             dts: value.dts.unwrap_or(0),
             is_key: false,
+            codec_id: 0,
+        }
+    }
+}
+
+impl From<RawPacket> for VideoFrame {
+    fn from(packet: RawPacket) -> Self {
+        Self {
+            data: packet.data(),
+            width: 0,
+            height: 0,
+            format: 0,
+            pts: packet.pts().unwrap_or(0),
+            dts: packet.dts().unwrap_or(0),
+            is_key: packet.is_key(),
             codec_id: 0,
         }
     }

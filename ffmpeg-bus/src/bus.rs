@@ -4,6 +4,8 @@ use futures::{Stream, StreamExt};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;
 
+use ffmpeg_next::Dictionary;
+
 use crate::{
     decoder::{Decoder, DecoderTask},
     encoder::{Encoder, EncoderTask, Settings},
@@ -110,13 +112,15 @@ impl Bus {
                     OutputDest::File { path } => {
                         Self::create_mux_to_file(state, path, input_stream_index).await
                     }
+                    OutputDest::Net { url, format } => {
+                        Self::create_mux_to_net(state, url, format.as_deref(), input_stream_index)
+                            .await
+                    }
                     OutputDest::Mux { format } => {
                         Self::create_mux_output_stream(state, format, input_stream_index).await
                     }
-                    _ => {
-                        let e = anyhow::anyhow!("unsupported output destination");
-                        let _ = result.send(Err(anyhow::anyhow!("unsupported output destination")));
-                        return Err(e);
+                    OutputDest::Encoded => {
+                        Self::create_encoded_output_stream(state, input_stream_index).await
                     }
                 };
 
@@ -140,17 +144,22 @@ impl Bus {
     }
 
     fn try_decoder(output: &OutputConfig) -> anyhow::Result<bool> {
-        match output.dest {
+        match &output.dest {
             OutputDest::Raw => Ok(true),
             OutputDest::File { .. } => Ok(false),
             OutputDest::Mux { .. } => Ok(false),
             OutputDest::Net { .. } => Ok(true),
+            OutputDest::Encoded => Ok(true),
         }
     }
 
     fn try_encoder(output: &OutputConfig) -> anyhow::Result<bool> {
         if let OutputDest::Raw = output.dest {
             return Ok(false);
+        }
+
+        if let OutputDest::Encoded = output.dest {
+            return Ok(true);
         }
 
         if output.encode.is_some() {
@@ -205,6 +214,95 @@ impl Bus {
         });
 
         Ok(Box::pin(futures::stream::empty::<Option<VideoFrame>>()))
+    }
+
+    /// Mux to a network URL (e.g. rtmp://, rtsp://). Remux only (input packets).
+    /// format: e.g. Some("rtsp"), Some("flv"); None = let FFmpeg guess from URL.
+    async fn create_mux_to_net(
+        state: &mut BusState,
+        url: &str,
+        format: Option<&str>,
+        input_stream_index: usize,
+    ) -> anyhow::Result<VideoRawFrameStream> {
+        let mut input_receiver = state
+            .input_task
+            .as_ref()
+            .ok_or(anyhow::anyhow!("input task not found"))?
+            .subscribe();
+
+        let target_stream = state
+            .input_streams
+            .iter()
+            .find(|s| s.index() == input_stream_index)
+            .ok_or(anyhow::anyhow!("no matching stream in input"))?
+            .clone();
+        let target_stream_index = target_stream.index();
+        let url_owned = url.to_string();
+
+        // RTSP output often needs rtsp_transport=tcp for avio_open2 to succeed
+        let options = match format {
+            Some("rtsp") => {
+                let mut opts = Dictionary::new();
+                opts.set("rtsp_transport", "tcp");
+                Some(opts)
+            }
+            _ => None,
+        };
+
+        let mut output = AvOutput::new(url, format, options).map_err(|e| {
+            anyhow::anyhow!(
+                "create_mux_to_net AvOutput::new(url={:?}, format={:?}): {:?}",
+                url,
+                format,
+                e
+            )
+        })?;
+        output
+            .add_stream(&target_stream)
+            .map_err(|e| anyhow::anyhow!("create_mux_to_net add_stream: {:?}", e))?;
+
+        tokio::spawn(async move {
+            let mut output = output;
+            while let Ok(cmd) = input_receiver.recv().await {
+                match cmd {
+                    RawPacketCmd::Data(packet) => {
+                        if packet.index() == target_stream_index {
+                            if let Err(e) = output.write_packet(target_stream_index, packet) {
+                                log::error!("mux to net write_packet error: {:#?}", e);
+                            }
+                        }
+                    }
+                    RawPacketCmd::EOF => break,
+                }
+            }
+            if let Err(e) = output.finish() {
+                log::error!("mux to net finish error: {:#?}", e);
+            }
+            log::info!("mux to net finished: {}", url_owned);
+        });
+
+        Ok(Box::pin(futures::stream::empty::<Option<VideoFrame>>()))
+    }
+
+    async fn create_encoded_output_stream(
+        state: &mut BusState,
+        input_stream_index: usize,
+    ) -> anyhow::Result<VideoRawFrameStream> {
+        let encoder_receiver = state
+            .encoder_tasks
+            .get(&input_stream_index)
+            .ok_or(anyhow::anyhow!("encoder task not found"))?
+            .subscribe();
+
+        let stream = BroadcastStream::new(encoder_receiver).filter_map(|r| async move {
+            match r {
+                Ok(RawPacketCmd::Data(packet)) => Some(Some(VideoFrame::from(packet))),
+                Ok(RawPacketCmd::EOF) => Some(None),
+                Err(_) => None,
+            }
+        });
+
+        Ok(Box::pin(stream))
     }
 
     async fn create_mux_output_stream(
@@ -476,15 +574,17 @@ impl OutputConfig {
 pub enum OutputDest {
     ///! Mux to a network stream (no seekable), some times called live streaming
     ///! eg: rtmp://localhost:1935/live/stream
-    ///! eg: udp://[IP_ADDRESS]
-    ///! eg: tcp://[IP_ADDRESS]
-    Net { url: String },
+    ///! eg: rtsp://host:8554/path
+    ///! format: e.g. "rtsp", "flv" (required for URL-only outputs; None = guess from URL)
+    Net { url: String, format: Option<String> },
     /// Mux to a file (seekable). Produces standard MP4 that any player can open.
     File { path: String },
     /// Raw video frames (only support decode, no encoding)
     Raw,
     /// Mux to a stream (no seekable)
     Mux { format: String },
+    /// Stream of encoded packets (e.g. for RawPacket sink). Requires encoder.
+    Encoded,
 }
 
 #[derive(Clone, Debug)]

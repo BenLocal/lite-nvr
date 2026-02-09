@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use super::{build_output, dest_name, Pipe};
+use super::{dest_name, Pipe};
 use crate::media::{
     stream::RawSinkSource,
-    types::{EncodeConfig, InputConfig, OutputConfig, OutputDest, PipeConfig, VideoRawFrame},
+    types::{EncodeConfig, InputConfig, OutputDest, PipeConfig, VideoRawFrame},
 };
 
 #[test]
@@ -278,99 +278,6 @@ fn test_pipe_cancel() {
 
     pipe.cancel();
     assert!(pipe.is_cancelled());
-}
-
-// ------------------------------------------------------------------------
-// build_output Tests
-// ------------------------------------------------------------------------
-
-#[test]
-fn test_build_output_network_remux() {
-    let config = OutputConfig {
-        dest: OutputDest::Network {
-            url: "rtmp://localhost/live/test".to_string(),
-            format: "flv".to_string(),
-        },
-        encode: None,
-    };
-
-    let output = build_output(&config);
-    assert!(output.is_some());
-}
-
-#[test]
-fn test_build_output_network_with_encode() {
-    let config = OutputConfig {
-        dest: OutputDest::Network {
-            url: "rtmp://localhost/live/test".to_string(),
-            format: "flv".to_string(),
-        },
-        encode: Some(EncodeConfig {
-            codec: "h264".to_string(),
-            width: Some(1280),
-            height: Some(720),
-            bitrate: Some(2_000_000),
-            preset: Some("fast".to_string()),
-            pixel_format: None,
-        }),
-    };
-
-    let output = build_output(&config);
-    assert!(output.is_some());
-}
-
-#[test]
-fn test_build_output_raw_frame() {
-    let sink = Arc::new(RawSinkSource::new());
-    let config = OutputConfig {
-        dest: OutputDest::RawFrame { sink },
-        encode: None,
-    };
-
-    let output = build_output(&config);
-    assert!(output.is_some());
-}
-
-#[test]
-fn test_build_output_raw_packet() {
-    let sink = Arc::new(RawSinkSource::new());
-    let config = OutputConfig {
-        dest: OutputDest::RawPacket { sink },
-        encode: Some(EncodeConfig::default()),
-    };
-
-    let output = build_output(&config);
-    assert!(output.is_some());
-}
-
-#[test]
-fn test_build_output_raw_packet_format_h264() {
-    let sink = Arc::new(RawSinkSource::new());
-    let config = OutputConfig {
-        dest: OutputDest::RawPacket { sink },
-        encode: Some(EncodeConfig {
-            codec: "h264".to_string(),
-            ..Default::default()
-        }),
-    };
-
-    let output = build_output(&config);
-    assert!(output.is_some());
-}
-
-#[test]
-fn test_build_output_raw_packet_format_hevc() {
-    let sink = Arc::new(RawSinkSource::new());
-    let config = OutputConfig {
-        dest: OutputDest::RawPacket { sink },
-        encode: Some(EncodeConfig {
-            codec: "hevc".to_string(),
-            ..Default::default()
-        }),
-    };
-
-    let output = build_output(&config);
-    assert!(output.is_some());
 }
 
 // ------------------------------------------------------------------------

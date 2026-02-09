@@ -3,18 +3,11 @@ use std::sync::{
     Arc,
 };
 
-use ez_ffmpeg::{
-    core::{
-        context::{input::Input, output::Output},
-        filter::{
-            frame_filter::FrameFilter, frame_filter_context::FrameFilterContext,
-            frame_pipeline_builder::FramePipelineBuilder,
-        },
-        scheduler::ffmpeg_scheduler::Running,
-    },
-    AVMediaType, FfmpegContext, FfmpegScheduler, Frame,
+use ffmpeg_bus::bus::{
+    Bus as FbBus, InputConfig as FbInputConfig, OutputAvType, OutputConfig as FbOutputConfig,
+    OutputDest as FbOutputDest,
 };
-use ffmpeg_sys_next::AVFrame;
+use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::media::{
@@ -22,7 +15,7 @@ use crate::media::{
     types::{EncodeConfig, InputConfig, OutputConfig, OutputDest, PipeConfig, VideoRawFrame},
 };
 
-/// Pipeline: Optimized media processing using ez-ffmpeg
+/// Pipeline: media processing using ffmpeg-bus
 pub struct Pipe {
     config: PipeConfig,
     cancel: CancellationToken,
@@ -66,319 +59,145 @@ impl Pipe {
 
         log::info!("Pipe: starting with input {}", input_url);
 
+        let bus = FbBus::new("pipe");
         let cancel = self.cancel.clone();
-        let outputs = self.config.outputs.clone();
 
-        // Run FFmpeg in a blocking task
-        let handle = tokio::task::spawn_blocking(move || {
-            run_ffmpeg_pipeline(&input_url, &outputs, cancel);
-        });
+        // Map and add input
+        let fb_input = to_fb_input(&self.config.input);
+        if let Err(e) = bus.add_input(fb_input).await {
+            log::error!("Pipe: add_input failed: {:#}", e);
+            self.started.store(false, Ordering::Relaxed);
+            return;
+        }
 
-        // Wait for completion or cancellation
-        tokio::select! {
-            _ = handle => {
-                log::info!("Pipe: pipeline finished");
+        // Add each output and optionally forward stream to sink
+        let mut join_handles = Vec::new();
+        for (i, output_config) in self.config.outputs.iter().enumerate() {
+            let id = format!("out_{}", i);
+            let fb_output = match to_fb_output(&id, output_config) {
+                Some(o) => o,
+                None => {
+                    log::warn!(
+                        "Pipe: skip unsupported output {:?}",
+                        dest_name(&output_config.dest)
+                    );
+                    continue;
+                }
+            };
+
+            match bus.add_output(fb_output).await {
+                Ok(stream) => {
+                    // RawFrame or RawPacket: forward stream to sink
+                    match &output_config.dest {
+                        OutputDest::RawFrame { sink } => {
+                            let sink = Arc::clone(sink);
+                            let handle = tokio::spawn(async move {
+                                forward_frame_stream_to_sink(stream, sink).await;
+                            });
+                            join_handles.push(handle);
+                        }
+                        OutputDest::RawPacket { sink } => {
+                            let sink = Arc::clone(sink);
+                            let handle = tokio::spawn(async move {
+                                forward_frame_stream_to_sink(stream, sink).await;
+                            });
+                            join_handles.push(handle);
+                        }
+                        OutputDest::Network { .. } => {}
+                    }
+                }
+                Err(e) => {
+                    log::warn!("Pipe: add_output {} failed: {:#}", id, e);
+                }
             }
-            _ = self.cancel.cancelled() => {
+        }
+
+        if join_handles.is_empty() && !self.config.outputs.is_empty() {
+            log::warn!("Pipe: no output task running");
+        }
+
+        // Wait for cancellation
+        tokio::select! {
+            _ = cancel.cancelled() => {
                 log::info!("Pipe: cancelled");
             }
+        }
+
+        bus.stop();
+        for h in join_handles {
+            let _ = h.await;
         }
 
         self.started.store(false, Ordering::Relaxed);
     }
 }
 
-/// Run the FFmpeg pipeline
-fn run_ffmpeg_pipeline(input_url: &str, outputs: &[OutputConfig], cancel: CancellationToken) {
-    // Build input
-    let input: Input = Input::new(input_url.to_string()).set_stream_loop(-1);
+fn to_fb_input(input: &InputConfig) -> FbInputConfig {
+    match input {
+        InputConfig::Network { url } => FbInputConfig::Net { url: url.clone() },
+        InputConfig::File { path } => FbInputConfig::File { path: path.clone() },
+    }
+}
 
-    // Build outputs
-    let mut ez_outputs: Vec<Output> = Vec::new();
+fn to_fb_output(id: &str, config: &OutputConfig) -> Option<FbOutputConfig> {
+    let av_type = OutputAvType::Video; // pipe only uses video for now
+    let dest = match &config.dest {
+        OutputDest::Network { url, format } => FbOutputDest::Net {
+            url: url.clone(),
+            format: Some(format.clone()),
+        },
+        OutputDest::RawFrame { .. } => FbOutputDest::Raw,
+        OutputDest::RawPacket { .. } => FbOutputDest::Encoded,
+    };
+    let mut fb = FbOutputConfig::new(id.to_string(), av_type, dest);
+    if let Some(ref e) = config.encode {
+        fb = fb.with_encode(to_fb_encode_config(e));
+    }
+    Some(fb)
+}
 
-    for output_config in outputs {
-        match build_output(output_config) {
-            Some(output) => ez_outputs.push(output),
-            None => {
-                log::warn!(
-                    "Pipe: failed to build output for {:?}",
-                    dest_name(&output_config.dest)
-                );
+fn to_fb_encode_config(e: &EncodeConfig) -> ffmpeg_bus::bus::EncodeConfig {
+    ffmpeg_bus::bus::EncodeConfig {
+        codec: e.codec.clone(),
+        width: e.width,
+        height: e.height,
+        bitrate: e.bitrate,
+        preset: e.preset.clone(),
+        pixel_format: e.pixel_format.clone(),
+    }
+}
+
+/// Forwards ffmpeg-bus VideoFrame stream to lite-nvr RawSinkSource (VideoRawFrame).
+async fn forward_frame_stream_to_sink(
+    mut stream: ffmpeg_bus::bus::VideoRawFrameStream,
+    sink: Arc<RawSinkSource>,
+) {
+    while let Some(opt) = stream.next().await {
+        if let Some(frame) = opt {
+            let vf = VideoRawFrame::new(
+                frame.data.to_vec(),
+                frame.width,
+                frame.height,
+                frame.format,
+                frame.pts,
+                frame.dts,
+                frame.is_key,
+                frame.codec_id,
+            );
+            if sink.writer.try_send(vf).is_err() {
+                break;
             }
         }
     }
-
-    if ez_outputs.is_empty() {
-        log::error!("Pipe: no valid outputs");
-        return;
-    }
-
-    // Build context
-    let context = match FfmpegContext::builder()
-        .input(input)
-        .outputs(ez_outputs)
-        .build()
-    {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            log::error!("Pipe: failed to build context: {}", e);
-            return;
-        }
-    };
-
-    // Start scheduler
-    let scheduler: FfmpegScheduler<Running> = match context.start() {
-        Ok(s) => s,
-        Err(e) => {
-            log::error!("Pipe: failed to start scheduler: {}", e);
-            return;
-        }
-    };
-
-    // Wait for completion or cancellation
-    loop {
-        if cancel.is_cancelled() {
-            log::info!("Pipe: stopping scheduler");
-            scheduler.stop();
-            break;
-        }
-
-        // Check if scheduler is still running
-        // ez-ffmpeg's wait() is blocking, so we use a short sleep and check
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        // Try to check completion status
-        // Note: ez-ffmpeg may not have a non-blocking check, so we rely on abort
-    }
-
-    log::info!("Pipe: run_ffmpeg_pipeline finished");
 }
 
-/// Build an ez-ffmpeg Output from OutputConfig
-pub fn build_output(config: &OutputConfig) -> Option<Output> {
-    let mut output = match &config.dest {
-        OutputDest::Network { url, format } => Output::new(url.clone()).set_format(format),
-        OutputDest::RawFrame { sink } => {
-            let sink_clone = sink.clone();
-
-            // Create a custom filter to capture frames
-            let frame_filter = RawFrameFilter::new(sink_clone);
-
-            // Build frame pipeline
-            let mut pipeline_builder: FramePipelineBuilder = AVMediaType::AVMEDIA_TYPE_VIDEO.into();
-            pipeline_builder = pipeline_builder.filter("raw-frame-sink", Box::new(frame_filter));
-
-            // Create output that writes to /dev/null but captures frames via filter
-            let output = Output::new_by_write_callback(move |_buf| {
-                // Discard the encoded data, we only want the raw frames
-                _buf.len() as i32
-            })
-            .set_format("rawvideo")
-            .add_frame_pipeline(pipeline_builder);
-            output
-        }
-        OutputDest::RawPacket { sink } => {
-            let sink_clone = sink.clone();
-            let codec_id = config
-                .encode
-                .as_ref()
-                .map(|e| match e.codec.as_str() {
-                    // AV_CODEC_ID_H264
-                    "h264" => 27,
-                    // AV_CODEC_ID_HEVC
-                    "hevc" | "h265" => 173,
-                    _ => 0,
-                })
-                .unwrap_or(0);
-
-            let width = config.encode.as_ref().and_then(|e| e.width).unwrap_or(0);
-            let height = config.encode.as_ref().and_then(|e| e.height).unwrap_or(0);
-
-            let mut output = Output::new_by_write_callback(move |buf| {
-                let frame = VideoRawFrame::new_encoded(buf.to_vec(), width, height, codec_id);
-                let _ = sink_clone.writer.try_send(frame);
-                buf.len() as i32
-            });
-            output
-        }
-    };
-
-    output = if let Some(encode_config) = &config.encode {
-        apply_encode_config(output, encode_config)
-    } else {
-        output.set_video_codec("copy").set_audio_codec("copy")
-    };
-
-    Some(output)
-}
-
-/// Apply encoding configuration to an Output
-fn apply_encode_config(mut output: Output, config: &EncodeConfig) -> Output {
-    // Set video codec
-    output = output.set_video_codec(&config.codec);
-
-    // Build video filter string for scaling
-    let mut video_filters = Vec::new();
-
-    if config.width.is_some() || config.height.is_some() {
-        let w = config
-            .width
-            .map(|v| v.to_string())
-            .unwrap_or("-1".to_string());
-        let h = config
-            .height
-            .map(|v| v.to_string())
-            .unwrap_or("-1".to_string());
-        video_filters.push(format!("scale={}:{}", w, h));
-    }
-
-    if let Some(ref pix_fmt) = config.pixel_format {
-        video_filters.push(format!("format={}", pix_fmt));
-    }
-
-    // Apply video filters if any
-    // Note: ez-ffmpeg uses filter_desc on the context builder, not on output directly
-    // For output-specific options, we use set_video_codec_opt
-
-    // Set bitrate
-    if let Some(bitrate) = config.bitrate {
-        output = output.set_video_codec_opt("b", format!("{}", bitrate));
-    }
-
-    // Set preset
-    if let Some(ref preset) = config.preset {
-        output = output.set_video_codec_opt("preset", preset);
-    }
-
-    output
-}
-
-/// Get destination name for logging
+/// Get destination name for logging (used by tests).
 pub fn dest_name(dest: &OutputDest) -> String {
     match dest {
         OutputDest::Network { url, .. } => url.clone(),
         OutputDest::RawFrame { .. } => "RawFrame".to_string(),
         OutputDest::RawPacket { .. } => "RawPacket".to_string(),
     }
-}
-
-/// Frame filter that captures decoded frames and sends them to a sink
-struct RawFrameFilter {
-    sink: Arc<RawSinkSource>,
-}
-
-impl RawFrameFilter {
-    fn new(sink: Arc<RawSinkSource>) -> Self {
-        Self { sink }
-    }
-}
-
-impl FrameFilter for RawFrameFilter {
-    fn media_type(&self) -> AVMediaType {
-        AVMediaType::AVMEDIA_TYPE_VIDEO
-    }
-
-    fn filter_frame(
-        &mut self,
-        frame: Frame,
-        _ctx: &FrameFilterContext,
-    ) -> Result<Option<Frame>, String> {
-        // Check if frame is valid
-        unsafe {
-            if frame.as_ptr().is_null() || frame.is_empty() {
-                return Ok(Some(frame));
-            }
-        }
-
-        // Extract frame data and create VideoRawFrame
-        if let Some(video_frame) = extract_video_raw_frame(&frame) {
-            let _ = self.sink.writer.try_send(video_frame);
-        }
-
-        // Pass through the frame for further processing
-        Ok(Some(frame))
-    }
-}
-
-/// Extract VideoRawFrame from a Frame
-fn extract_video_raw_frame(frame: &Frame) -> Option<VideoRawFrame> {
-    unsafe {
-        let ptr = frame.as_ptr();
-        if ptr.is_null() {
-            return None;
-        }
-
-        let av_frame = &*ptr;
-        let width = av_frame.width as u32;
-        let height = av_frame.height as u32;
-
-        if width == 0 || height == 0 {
-            return None;
-        }
-
-        let format = av_frame.format;
-        let pts = av_frame.pts;
-        let pkt_dts = av_frame.pkt_dts;
-        let key_frame = av_frame.key_frame != 0;
-
-        // Extract pixel data based on format (assuming YUV420P for now)
-        let data = extract_pixel_data(av_frame, width as usize, height as usize);
-
-        Some(VideoRawFrame::new(
-            data, width, height, format, pts, pkt_dts, key_frame,
-            0, // codec_id not available in decoded frame
-        ))
-    }
-}
-
-/// Extract raw pixel data from AVFrame
-unsafe fn extract_pixel_data(av_frame: &AVFrame, width: usize, height: usize) -> Vec<u8> {
-    // Calculate total size based on format (assuming YUV420P)
-    // Y plane: width * height
-    // U plane: (width/2) * (height/2)
-    // V plane: (width/2) * (height/2)
-    let y_size = width * height;
-    let uv_size = (width / 2) * (height / 2);
-    let total_size = y_size + uv_size * 2;
-
-    let mut data = Vec::with_capacity(total_size);
-
-    unsafe {
-        // Copy Y plane
-        let y_linesize = av_frame.linesize[0] as usize;
-        let y_data = av_frame.data[0];
-        if !y_data.is_null() {
-            for row in 0..height {
-                let src = y_data.add(row * y_linesize);
-                let slice = std::slice::from_raw_parts(src, width);
-                data.extend_from_slice(slice);
-            }
-        }
-
-        // Copy U plane
-        let u_linesize = av_frame.linesize[1] as usize;
-        let u_data = av_frame.data[1];
-        if !u_data.is_null() && u_linesize > 0 {
-            for row in 0..(height / 2) {
-                let src = u_data.add(row * u_linesize);
-                let slice = std::slice::from_raw_parts(src, width / 2);
-                data.extend_from_slice(slice);
-            }
-        }
-
-        // Copy V plane
-        let v_linesize = av_frame.linesize[2] as usize;
-        let v_data = av_frame.data[2];
-        if !v_data.is_null() && v_linesize > 0 {
-            for row in 0..(height / 2) {
-                let src = v_data.add(row * v_linesize);
-                let slice = std::slice::from_raw_parts(src, width / 2);
-                data.extend_from_slice(slice);
-            }
-        }
-    }
-
-    data
 }
 
 impl PipeConfig {
@@ -415,7 +234,7 @@ impl PipeConfigBuilder {
                 url: url.into(),
                 format: "rtsp".to_string(),
             },
-            encode: encode,
+            encode,
         });
         self
     }
