@@ -136,6 +136,10 @@ impl Pipe {
             }
         }
 
+        // Stop input and outputs: remove input first so the bus stops feeding streams
+        if let Err(e) = bus.remove_input().await {
+            log::warn!("Pipe: remove_input failed: {:#}", e);
+        }
         bus.stop();
         for h in join_handles {
             let _ = h.await;
