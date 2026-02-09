@@ -209,6 +209,8 @@ async fn forward_frame_stream_to_sink(
 }
 
 /// Forward raw (demuxed) packet stream from ffmpeg-bus to ZLMediaKit Media.
+/// The ffmpeg-bus Mux output with format "h264" uses a large buffer (256KB) so each.
+/// chunk is complete NALUs (Annex B). PTS/DTS are converted from 90kHz to milliseconds.
 /// Automatically converts H.264/H.265 from MP4 (AVCC/HVCC) to Annex B format if needed.
 /// PTS/DTS are converted to milliseconds based on the stream's time_base.
 #[cfg(feature = "zlm")]
@@ -216,10 +218,9 @@ async fn forward_raw_packet_stream_to_zlm(
     mut stream: VideoRawFrameStream,
     media: Arc<rszlm::media::Media>,
 ) {
-    use ffmpeg_bus::bsf::{is_annexb_packet, needs_annexb_conversion, BitstreamFilter};
+    use ffmpeg_bus::bsf::{convert_avcc_to_annexb, is_annexb_packet};
 
     let mut track_initialized = false;
-    let mut bsf: Option<BitstreamFilter> = None;
     let mut needs_conversion = false;
     let mut conversion_checked = false;
 
@@ -278,23 +279,14 @@ async fn forward_raw_packet_stream_to_zlm(
         let dts_ms = frame.dts.max(0) as u64 / TB_90K_TO_MS;
         let pts_ms = frame.pts.max(0) as u64 / TB_90K_TO_MS;
 
-        // Get packet data (convert to Annex B if needed)
-        let data = if needs_conversion {
-            // Initialize BSF on first conversion
-            if bsf.is_none() {
-                log::warn!("ZLM: BSF conversion requested but codec parameters not available, using raw data");
-                frame.data.as_ref()
-            } else {
-                // TODO: Apply BSF conversion here
-                // For now, just use raw data
-                log::warn!("ZLM: BSF conversion not yet implemented, using raw data");
-                frame.data.as_ref()
-            }
+        // Get packet data (convert AVCC to Annex B if needed)
+        let data: std::borrow::Cow<'_, [u8]> = if needs_conversion {
+            std::borrow::Cow::Owned(convert_avcc_to_annexb(frame.data.as_ref()).to_vec())
         } else {
-            frame.data.as_ref()
+            std::borrow::Cow::Borrowed(frame.data.as_ref())
         };
 
-        let zlm_frame = ZlmFrame::new(CodecId::H264, dts_ms, pts_ms, data);
+        let zlm_frame = ZlmFrame::new(CodecId::H264, dts_ms, pts_ms, data.as_ref());
         if !media.input_frame(&zlm_frame) {
             log::warn!(
                 "ZLM: input_frame failed: pts_ms={} dts_ms={} len={} is_key={}",

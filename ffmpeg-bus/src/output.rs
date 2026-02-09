@@ -299,7 +299,11 @@ impl Stream for AvOutputStreamReader {
 }
 
 impl AvOutputStream {
+    /// Default buffer size for formats like mp4. Small chunks are fine for container output.
     const PACKET_SIZE: usize = 1024;
+    /// Larger buffer for raw H.264 so the muxer does not split one NAL across multiple
+    /// callbacks (which would produce invalid NALUs for consumers like ZLMediaKit).
+    const PACKET_SIZE_H264: usize = 256 * 1024;
 
     pub fn new(format: &str) -> anyhow::Result<Self> {
         let mut inner = output_raw(format)?;
@@ -317,8 +321,14 @@ impl AvOutputStream {
             current_height: 0,
         });
 
+        let buf_size = if format == "h264" {
+            Self::PACKET_SIZE_H264
+        } else {
+            Self::PACKET_SIZE
+        };
+
         // Initialize the custom IO context
-        output_raw_packetized_buf_start(&mut inner, &mut context, Self::PACKET_SIZE);
+        output_raw_packetized_buf_start(&mut inner, &mut context, buf_size);
 
         Ok(Self {
             inner,
