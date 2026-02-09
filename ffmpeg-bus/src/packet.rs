@@ -62,6 +62,11 @@ impl RawPacket {
     pub fn get_mut(&mut self) -> &mut ffmpeg_next::codec::packet::Packet {
         Arc::make_mut(&mut self.packet)
     }
+
+    /// Get a reference to the inner packet (for BSF and other FFmpeg operations).
+    pub fn packet(&self) -> &ffmpeg_next::codec::packet::Packet {
+        &self.packet
+    }
 }
 
 impl From<(ffmpeg_next::codec::packet::Packet, Rational)> for RawPacket {

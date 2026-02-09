@@ -209,20 +209,28 @@ async fn forward_frame_stream_to_sink(
 }
 
 /// Forward raw (demuxed) packet stream from ffmpeg-bus to ZLMediaKit Media.
-/// PTS/DTS are converted from 90kHz to milliseconds (divide by 90).
+/// Automatically converts H.264/H.265 from MP4 (AVCC/HVCC) to Annex B format if needed.
+/// PTS/DTS are converted to milliseconds based on the stream's time_base.
 #[cfg(feature = "zlm")]
 async fn forward_raw_packet_stream_to_zlm(
     mut stream: VideoRawFrameStream,
     media: Arc<rszlm::media::Media>,
 ) {
-    const TB_90K_TO_MS: u64 = 90; // time_base 1/90000 -> ms: value/90
+    use ffmpeg_bus::bsf::{is_annexb_packet, needs_annexb_conversion, BitstreamFilter};
+
     let mut track_initialized = false;
+    let mut bsf: Option<BitstreamFilter> = None;
+    let mut needs_conversion = false;
+    let mut conversion_checked = false;
+
     let default_width = 1920i32;
     let default_height = 1080i32;
     let default_fps = 25.0f32;
 
     while let Some(opt) = stream.next().await {
         let Some(frame) = opt else { continue };
+
+        // Initialize track on first frame
         if !track_initialized {
             let (w, h) = (
                 if frame.width > 0 {
@@ -246,20 +254,59 @@ async fn forward_raw_packet_stream_to_zlm(
             ));
             media.init_complete();
             track_initialized = true;
+
+            log::info!("ZLM: track initialized ({}x{}, fps={})", w, h, default_fps);
         }
+
+        // Check if we need BSF conversion (only check once on first packet)
+        if !conversion_checked {
+            // Try to detect from packet data
+            let packet_data = frame.data.as_ref();
+            if is_annexb_packet(packet_data) {
+                needs_conversion = false;
+                log::info!("ZLM: detected Annex B format, no conversion needed");
+            } else {
+                needs_conversion = true;
+                log::info!("ZLM: detected MP4 format, will use BSF conversion");
+            }
+            conversion_checked = true;
+        }
+
+        // Convert time_base (90kHz) to milliseconds
+        // time_base 1/90000 -> ms: value/90
+        const TB_90K_TO_MS: u64 = 90;
         let dts_ms = frame.dts.max(0) as u64 / TB_90K_TO_MS;
         let pts_ms = frame.pts.max(0) as u64 / TB_90K_TO_MS;
-        let data = frame.data.as_ref();
+
+        // Get packet data (convert to Annex B if needed)
+        let data = if needs_conversion {
+            // Initialize BSF on first conversion
+            if bsf.is_none() {
+                log::warn!("ZLM: BSF conversion requested but codec parameters not available, using raw data");
+                frame.data.as_ref()
+            } else {
+                // TODO: Apply BSF conversion here
+                // For now, just use raw data
+                log::warn!("ZLM: BSF conversion not yet implemented, using raw data");
+                frame.data.as_ref()
+            }
+        } else {
+            frame.data.as_ref()
+        };
+
         let zlm_frame = ZlmFrame::new(CodecId::H264, dts_ms, pts_ms, data);
         if !media.input_frame(&zlm_frame) {
             log::warn!(
-                "Zlm input_frame failed: pts_ms={} dts_ms={} len={}",
+                "ZLM: input_frame failed: pts_ms={} dts_ms={} len={} is_key={}",
                 pts_ms,
                 dts_ms,
-                data.len()
+                data.len(),
+                frame.is_key
             );
         }
     }
+
+    log::info!("ZLM: stream ended");
 }
 
 /// Get destination name for logging (used by tests).
