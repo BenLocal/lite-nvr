@@ -69,8 +69,9 @@ pub enum OutputDest {
     RawFrame { sink: Arc<RawSinkSource> },
     /// Encoded packet sink，only for encoded packet
     RawPacket { sink: Arc<RawSinkSource> },
-    // /// zlm server frame
-    // ZlmServer { url: String },
+    /// ZLMediaKit Media: push raw (demuxed) packets to ZLM
+    #[cfg(feature = "zlm")]
+    Zlm(Arc<rszlm::media::Media>),
 }
 
 /// Configuration for a single output

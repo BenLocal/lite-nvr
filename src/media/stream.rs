@@ -12,6 +12,7 @@ pub struct RawSinkSource {
     inner: Mutex<tokio::sync::mpsc::Receiver<VideoRawFrame>>,
 }
 
+#[allow(dead_code)]
 impl RawSinkSource {
     pub fn new() -> Self {
         Self::with_capacity(32)
@@ -77,6 +78,7 @@ impl Stream for RawSinkSourceStream {
     }
 }
 
+#[allow(dead_code)]
 impl RawSinkSource {
     /// Returns a stream that yields VideoRawFrame. Use this when you have `Arc<RawSinkSource>`.
     pub fn as_stream(this: Arc<Self>) -> RawSinkSourceStream {

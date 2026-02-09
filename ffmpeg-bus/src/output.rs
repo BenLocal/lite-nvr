@@ -11,6 +11,7 @@ use ffmpeg_next::{
         avformat_alloc_output_context2, avio_alloc_context, avio_flush,
     },
     format::context::Output,
+    media::Type as MediaType,
 };
 use std::ffi::CString;
 
@@ -62,12 +63,7 @@ impl AvOutput {
                 .map_err(|e| anyhow::anyhow!("output_rtsp_alloc_only(url={:?}): {}", url, e))?,
             (Some(fmt), Some(opts)) => ffmpeg_next::format::output_as_with(url, fmt, opts)
                 .map_err(|e| {
-                    anyhow::anyhow!(
-                        "output_as_with(url={:?}, format={:?}): {:?}",
-                        url,
-                        fmt,
-                        e
-                    )
+                    anyhow::anyhow!("output_as_with(url={:?}, format={:?}): {:?}", url, fmt, e)
                 })?,
             (Some(fmt), None) => ffmpeg_next::format::output_as(url, fmt).map_err(|e| {
                 anyhow::anyhow!("output_as(url={:?}, format={:?}): {:?}", url, fmt, e)
@@ -181,6 +177,14 @@ pub struct PacketContext {
     buffer: PacketBufferType,
     current_pts: Option<i64>,
     current_dts: Option<i64>,
+    /// Video only: key frame flag
+    pub current_is_key: bool,
+    /// Video only: codec id (e.g. H264)
+    pub current_codec_id: i32,
+    /// Video only: width
+    pub current_width: u32,
+    /// Video only: height
+    pub current_height: u32,
 }
 
 pub struct AvOutputStream {
@@ -199,6 +203,11 @@ pub struct OutputMessage {
     pub data: Bytes,
     pub pts: Option<i64>,
     pub dts: Option<i64>,
+    /// Video only
+    pub is_key: bool,
+    pub codec_id: i32,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Writer half of a split `AvOutputStream`. Used to write packets from a separate task.
@@ -228,6 +237,16 @@ impl AvOutputStreamWriter {
 
         self.context.current_pts = packet.pts();
         self.context.current_dts = packet.dts();
+        self.context.current_is_key = packet.is_key();
+        if let Some(stream) = self.inner.stream(0) {
+            let params = stream.parameters();
+            if params.medium() == MediaType::Video {
+                self.context.current_codec_id = params.id() as i32;
+                let (w, h) = video_size_from_parameters(&params);
+                self.context.current_width = w;
+                self.context.current_height = h;
+            }
+        }
 
         let time_base = packet.time_base();
         let p = packet.get_mut();
@@ -239,6 +258,10 @@ impl AvOutputStreamWriter {
 
         self.context.current_pts = None;
         self.context.current_dts = None;
+        self.context.current_is_key = false;
+        self.context.current_codec_id = 0;
+        self.context.current_width = 0;
+        self.context.current_height = 0;
 
         Ok(())
     }
@@ -288,6 +311,10 @@ impl AvOutputStream {
             buffer: sender,
             current_pts: None,
             current_dts: None,
+            current_is_key: false,
+            current_codec_id: 0,
+            current_width: 0,
+            current_height: 0,
         });
 
         // Initialize the custom IO context
@@ -335,6 +362,16 @@ impl AvOutputStream {
                 AvOutputStreamReader { receiver },
             )
         }
+    }
+}
+
+/// Reads video width/height from codec parameters (not exposed by ffmpeg-next).
+fn video_size_from_parameters(params: &ffmpeg_next::codec::Parameters) -> (u32, u32) {
+    unsafe {
+        let ptr = params.as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
+        let w = (*ptr).width;
+        let h = (*ptr).height;
+        (w.max(0) as u32, h.max(0) as u32)
     }
 }
 
@@ -500,6 +537,10 @@ extern "C" fn output_raw_buf_start_callback(
             data,
             pts: packet_context.current_pts,
             dts: packet_context.current_dts,
+            is_key: packet_context.current_is_key,
+            codec_id: packet_context.current_codec_id,
+            width: packet_context.current_width,
+            height: packet_context.current_height,
         });
     }
 

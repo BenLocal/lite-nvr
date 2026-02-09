@@ -13,9 +13,19 @@ Content-Type: application/json
         "url": "rtsp://172.31.169.114:8554/ff/d4jkxuesheng.mp4"
     },
     "outputs": [
+        // {
+        //     "t": "net",
+        //    "net": {
+        //         "url": "rtsp://172.31.169.114:8554/ff/d4jkxuesheng.mp4",
+        //         "format": "rtsp"
+        //    }
+        // },
         {
-            "url": "rtsp://172.31.169.114:8554/shiben/2",
-            "format": "rtsp"
+            "t": "zlm",
+            "zlm": {
+                "app": "shiben",
+                "stream": "2"
+            }
         }
     ]
 }

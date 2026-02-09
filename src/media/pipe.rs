@@ -5,9 +5,14 @@ use std::sync::{
 
 use ffmpeg_bus::bus::{
     Bus as FbBus, InputConfig as FbInputConfig, OutputAvType, OutputConfig as FbOutputConfig,
-    OutputDest as FbOutputDest,
+    OutputDest as FbOutputDest, VideoRawFrameStream,
 };
 use futures::StreamExt;
+#[cfg(feature = "zlm")]
+use rszlm::{
+    frame::Frame as ZlmFrame,
+    obj::{CodecArgs, CodecId, Track, VideoCodecArgs},
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::media::{
@@ -103,6 +108,14 @@ impl Pipe {
                             });
                             join_handles.push(handle);
                         }
+                        #[cfg(feature = "zlm")]
+                        OutputDest::Zlm(media) => {
+                            let media = Arc::clone(media);
+                            let handle = tokio::spawn(async move {
+                                forward_raw_packet_stream_to_zlm(stream, media).await;
+                            });
+                            join_handles.push(handle);
+                        }
                         OutputDest::Network { .. } => {}
                     }
                 }
@@ -148,6 +161,10 @@ fn to_fb_output(id: &str, config: &OutputConfig) -> Option<FbOutputConfig> {
         },
         OutputDest::RawFrame { .. } => FbOutputDest::Raw,
         OutputDest::RawPacket { .. } => FbOutputDest::Encoded,
+        #[cfg(feature = "zlm")]
+        OutputDest::Zlm(_) => FbOutputDest::Mux {
+            format: "h264".to_string(),
+        },
     };
     let mut fb = FbOutputConfig::new(id.to_string(), av_type, dest);
     if let Some(ref e) = config.encode {
@@ -191,12 +208,68 @@ async fn forward_frame_stream_to_sink(
     }
 }
 
+/// Forward raw (demuxed) packet stream from ffmpeg-bus to ZLMediaKit Media.
+/// PTS/DTS are converted from 90kHz to milliseconds (divide by 90).
+#[cfg(feature = "zlm")]
+async fn forward_raw_packet_stream_to_zlm(
+    mut stream: VideoRawFrameStream,
+    media: Arc<rszlm::media::Media>,
+) {
+    const TB_90K_TO_MS: u64 = 90; // time_base 1/90000 -> ms: value/90
+    let mut track_initialized = false;
+    let default_width = 1920i32;
+    let default_height = 1080i32;
+    let default_fps = 25.0f32;
+
+    while let Some(opt) = stream.next().await {
+        let Some(frame) = opt else { continue };
+        if !track_initialized {
+            let (w, h) = (
+                if frame.width > 0 {
+                    frame.width as i32
+                } else {
+                    default_width
+                },
+                if frame.height > 0 {
+                    frame.height as i32
+                } else {
+                    default_height
+                },
+            );
+            media.init_track(&Track::new(
+                CodecId::H264,
+                Some(CodecArgs::Video(VideoCodecArgs {
+                    width: w,
+                    height: h,
+                    fps: default_fps,
+                })),
+            ));
+            media.init_complete();
+            track_initialized = true;
+        }
+        let dts_ms = frame.dts.max(0) as u64 / TB_90K_TO_MS;
+        let pts_ms = frame.pts.max(0) as u64 / TB_90K_TO_MS;
+        let data = frame.data.as_ref();
+        let zlm_frame = ZlmFrame::new(CodecId::H264, dts_ms, pts_ms, data);
+        if !media.input_frame(&zlm_frame) {
+            log::warn!(
+                "Zlm input_frame failed: pts_ms={} dts_ms={} len={}",
+                pts_ms,
+                dts_ms,
+                data.len()
+            );
+        }
+    }
+}
+
 /// Get destination name for logging (used by tests).
 pub fn dest_name(dest: &OutputDest) -> String {
     match dest {
         OutputDest::Network { url, .. } => url.clone(),
         OutputDest::RawFrame { .. } => "RawFrame".to_string(),
         OutputDest::RawPacket { .. } => "RawPacket".to_string(),
+        #[cfg(feature = "zlm")]
+        OutputDest::Zlm(_) => "Zlm".to_string(),
     }
 }
 
@@ -265,6 +338,16 @@ impl PipeConfigBuilder {
         self.outputs.push(OutputConfig {
             dest: OutputDest::RawPacket { sink },
             encode: Some(encode),
+        });
+        self
+    }
+
+    /// Add zlm output
+    #[cfg(feature = "zlm")]
+    pub fn add_zlm_output(mut self, media: Arc<rszlm::media::Media>) -> Self {
+        self.outputs.push(OutputConfig {
+            dest: OutputDest::Zlm(media),
+            encode: None,
         });
         self
     }

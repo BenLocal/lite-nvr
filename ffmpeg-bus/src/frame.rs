@@ -199,13 +199,13 @@ impl From<OutputMessage> for VideoFrame {
     fn from(value: OutputMessage) -> Self {
         Self {
             data: value.data,
-            width: 0,
-            height: 0,
+            width: value.width,
+            height: value.height,
             format: 0,
             pts: value.pts.unwrap_or(0),
             dts: value.dts.unwrap_or(0),
-            is_key: false,
-            codec_id: 0,
+            is_key: value.is_key,
+            codec_id: value.codec_id,
         }
     }
 }

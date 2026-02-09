@@ -20,6 +20,7 @@ async fn main() -> ! {
 
     let cancel_clone = cancel.clone();
     api::start_api_server(cancel_clone);
+
     #[cfg(feature = "zlm")]
     {
         let cancel_clone = cancel.clone();
