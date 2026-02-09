@@ -1,3 +1,5 @@
+#![cfg(feature = "zlm")]
+
 use rszlm::{
     init::EnvInitBuilder,
     server::{http_server_start, rtmp_server_start, rtsp_server_start},
