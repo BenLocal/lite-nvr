@@ -1,6 +1,8 @@
 use tokio_util::sync::CancellationToken;
 
 mod api;
+mod config;
+mod handler;
 mod manager;
 mod media;
 #[cfg(feature = "zlm")]
@@ -16,6 +18,14 @@ fn init_logging() {
 #[tokio::main]
 async fn main() -> ! {
     init_logging();
+    let config = config::config();
+    nvr_db::migrations::migrate(config.db_url())
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("Error migrating database: {}", e);
+            std::process::exit(1);
+        });
+
     let cancel = CancellationToken::new();
 
     let cancel_clone = cancel.clone();

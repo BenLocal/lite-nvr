@@ -1,4 +1,19 @@
-@HOST = http://localhost:8080
+@HOST=http://localhost:8080
+
+## user route index
+GET {{HOST}}/user
+
+### user login
+POST {{HOST}}/user/login
+Content-Type: application/json
+
+{
+    "username": "admin",
+    "password": "123456"
+}
+
+### pipe route index
+GET {{HOST}}/pipe
 
 ### List pipes
 GET {{HOST}}/pipe/list

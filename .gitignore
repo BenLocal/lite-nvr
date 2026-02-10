@@ -1,6 +1,12 @@
 /target
 /ffmpeg
 /zlm
+
+
 output.mp4
 output.h264
 output.aac
+
+nvr.db
+nvr.db-shm
+nvr.db-wal

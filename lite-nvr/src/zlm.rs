@@ -1,6 +1,7 @@
 #![cfg(feature = "zlm")]
 
 use rszlm::{
+    event,
     init::EnvInitBuilder,
     server::{http_server_start, rtmp_server_start, rtsp_server_start},
 };
@@ -19,6 +20,13 @@ pub(crate) fn start_zlm_server(cancel: CancellationToken) {
             http_server_start(8553, false);
             rtsp_server_start(8554, false);
             rtmp_server_start(8555, false);
+
+            {
+                let mut events = event::EVENTS.write().unwrap();
+                events.on_media_publish(|media| {
+                    log::info!("ZLM: media publish");
+                });
+            }
 
             loop {
                 if cancel_clone.is_cancelled() {
