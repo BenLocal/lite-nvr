@@ -12,8 +12,9 @@ export default defineConfig({
   base,
   plugins: [
     vue(),
-    vueDevTools(),
-  ],
+    // 仅开发环境启用，避免生产出现右下角浮动按钮
+    process.env.NODE_ENV === 'development' ? vueDevTools() : undefined,
+  ].filter(Boolean),
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url))
