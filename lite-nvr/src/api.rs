@@ -5,8 +5,9 @@ use tokio_util::sync::CancellationToken;
 pub(crate) fn start_api_server(cancel: CancellationToken) {
     tokio::spawn(async move {
         let app = Router::new()
-            .nest("/user", crate::handler::user::user_router())
-            .nest("/pipe", crate::handler::media_pipe::meida_pipe_router());
+            .nest("/user/", crate::handler::user::user_router())
+            .nest("/pipe/", crate::handler::media_pipe::meida_pipe_router())
+            .nest("/nvr/", nvr_dashboard::app_router(None));
 
         let listener = TcpListener::bind("0.0.0.0:8080").await.unwrap();
         println!("API server started on port 8080");

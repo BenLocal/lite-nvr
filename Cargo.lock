@@ -1483,6 +1483,7 @@ dependencies = [
  "ffmpeg-sys-next",
  "futures",
  "log",
+ "nvr-dashboard",
  "nvr-db",
  "reqwest",
  "rszlm",

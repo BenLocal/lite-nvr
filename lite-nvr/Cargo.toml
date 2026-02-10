@@ -19,6 +19,7 @@ futures = "0.3"
 bytes = "1.11.1"
 ffmpeg-bus = { path = "../ffmpeg-bus" }
 nvr-db = { path = "../nvr-db" }
+nvr-dashboard = { path = "../nvr-dashboard" }
 rszlm = { git = "https://github.com/BenLocal/rszlm.git", optional = true }
 
 [features]
