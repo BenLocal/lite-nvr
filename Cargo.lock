@@ -953,6 +953,7 @@ dependencies = [
  "ffmpeg-sys-next",
  "futures",
  "log",
+ "nvr-db",
  "reqwest",
  "rszlm",
  "serde",
@@ -1042,6 +1043,10 @@ dependencies = [
  "hermit-abi",
  "libc",
 ]
+
+[[package]]
+name = "nvr-db"
+version = "0.1.0"
 
 [[package]]
 name = "once_cell"

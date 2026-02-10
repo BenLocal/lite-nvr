@@ -27,6 +27,7 @@
             "cargo": {
                 "args": [
                     "run",
+                    "--package=lite-nvr",
                     "--bin=lite-nvr"
                 ],
                 "env": {
@@ -44,6 +45,7 @@
             "cargo": {
                 "args": [
                     "test",
+                    "--package=lite-nvr",
                     "--bin=lite-nvr"
                 ],
                 "env": {
