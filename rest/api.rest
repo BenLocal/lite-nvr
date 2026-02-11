@@ -1,10 +1,10 @@
-@HOST=http://localhost:8080
+@Host=localHost:8080
 
-## user route index
-GET {{HOST}}/user
+### user route index
+GET http://{{Host}}/user
 
 ### user login
-POST {{HOST}}/user/login
+POST http://{{Host}}/user/login
 Content-Type: application/json
 
 {
@@ -13,13 +13,13 @@ Content-Type: application/json
 }
 
 ### pipe route index
-GET {{HOST}}/pipe
+GET http://{{Host}}/pipe
 
 ### List pipes
-GET {{HOST}}/pipe/list
+GET http://{{Host}}/pipe/list
 
 ### Add pipe
-POST {{HOST}}/pipe/add
+POST http://{{Host}}/pipe/add
 Content-Type: application/json
 
 {
@@ -46,14 +46,14 @@ Content-Type: application/json
 }
 
 ### Remove pipe
-GET {{HOST}}/pipe/remove/test
+GET http://{{Host}}/pipe/remove/test
 
 
 ### system route index
-GET {{HOST}}/system
+GET http://{{Host}}/system
 
 ### List devices
-GET {{HOST}}/system/list/devices
+GET http://{{Host}}/system/list/devices
 Content-Type: application/json
 
 {

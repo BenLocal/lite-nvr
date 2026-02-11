@@ -1,5 +1,7 @@
-use axum::{Json, Router, http::StatusCode, routing::get};
+use axum::{Json, Router, routing::get};
 use serde::{Deserialize, Serialize};
+
+use crate::handler::ApiJsonResult;
 
 pub fn system_router() -> Router {
     Router::new()
@@ -15,34 +17,54 @@ struct DeviceListRequest {
     direction: u32,
 }
 
+#[derive(Serialize, Deserialize)]
+struct DeviceInfoItem {
+    name: String,
+    description: String,
+}
+
 async fn index() -> &'static str {
     "system route!"
 }
 
 async fn list_devices(
     Json(request): Json<DeviceListRequest>,
-) -> Result<Json<Vec<String>>, (StatusCode, String)> {
+) -> ApiJsonResult<Vec<DeviceInfoItem>> {
     match request.kind {
         0 => {
             let video_devices = match request.direction {
                 0 => ffmpeg_bus::device::input_video_list(),
                 1 => ffmpeg_bus::device::output_video_list(),
-                _ => return Err((StatusCode::BAD_REQUEST, "invalid direction".to_string())),
-            }
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                _ => return Err(anyhow::anyhow!("invalid direction").into()),
+            }?;
 
-            Ok(Json(video_devices.iter().map(|d| d.to_string()).collect()))
+            Ok(Json(
+                video_devices
+                    .iter()
+                    .map(|d| DeviceInfoItem {
+                        name: d.name().to_string(),
+                        description: d.description().to_string(),
+                    })
+                    .collect::<Vec<DeviceInfoItem>>(),
+            ))
         }
         1 => {
             let audio_devices = match request.direction {
                 0 => ffmpeg_bus::device::input_audio_list(),
                 1 => ffmpeg_bus::device::output_audio_list(),
-                _ => return Err((StatusCode::BAD_REQUEST, "invalid direction".to_string())),
-            }
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                _ => return Err(anyhow::anyhow!("invalid direction").into()),
+            }?;
 
-            Ok(Json(audio_devices.iter().map(|d| d.to_string()).collect()))
+            Ok(Json(
+                audio_devices
+                    .iter()
+                    .map(|d| DeviceInfoItem {
+                        name: d.name().to_string(),
+                        description: d.description().to_string(),
+                    })
+                    .collect::<Vec<DeviceInfoItem>>(),
+            ))
         }
-        _ => Err((StatusCode::BAD_REQUEST, "invalid kind".to_string())),
+        _ => Err(anyhow::anyhow!("invalid kind").into()),
     }
 }
