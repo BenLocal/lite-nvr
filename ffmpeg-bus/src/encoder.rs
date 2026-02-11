@@ -86,7 +86,7 @@ impl Default for Settings {
             width: 1920,
             height: 1080,
             keyframe_interval: 25,
-            codec: None,
+            codec: Some("libx264".to_string()),
             pixel_format: ffmpeg_next::format::Pixel::YUV420P,
         }
     }

@@ -69,6 +69,30 @@ impl From<ffmpeg_next::frame::Video> for RawVideoFrame {
     }
 }
 
+/// Converts a raw video packet into a RawFrame::Video. Used when input is already raw (e.g. RAWVIDEO)
+/// and needs to be fed to the encoder as frame. Requires stream dimensions and pixel format.
+pub fn packet_to_raw_video_frame(
+    packet: RawPacket,
+    width: u32,
+    height: u32,
+    pixel_format: ffmpeg_next::format::Pixel,
+) -> anyhow::Result<RawFrame> {
+    use ffmpeg_next::frame::Video;
+    if width == 0 || height == 0 {
+        anyhow::bail!("invalid video size {}x{}", width, height);
+    }
+    if pixel_format == ffmpeg_next::format::Pixel::None {
+        anyhow::bail!("invalid pixel format for raw video");
+    }
+    let mut frame = Video::new(pixel_format, width, height);
+    let packet_data = packet.data();
+    let frame_buf = frame.data_mut(0);
+    let copy_len = packet_data.len().min(frame_buf.len());
+    frame_buf[..copy_len].copy_from_slice(&packet_data[..copy_len]);
+    frame.set_pts(packet.pts());
+    Ok(RawFrame::Video(RawVideoFrame::from(frame)))
+}
+
 impl RawVideoFrame {
     pub fn width(&self) -> u32 {
         self.frame.width()

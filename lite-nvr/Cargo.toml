@@ -21,8 +21,13 @@ ffmpeg-bus = { path = "../ffmpeg-bus" }
 nvr-db = { path = "../nvr-db" }
 nvr-dashboard = { path = "../nvr-dashboard" }
 rszlm = { git = "https://github.com/BenLocal/rszlm.git", optional = true }
+
+# Only built when target is Linux (see also build.rs for feature "linux" cfg)
+[target.'cfg(target_os = "linux")'.dependencies]
 tokio-linux-video = "0.1.1"
 
 [features]
 default = ["zlm"]
 zlm = ["dep:rszlm"]
+# Set by build.rs when compiling for Linux; satisfies check-cfg
+linux = []

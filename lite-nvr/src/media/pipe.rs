@@ -60,14 +60,13 @@ impl Pipe {
             return;
         }
 
-        let (t, input_url) = match &self.config.input {
-            InputConfig::Network { url } => ("net", url),
-            InputConfig::File { path } => ("file", path),
-            InputConfig::V4L2 { device } => ("v4l2", device),
-            InputConfig::X11Grab { display } => ("x11grab", display),
+        let log_input = match &self.config.input {
+            InputConfig::Network { url } => format!("net://{}", url),
+            InputConfig::File { path } => format!("file://{}", path),
+            InputConfig::Device { display, format } => format!("device://{} ({})", display, format),
         };
 
-        log::info!("Pipe: starting with input {}://{}", t, input_url);
+        log::info!("Pipe: starting with input {}", log_input);
 
         let bus = FbBus::new("pipe");
         let cancel = self.cancel.clone();
@@ -162,11 +161,9 @@ fn to_fb_input(input: &InputConfig) -> FbInputConfig {
     match input {
         InputConfig::Network { url } => FbInputConfig::Net { url: url.clone() },
         InputConfig::File { path } => FbInputConfig::File { path: path.clone() },
-        InputConfig::V4L2 { device } => FbInputConfig::V4L2 {
-            device: device.clone(),
-        },
-        InputConfig::X11Grab { display } => FbInputConfig::X11Grab {
+        InputConfig::Device { display, format } => FbInputConfig::Device {
             display: display.clone(),
+            format: format.clone(),
         },
     }
 }

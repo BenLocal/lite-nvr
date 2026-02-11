@@ -257,6 +257,48 @@ async fn verify_output_mp4(
     Ok(())
 }
 
+/// Test rawvideo path: lavfi virtual test picture -> packet->frame conversion -> encoder -> output.
+/// Uses Device input with format "lavfi" and testsrc filter (raw video), then mux to H.264.
+#[tokio::test]
+async fn test_device_rawvideo_lavfi() -> anyhow::Result<()> {
+    crate::init()?;
+
+    let file_name = "output_rawvideo_test.h264";
+    if Path::new(file_name).exists() {
+        std::fs::remove_file(file_name).unwrap();
+    }
+
+    let bus = Bus::new("rawvideo_test");
+
+    // Virtual test picture: lavfi testsrc, 2s, 320x240, 10fps (raw video -> RAWVIDEO codec path)
+    let input_config = InputConfig::Device {
+        display: "testsrc=duration=2:size=320x240:rate=10".to_string(),
+        format: "lavfi".to_string(),
+    };
+    bus.add_input(input_config, None).await?;
+
+    // Output via encoder (exercises packet->frame conversion for raw video, then encode to H.264)
+    let output_config = OutputConfig::new(
+        "rawvideo_h264".to_string(),
+        OutputAvType::Video,
+        OutputDest::Encoded,
+    );
+    let mut stream = bus.add_output(output_config).await?;
+
+    let mut file = tokio::fs::File::create(file_name).await?;
+    while let Some(frame) = stream.next().await {
+        if let Some(frame) = frame {
+            file.write_all(&frame.data).await?;
+        }
+    }
+    file.sync_all().await?;
+
+    // Verify: 2s @ 10fps -> ~20 frames
+    verify_output_h264(file_name, 2, 10).await?;
+
+    Ok(())
+}
+
 /// Verifies output.aac: openable with ffmpeg_next and packet count within reasonable range.
 /// AAC frames are typically 1024 samples. @ 44100Hz -> ~43 packets/sec.
 async fn verify_output_aac(

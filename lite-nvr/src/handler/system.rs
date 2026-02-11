@@ -1,5 +1,6 @@
 use axum::{Json, Router, routing::get};
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "linux")]
 use tokio_linux_video::Device;
 
 use crate::handler::ApiJsonResult;
@@ -79,30 +80,44 @@ async fn list_device_foramts(
 }
 
 async fn list_v4l2_device() -> ApiJsonResult<Vec<String>> {
-    let mut devices = Device::list().await?;
+    #[cfg(target_os = "linux")]
+    {
+        let mut devices = Device::list().await?;
 
-    let mut device_names = Vec::new();
-    while let Some(device) = devices.fetch_next().await? {
-        device_names.push(device.display().to_string());
+        let mut device_names = Vec::new();
+        while let Some(device) = devices.fetch_next().await? {
+            device_names.push(device.display().to_string());
+        }
+        Ok(Json(device_names))
     }
-    Ok(Json(device_names))
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(anyhow::anyhow!("not supported").into())
+    }
 }
 
 /// List x11grab `-i` options (X11 display strings). Uses DISPLAY env when set;
 /// otherwise returns a default `:0` so callers have at least one option.
 async fn list_x11grab_device() -> ApiJsonResult<Vec<String>> {
-    let mut list = Vec::new();
-    if let Ok(display) = std::env::var("DISPLAY") {
-        let display = display.trim();
-        if !display.is_empty() {
-            list.push(display.to_string());
-            if !display.contains('.') {
-                list.push(format!("{}.0", display));
+    #[cfg(target_os = "linux")]
+    {
+        let mut list = Vec::new();
+        if let Ok(display) = std::env::var("DISPLAY") {
+            let display = display.trim();
+            if !display.is_empty() {
+                list.push(display.to_string());
+                if !display.contains('.') {
+                    list.push(format!("{}.0", display));
+                }
             }
         }
+        if list.is_empty() {
+            list.push(":0".to_string());
+        }
+        Ok(Json(list))
     }
-    if list.is_empty() {
-        list.push(":0".to_string());
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(anyhow::anyhow!("not supported").into())
     }
-    Ok(Json(list))
 }

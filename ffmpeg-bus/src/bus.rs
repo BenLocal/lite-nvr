@@ -10,7 +10,7 @@ use ffmpeg_next::Dictionary;
 use crate::{
     decoder::{Decoder, DecoderTask},
     encoder::{Encoder, EncoderTask, Settings},
-    frame::{RawFrameCmd, VideoFrame},
+    frame::{RawFrameCmd, VideoFrame, packet_to_raw_video_frame},
     input::{AvInput, AvInputTask},
     output::{AvOutput, AvOutputStream},
     packet::RawPacketCmd,
@@ -435,6 +435,23 @@ impl Bus {
         Ok(())
     }
 
+    /// Reads (width, height, pixel_format) from video codec parameters (for raw video).
+    fn raw_video_params_from_parameters(
+        params: &ffmpeg_next::codec::Parameters,
+    ) -> (u32, u32, ffmpeg_next::format::Pixel) {
+        unsafe {
+            let ptr = params.as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
+            let w = (*ptr).width.max(0) as u32;
+            let h = (*ptr).height.max(0) as u32;
+            let fmt = (*ptr).format;
+            let pixel_format = ffmpeg_next::format::Pixel::from(std::mem::transmute::<
+                i32,
+                ffmpeg_next::ffi::AVPixelFormat,
+            >(fmt));
+            (w, h, pixel_format)
+        }
+    }
+
     async fn start_encoder_task(
         state: &mut BusState,
         input_stream_index: usize,
@@ -449,32 +466,53 @@ impl Bus {
         }
 
         let codec_id = input_stream.parameters().id();
+        let encoder_task = EncoderTask::new();
         if codec_id == ffmpeg_next::codec::Id::RAWVIDEO {
-            let encoder_receiver: tokio::sync::broadcast::Receiver<RawPacketCmd> = state
+            let (width, height, pixel_format) =
+                Self::raw_video_params_from_parameters(input_stream.parameters());
+            let packet_receiver: tokio::sync::broadcast::Receiver<RawPacketCmd> = state
                 .input_task
                 .as_ref()
                 .ok_or(anyhow::anyhow!("input task not found"))?
                 .subscribe();
+            let (frame_tx, frame_rx) = tokio::sync::broadcast::channel::<RawFrameCmd>(1024);
             let encoder = Encoder::new(input_stream, Settings::default(), None)?;
-            let encoder_task = EncoderTask::new();
-            // encoder_task
-            //     .start(
-            //         encoder,
-            //         encoder_receiver.map(|cmd| match cmd {
-            //             RawPacketCmd::Data(packet) => Some(RawFrameCmd::Data(packet)),
-            //             RawPacketCmd::EOF => Some(RawFrameCmd::EOF),
-            //             Err(_) => None,
-            //         }),
-            //     )
-            //     .await;
+            // Spawn task: packet -> frame conversion, then forward to encoder
+            {
+                let mut packet_rx = packet_receiver;
+                let frame_tx = frame_tx;
+                tokio::spawn(async move {
+                    loop {
+                        match packet_rx.recv().await {
+                            Ok(RawPacketCmd::Data(packet)) => {
+                                if let Ok(frame) =
+                                    packet_to_raw_video_frame(packet, width, height, pixel_format)
+                                {
+                                    let _ = frame_tx.send(RawFrameCmd::Data(frame));
+                                }
+                            }
+                            Ok(RawPacketCmd::EOF) => {
+                                let _ = frame_tx.send(RawFrameCmd::EOF);
+                                break;
+                            }
+                            Err(_) => continue,
+                        }
+                    }
+                });
+            }
+            encoder_task.start(encoder, frame_rx).await;
         } else {
             let encoder_receiver = state
                 .decoder_tasks
                 .get(&input_stream_index)
                 .ok_or(anyhow::anyhow!("decoder task not found"))?
                 .subscribe();
-            let encoder = Encoder::new(input_stream, Settings::default(), None)?;
-            let encoder_task = EncoderTask::new();
+            // Decoded path (e.g. WRAPPED_AVFRAME from lavfi): need explicit codec for encoder
+            let encoder_settings = Settings {
+                codec: Some("libx264".to_string()),
+                ..Settings::default()
+            };
+            let encoder = Encoder::new(input_stream, encoder_settings, None)?;
             encoder_task.start(encoder, encoder_receiver).await;
         }
 
@@ -520,9 +558,8 @@ impl Bus {
         let input = match state.input_config.as_ref() {
             Some(InputConfig::Net { url }) => AvInput::new(url, None, options)?,
             Some(InputConfig::File { path }) => AvInput::new(path, None, options)?,
-            Some(InputConfig::V4L2 { device }) => AvInput::new(device, None, options)?,
-            Some(InputConfig::X11Grab { display }) => {
-                AvInput::new(display, Some("x11grab"), options)?
+            Some(InputConfig::Device { display, format }) => {
+                AvInput::new(display, Some(format), options)?
             }
             None => return Err(anyhow::anyhow!("input config is not set")),
         };
@@ -633,8 +670,7 @@ pub enum BusCommand {
 pub enum InputConfig {
     Net { url: String },
     File { path: String },
-    V4L2 { device: String },
-    X11Grab { display: String },
+    Device { display: String, format: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

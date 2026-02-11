@@ -106,11 +106,9 @@ async fn add_pipe(Json(config): Json<PipeRequest>) -> ApiJsonResult<String> {
         "file" => InputConfig::File {
             path: config.input.input,
         },
-        "v4l2" => InputConfig::V4L2 {
-            device: config.input.input,
-        },
-        "x11grab" => InputConfig::X11Grab {
+        "v4l2" | "x11grab" => InputConfig::Device {
             display: config.input.input,
+            format: config.input.t.clone(),
         },
         _ => return Err(anyhow::anyhow!("input type is not supported").into()),
     };
