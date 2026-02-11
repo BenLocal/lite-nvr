@@ -1,4 +1,4 @@
-use std::{collections::HashMap, hash::Hasher, pin::Pin, sync::Arc};
+use std::{collections::HashMap, hash::Hasher, pin::Pin};
 
 use futures::{Stream, StreamExt};
 use tokio_stream::wrappers::BroadcastStream;
@@ -13,7 +13,6 @@ use crate::{
     input::{AvInput, AvInputTask},
     output::{AvOutput, AvOutputStream},
     packet::RawPacketCmd,
-    sink::RawSinkSource,
     stream::AvStream,
 };
 
@@ -56,9 +55,13 @@ impl Bus {
 
     async fn inner_command_handler(state: &mut BusState, cmd: BusCommand) -> anyhow::Result<()> {
         match cmd {
-            BusCommand::AddInput { input, result } => {
+            BusCommand::AddInput {
+                input,
+                options,
+                result,
+            } => {
                 result
-                    .send(Self::add_input_internal(state, input).await)
+                    .send(Self::add_input_internal(state, input, options).await)
                     .map_err(|e| anyhow::anyhow!("send result error: {:#?}", e))?;
             }
             BusCommand::RemoveInput { result } => {
@@ -374,11 +377,16 @@ impl Bus {
         Ok(Box::pin(stream))
     }
 
-    async fn add_input_internal(state: &mut BusState, input: InputConfig) -> anyhow::Result<()> {
+    async fn add_input_internal(
+        state: &mut BusState,
+        input: InputConfig,
+        options: Option<HashMap<String, String>>,
+    ) -> anyhow::Result<()> {
         if state.input_config.is_some() {
             return Err(anyhow::anyhow!("input already exists"));
         } else {
             state.input_config = Some(input);
+            state.input_options = options;
         }
 
         if !state.output_config.is_empty() && state.input_task.is_none() {
@@ -437,10 +445,16 @@ impl Bus {
     }
 
     async fn start_input_task(state: &mut BusState) -> anyhow::Result<()> {
+        let options = state.input_options.as_ref().map(|options| {
+            ffmpeg_next::Dictionary::from_iter(
+                options.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+            )
+        });
         let input = match state.input_config.as_ref() {
-            Some(InputConfig::Net { url }) => AvInput::new(url, None)?,
-            Some(InputConfig::File { path }) => AvInput::new(path, None)?,
-            Some(_) => unimplemented!(),
+            Some(InputConfig::Net { url }) => AvInput::new(url, options)?,
+            Some(InputConfig::File { path }) => AvInput::new(path, options)?,
+            Some(InputConfig::V4L2 { device }) => AvInput::new(device, options)?,
+            Some(InputConfig::X11Grab { display }) => AvInput::new(display, options)?,
             None => return Err(anyhow::anyhow!("input config is not set")),
         };
 
@@ -465,10 +479,18 @@ impl Bus {
         Ok(())
     }
 
-    pub async fn add_input(&self, input: InputConfig) -> anyhow::Result<()> {
+    pub async fn add_input(
+        &self,
+        input: InputConfig,
+        options: Option<HashMap<String, String>>,
+    ) -> anyhow::Result<()> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.tx
-            .send(BusCommand::AddInput { input, result: tx })
+            .send(BusCommand::AddInput {
+                input,
+                options,
+                result: tx,
+            })
             .await?;
         rx.await?
     }
@@ -500,6 +522,7 @@ impl Drop for Bus {
 
 struct BusState {
     input_config: Option<InputConfig>,
+    input_options: Option<HashMap<String, String>>,
     output_config: HashMap<String, OutputConfig>,
     input_task: Option<AvInputTask>,
     input_streams: Vec<AvStream>,
@@ -516,6 +539,7 @@ impl BusState {
             input_streams: Vec::new(),
             decoder_tasks: HashMap::new(),
             encoder_tasks: HashMap::new(),
+            input_options: None,
         }
     }
 }
@@ -525,6 +549,7 @@ pub type VideoRawFrameStream = Pin<Box<dyn Stream<Item = Option<VideoFrame>> + S
 pub enum BusCommand {
     AddInput {
         input: InputConfig,
+        options: Option<HashMap<String, String>>,
         result: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
     },
     RemoveInput {
@@ -539,7 +564,8 @@ pub enum BusCommand {
 pub enum InputConfig {
     Net { url: String },
     File { path: String },
-    Raw { sink: Arc<RawSinkSource> },
+    V4L2 { device: String },
+    X11Grab { display: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

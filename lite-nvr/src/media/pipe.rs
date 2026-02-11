@@ -1,6 +1,6 @@
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 use ffmpeg_bus::bus::{
@@ -69,7 +69,7 @@ impl Pipe {
 
         // Map and add input
         let fb_input = to_fb_input(&self.config.input);
-        if let Err(e) = bus.add_input(fb_input).await {
+        if let Err(e) = bus.add_input(fb_input, None).await {
             log::error!("Pipe: add_input failed: {:#}", e);
             self.started.store(false, Ordering::Relaxed);
             return;

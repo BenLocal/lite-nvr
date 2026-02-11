@@ -34,7 +34,7 @@ async fn test_mux_h264() -> anyhow::Result<()> {
     let input_config = InputConfig::File {
         path: input_path.to_string_lossy().into_owned(),
     };
-    bus.add_input(input_config).await?;
+    bus.add_input(input_config, None).await?;
 
     // Mux to raw H.264 and write to output.h264
     let output_config = OutputConfig::new(
@@ -77,7 +77,7 @@ async fn test_mux_aac() -> anyhow::Result<()> {
     let input_config = InputConfig::File {
         path: input_path.to_string_lossy().into_owned(),
     };
-    bus.add_input(input_config).await?;
+    bus.add_input(input_config, None).await?;
 
     // Mux to raw AAC and write to output.aac
     let output_config = OutputConfig::new(
@@ -115,7 +115,7 @@ async fn test_mux_only_video_mp4() -> anyhow::Result<()> {
     let input_config = InputConfig::File {
         path: input_path.to_string_lossy().into_owned(),
     };
-    bus.add_input(input_config).await?;
+    bus.add_input(input_config, None).await?;
 
     let output_config = OutputConfig::new(
         "mux_h264".to_string(),

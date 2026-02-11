@@ -1,7 +1,6 @@
 #![cfg(feature = "zlm")]
 
 use rszlm::{
-    event,
     init::EnvInitBuilder,
     server::{http_server_start, rtmp_server_start, rtsp_server_start},
 };
