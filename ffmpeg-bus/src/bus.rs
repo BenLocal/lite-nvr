@@ -99,12 +99,11 @@ impl Bus {
                     })
                     .ok_or(anyhow::anyhow!("stream not found"))?;
                 let input_stream_index = input_stream.index();
-                let need_decoder = Self::try_decoder(&output)?;
+                let need_decoder = Self::try_decoder(input_stream, &output)?;
+                let need_encoder = Self::try_encoder(input_stream, &output)?;
                 if need_decoder {
                     Self::start_decoder_task(state, input_stream_index).await?;
                 }
-
-                let need_encoder = Self::try_encoder(&output)?;
                 if need_encoder {
                     Self::start_encoder_task(state, input_stream_index).await?;
                 }
@@ -147,7 +146,13 @@ impl Bus {
         Ok(())
     }
 
-    fn try_decoder(output: &OutputConfig) -> anyhow::Result<bool> {
+    fn try_decoder(input_stream: &AvStream, output: &OutputConfig) -> anyhow::Result<bool> {
+        let input_codec = input_stream.parameters().id();
+
+        if input_codec == ffmpeg_next::codec::Id::RAWVIDEO {
+            return Ok(false);
+        }
+
         match &output.dest {
             OutputDest::Raw => Ok(true),
             OutputDest::File { .. } => Ok(false),
@@ -157,9 +162,15 @@ impl Bus {
         }
     }
 
-    fn try_encoder(output: &OutputConfig) -> anyhow::Result<bool> {
+    fn try_encoder(input_stream: &AvStream, output: &OutputConfig) -> anyhow::Result<bool> {
+        let input_codec = input_stream.parameters().id();
+
         if let OutputDest::Raw = output.dest {
             return Ok(false);
+        }
+
+        if input_codec == ffmpeg_next::codec::Id::RAWVIDEO {
+            return Ok(true);
         }
 
         if let OutputDest::Encoded = output.dest {
@@ -436,14 +447,37 @@ impl Bus {
         if state.encoder_tasks.contains_key(&input_stream_index) {
             return Ok(());
         }
-        let encoder_receiver = state
-            .decoder_tasks
-            .get(&input_stream_index)
-            .ok_or(anyhow::anyhow!("decoder task not found"))?
-            .subscribe();
-        let encoder = Encoder::new(input_stream, Settings::default(), None)?;
-        let encoder_task = EncoderTask::new();
-        encoder_task.start(encoder, encoder_receiver).await;
+
+        let codec_id = input_stream.parameters().id();
+        if codec_id == ffmpeg_next::codec::Id::RAWVIDEO {
+            let encoder_receiver: tokio::sync::broadcast::Receiver<RawPacketCmd> = state
+                .input_task
+                .as_ref()
+                .ok_or(anyhow::anyhow!("input task not found"))?
+                .subscribe();
+            let encoder = Encoder::new(input_stream, Settings::default(), None)?;
+            let encoder_task = EncoderTask::new();
+            // encoder_task
+            //     .start(
+            //         encoder,
+            //         encoder_receiver.map(|cmd| match cmd {
+            //             RawPacketCmd::Data(packet) => Some(RawFrameCmd::Data(packet)),
+            //             RawPacketCmd::EOF => Some(RawFrameCmd::EOF),
+            //             Err(_) => None,
+            //         }),
+            //     )
+            //     .await;
+        } else {
+            let encoder_receiver = state
+                .decoder_tasks
+                .get(&input_stream_index)
+                .ok_or(anyhow::anyhow!("decoder task not found"))?
+                .subscribe();
+            let encoder = Encoder::new(input_stream, Settings::default(), None)?;
+            let encoder_task = EncoderTask::new();
+            encoder_task.start(encoder, encoder_receiver).await;
+        }
+
         state.encoder_tasks.insert(input_stream_index, encoder_task);
         Ok(())
     }
@@ -458,6 +492,10 @@ impl Bus {
             .find(|s| s.index() == input_stream_index)
             .ok_or(anyhow::anyhow!("stream not found"))?;
         if state.decoder_tasks.contains_key(&input_stream_index) {
+            return Ok(());
+        }
+        let codec_id = input_stream.parameters().id();
+        if codec_id == ffmpeg_next::codec::Id::RAWVIDEO {
             return Ok(());
         }
         let decoder_receiver = state
