@@ -87,6 +87,8 @@ pub struct OutputConfig {
 pub enum InputConfig {
     Network { url: String },
     File { path: String },
+    V4L2 { device: String },
+    X11Grab { display: String },
 }
 
 /// Pipeline configuration

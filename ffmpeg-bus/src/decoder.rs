@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{backtrace::Backtrace, time::Duration};
 
 use ffmpeg_next::Rational;
 use tokio_util::sync::CancellationToken;
@@ -219,13 +219,13 @@ impl DecoderTask {
                     match packet {
                         RawPacketCmd::Data(packet) => {
                             if let Err(e) = decoder.send_packet(packet) {
-                                log::error!("send packet error: {}", e);
+                                log::error!("send packet error: {}\nbacktrace:\n{}", e, Backtrace::capture());
                                 continue;
                             }
                         }
                         RawPacketCmd::EOF => {
                             if let Err(e) = decoder.send_eof() {
-                                log::error!("decoder send eof error: {}", e);
+                                log::error!("decoder send eof error: {}\nbacktrace:\n{}", e, Backtrace::capture());
                             }
                             eof = true;
                         }
@@ -241,7 +241,7 @@ impl DecoderTask {
                             }
                             Ok(None) => break 'outer,
                             Err(e) => {
-                                log::error!("receive frame error: {}", e);
+                                log::error!("receive frame error: {}\nbacktrace:\n{}", e, Backtrace::capture());
                                 break 'outer;
                             }
                         }

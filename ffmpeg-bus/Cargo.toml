@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-ffmpeg-next = "7"
+ffmpeg-next = { version = "7", features = ["device"] }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
-anyhow = "1"
+anyhow = { version = "1", features = ["backtrace"] }
 bytes = "1"
 tokio-util = "0.7"
 log = "0.4"

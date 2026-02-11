@@ -12,12 +12,14 @@ fn init_logging() {
     env_logger::Builder::from_default_env()
         .filter_level(log::LevelFilter::Trace)
         .filter_module("ffmpeg_next", log::LevelFilter::Trace)
+        .filter_module("ffmpeg_bus", log::LevelFilter::Trace)
         .init();
 }
 
 #[tokio::main]
 async fn main() -> ! {
     init_logging();
+    ffmpeg_bus::init().expect("ffmpeg_bus init");
     let config = config::config();
     nvr_db::migrations::migrate(config.db_url())
         .await

@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::ffi::CString;
+use std::path::Path;
 
 use ffmpeg_next::Dictionary;
 use tokio_util::sync::CancellationToken;
@@ -86,11 +88,43 @@ pub struct AvInput {
 }
 
 impl AvInput {
-    pub fn new(url: &str, options: Option<Dictionary>) -> anyhow::Result<Self> {
-        let input = match options {
-            Some(options) => ffmpeg_next::format::input_with_dictionary(url, options),
-            None => ffmpeg_next::format::input(url),
-        }?;
+    /// Resolve input format by name (e.g. "x11grab", "v4l2") via FFmpeg's av_find_input_format.
+    fn find_input_format(name: &str) -> anyhow::Result<ffmpeg_next::format::format::Input> {
+        let cname = CString::new(name)
+            .map_err(|e| anyhow::anyhow!("invalid format name {:?}: {}", name, e))?;
+        let ptr = unsafe { ffmpeg_next::ffi::av_find_input_format(cname.as_ptr()) };
+        if ptr.is_null() {
+            return Err(anyhow::anyhow!("input format not found: {}", name));
+        }
+        Ok(unsafe { ffmpeg_next::format::format::Input::wrap(ptr as *mut _) })
+    }
+
+    pub fn new(
+        url: &str,
+        format: Option<&str>,
+        options: Option<Dictionary>,
+    ) -> anyhow::Result<Self> {
+        use ffmpeg_next::format::format::Format;
+
+        let path = Path::new(url);
+        let input = match (format, options) {
+            (Some(fmt_name), Some(opts)) => {
+                let fmt = Self::find_input_format(fmt_name)?;
+                let ctx = ffmpeg_next::format::open_with(path, &Format::Input(fmt), opts)?;
+                ctx.input()
+            }
+            (Some(fmt_name), None) => {
+                let fmt = Self::find_input_format(fmt_name)?;
+                let ctx = ffmpeg_next::format::open_with(
+                    path,
+                    &Format::Input(fmt),
+                    Dictionary::new(),
+                )?;
+                ctx.input()
+            }
+            (None, Some(opts)) => ffmpeg_next::format::input_with_dictionary(path, opts)?,
+            (None, None) => ffmpeg_next::format::input(path)?,
+        };
 
         let mut streams = HashMap::new();
         for stream in input.streams() {

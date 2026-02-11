@@ -31,7 +31,8 @@ struct PipeRequest {
 
 #[derive(Serialize, Deserialize)]
 struct InputRequest {
-    url: String,
+    t: String,
+    input: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -98,10 +99,24 @@ async fn add_pipe(Json(config): Json<PipeRequest>) -> ApiJsonResult<String> {
         return Err(anyhow::anyhow!("outputs is required").into());
     }
 
-    let pipe_config = PipeConfig {
-        input: InputConfig::Network {
-            url: config.input.url,
+    let input = match config.input.t.as_ref() {
+        "net" => InputConfig::Network {
+            url: config.input.input,
         },
+        "file" => InputConfig::File {
+            path: config.input.input,
+        },
+        "v4l2" => InputConfig::V4L2 {
+            device: config.input.input,
+        },
+        "x11grab" => InputConfig::X11Grab {
+            display: config.input.input,
+        },
+        _ => return Err(anyhow::anyhow!("input type is not supported").into()),
+    };
+
+    let pipe_config = PipeConfig {
+        input: input,
         outputs: outputs,
     };
     manager::add_pipe(&config.id, pipe_config, false).await?;

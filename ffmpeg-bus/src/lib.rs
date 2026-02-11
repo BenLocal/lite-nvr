@@ -1,5 +1,11 @@
 #![allow(dead_code)]
 
+/// Registers FFmpeg components (format, device, etc.). Call once at startup
+/// before using device inputs like x11grab or v4l2.
+pub fn init() -> anyhow::Result<()> {
+    ffmpeg_next::init().map_err(|e| anyhow::anyhow!("ffmpeg_next init: {}", e))
+}
+
 pub mod audio_mixer;
 pub mod bsf;
 pub mod bus;

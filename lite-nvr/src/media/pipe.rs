@@ -1,6 +1,9 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    backtrace::Backtrace,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use ffmpeg_bus::bus::{
@@ -57,12 +60,14 @@ impl Pipe {
             return;
         }
 
-        let input_url = match &self.config.input {
-            InputConfig::Network { url } => url.clone(),
-            InputConfig::File { path } => path.clone(),
+        let (t, input_url) = match &self.config.input {
+            InputConfig::Network { url } => ("net", url),
+            InputConfig::File { path } => ("file", path),
+            InputConfig::V4L2 { device } => ("v4l2", device),
+            InputConfig::X11Grab { display } => ("x11grab", display),
         };
 
-        log::info!("Pipe: starting with input {}", input_url);
+        log::info!("Pipe: starting with input {}://{}", t, input_url);
 
         let bus = FbBus::new("pipe");
         let cancel = self.cancel.clone();
@@ -70,7 +75,11 @@ impl Pipe {
         // Map and add input
         let fb_input = to_fb_input(&self.config.input);
         if let Err(e) = bus.add_input(fb_input, None).await {
-            log::error!("Pipe: add_input failed: {:#}", e);
+            log::error!(
+                "Pipe: add_input failed: {:#}\nbacktrace:\n{}",
+                e,
+                Backtrace::capture()
+            );
             self.started.store(false, Ordering::Relaxed);
             return;
         }
@@ -153,6 +162,12 @@ fn to_fb_input(input: &InputConfig) -> FbInputConfig {
     match input {
         InputConfig::Network { url } => FbInputConfig::Net { url: url.clone() },
         InputConfig::File { path } => FbInputConfig::File { path: path.clone() },
+        InputConfig::V4L2 { device } => FbInputConfig::V4L2 {
+            device: device.clone(),
+        },
+        InputConfig::X11Grab { display } => FbInputConfig::X11Grab {
+            display: display.clone(),
+        },
     }
 }
 

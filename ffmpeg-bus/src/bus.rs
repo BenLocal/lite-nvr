@@ -1,6 +1,7 @@
-use std::{collections::HashMap, hash::Hasher, pin::Pin};
+use std::{backtrace::Backtrace, collections::HashMap, hash::Hasher, pin::Pin};
 
 use futures::{Stream, StreamExt};
+use log::error;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;
 
@@ -46,7 +47,7 @@ impl Bus {
                 },
                 Some(cmd) = rx.recv() => {
                     if let Err(e) = Self::inner_command_handler(&mut state, cmd).await {
-                        log::error!("inner_command_handler error: {:#?}", e);
+                        error!("inner_command_handler error: {:#?}\nbacktrace:\n{}", e, Backtrace::capture());
                     }
                 },
             }
@@ -203,7 +204,11 @@ impl Bus {
                     RawPacketCmd::Data(packet) => {
                         if packet.index() == target_stream_index {
                             if let Err(e) = output.write_packet(target_stream_index, packet) {
-                                log::error!("mux to file write_packet error: {:#?}", e);
+                                log::error!(
+                                    "mux to file write_packet error: {:#?}\nbacktrace:\n{}",
+                                    e,
+                                    Backtrace::capture()
+                                );
                             }
                         }
                     }
@@ -211,7 +216,11 @@ impl Bus {
                 }
             }
             if let Err(e) = output.finish() {
-                log::error!("mux to file finish error: {:#?}", e);
+                log::error!(
+                    "mux to file finish error: {:#?}\nbacktrace:\n{}",
+                    e,
+                    Backtrace::capture()
+                );
             }
             println!("mux to file finished: {}", path_owned);
         });
@@ -271,7 +280,11 @@ impl Bus {
                     RawPacketCmd::Data(packet) => {
                         if packet.index() == target_stream_index {
                             if let Err(e) = output.write_packet(target_stream_index, packet) {
-                                log::error!("mux to net write_packet error: {:#?}", e);
+                                log::error!(
+                                    "mux to net write_packet error: {:#?}\nbacktrace:\n{}",
+                                    e,
+                                    Backtrace::capture()
+                                );
                             }
                         }
                     }
@@ -279,7 +292,11 @@ impl Bus {
                 }
             }
             if let Err(e) = output.finish() {
-                log::error!("mux to net finish error: {:#?}", e);
+                log::error!(
+                    "mux to net finish error: {:#?}\nbacktrace:\n{}",
+                    e,
+                    Backtrace::capture()
+                );
             }
             log::info!("mux to net finished: {}", url_owned);
         });
@@ -336,7 +353,11 @@ impl Bus {
                     RawPacketCmd::Data(packet) => {
                         if packet.index() == target_stream_index {
                             if let Err(e) = writer.write_packet(packet) {
-                                log::error!("mux write_packet error: {:#?}", e);
+                                log::error!(
+                                    "mux write_packet error: {:#?}\nbacktrace:\n{}",
+                                    e,
+                                    Backtrace::capture()
+                                );
                             }
                         }
                     }
@@ -344,7 +365,11 @@ impl Bus {
                 }
             }
             if let Err(e) = writer.finish() {
-                log::error!("mux finish error: {:#?}", e);
+                log::error!(
+                    "mux finish error: {:#?}\nbacktrace:\n{}",
+                    e,
+                    Backtrace::capture()
+                );
             }
             println!("mux stream finished");
         });
@@ -369,7 +394,11 @@ impl Bus {
                 RawFrameCmd::EOF => None,
             },
             Err(e) => {
-                log::error!("decoder task error: {:#?}", e);
+                log::error!(
+                    "decoder task error: {:#?}\nbacktrace:\n{}",
+                    e,
+                    Backtrace::capture()
+                );
                 None
             }
         });
@@ -451,10 +480,12 @@ impl Bus {
             )
         });
         let input = match state.input_config.as_ref() {
-            Some(InputConfig::Net { url }) => AvInput::new(url, options)?,
-            Some(InputConfig::File { path }) => AvInput::new(path, options)?,
-            Some(InputConfig::V4L2 { device }) => AvInput::new(device, options)?,
-            Some(InputConfig::X11Grab { display }) => AvInput::new(display, options)?,
+            Some(InputConfig::Net { url }) => AvInput::new(url, None, options)?,
+            Some(InputConfig::File { path }) => AvInput::new(path, None, options)?,
+            Some(InputConfig::V4L2 { device }) => AvInput::new(device, None, options)?,
+            Some(InputConfig::X11Grab { display }) => {
+                AvInput::new(display, Some("x11grab"), options)?
+            }
             None => return Err(anyhow::anyhow!("input config is not set")),
         };
 

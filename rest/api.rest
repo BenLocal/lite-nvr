@@ -28,18 +28,32 @@ Content-Type: application/json
         "url": "rtsp://172.31.169.114:8554/ff/d4jkxuesheng.mp4"
     },
     "outputs": [
-        // {
-        //     "t": "net",
-        //    "net": {
-        //         "url": "rtsp://172.31.169.114:8554/ff/d4jkxuesheng.mp4",
-        //         "format": "rtsp"
-        //    }
-        // },
         {
             "t": "zlm",
             "zlm": {
                 "app": "shiben",
                 "stream": "2"
+            }
+        }
+    ]
+}
+
+### Add pipe with x11grab
+POST http://{{Host}}/pipe/add
+Content-Type: application/json
+
+{
+    "id": "test",
+    "input": {
+        "t": "x11grab",
+        "input": ":99"
+    },
+       "outputs": [
+        {
+            "t": "zlm",
+            "zlm": {
+                "app": "shiben",
+                "stream": "3"
             }
         }
     ]
