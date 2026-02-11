@@ -52,11 +52,17 @@ GET http://{{Host}}/pipe/remove/test
 ### system route index
 GET http://{{Host}}/system
 
-### List devices
-GET http://{{Host}}/system/list/devices
+### List device foramts
+GET http://{{Host}}/system/list/device/foramts
 Content-Type: application/json
 
 {
-    "kind": 1,
+    "kind": 0,
     "direction": 0
 }
+
+### List v4l2 devices
+GET http://{{Host}}/system/list/v4l2/devices
+
+### List x11grab devices
+GET http://{{Host}}/system/list/x11grab/devices

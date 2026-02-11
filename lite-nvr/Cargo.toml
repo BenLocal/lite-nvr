@@ -21,6 +21,7 @@ ffmpeg-bus = { path = "../ffmpeg-bus" }
 nvr-db = { path = "../nvr-db" }
 nvr-dashboard = { path = "../nvr-dashboard" }
 rszlm = { git = "https://github.com/BenLocal/rszlm.git", optional = true }
+tokio-linux-video = "0.1.1"
 
 [features]
 default = ["zlm"]
