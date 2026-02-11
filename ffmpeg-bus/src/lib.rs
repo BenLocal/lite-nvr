@@ -4,6 +4,7 @@ pub mod audio_mixer;
 pub mod bsf;
 pub mod bus;
 pub mod decoder;
+pub mod device;
 pub mod encoder;
 pub mod frame;
 pub mod input;

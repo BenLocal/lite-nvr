@@ -5,6 +5,7 @@ use axum::{
 use reqwest::StatusCode;
 
 pub mod media_pipe;
+pub mod system;
 pub mod user;
 
 pub type ApiResult<T> = Result<T, ApiError>;

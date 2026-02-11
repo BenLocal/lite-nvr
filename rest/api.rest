@@ -47,3 +47,16 @@ Content-Type: application/json
 
 ### Remove pipe
 GET {{HOST}}/pipe/remove/test
+
+
+### system route index
+GET {{HOST}}/system
+
+### List devices
+GET {{HOST}}/system/list/devices
+Content-Type: application/json
+
+{
+    "kind": 1,
+    "direction": 0
+}
