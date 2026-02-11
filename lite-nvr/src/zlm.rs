@@ -23,7 +23,7 @@ pub(crate) fn start_zlm_server(cancel: CancellationToken) {
 
             {
                 let mut events = event::EVENTS.write().unwrap();
-                events.on_media_publish(|media| {
+                events.on_media_publish(|_media| {
                     log::info!("ZLM: media publish");
                 });
             }

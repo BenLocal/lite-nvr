@@ -1,9 +1,4 @@
-use axum::{
-    Router,
-    extract::Request,
-    middleware::Next,
-    response::{IntoResponse, Redirect, Response},
-};
+use axum::Router;
 use axum_embed::{FallbackBehavior, ServeEmbed};
 use rust_embed::RustEmbed;
 
