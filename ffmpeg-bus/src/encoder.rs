@@ -92,6 +92,16 @@ impl Default for Settings {
     }
 }
 
+/// Returns a pixel format suitable for libx264. Source formats not supported by libx264 (e.g. rgb24)
+/// are mapped to YUV420P; the encoder will use its internal scaler to convert when sending frames.
+pub fn pixel_format_for_libx264(source: ffmpeg_next::format::Pixel) -> ffmpeg_next::format::Pixel {
+    use ffmpeg_next::format::Pixel;
+    match source {
+        Pixel::RGB24 | Pixel::BGR24 => Pixel::YUV420P,
+        _ => source,
+    }
+}
+
 pub struct Encoder {
     stream: AvStream,
     inner: EncoderType,
@@ -151,6 +161,22 @@ impl Encoder {
         }
     }
 
+    /// PTS in encoder time_base when input has no PTS (e.g. decoder output AV_NOPTS_VALUE).
+    /// Ensures monotonic timestamps at correct frame rate so downstream (e.g. ZLMediaKit) does not clear cache.
+    fn pts_for_frame_index(&self, frame_index: i64) -> i64 {
+        let rate = self.stream.rate();
+        let tb = self.encoder_time_base;
+        if rate.0 <= 0 {
+            return frame_index;
+        }
+        // 1 frame = 1/fps seconds; in encoder time_base: frame_index * (tb.den / (fps * tb.num))
+        let fps_num = rate.0 as i64;
+        let fps_den = rate.1 as i64;
+        let tb_num = tb.0 as i64;
+        let tb_den = tb.1 as i64;
+        (frame_index * tb_den * fps_den) / (tb_num * fps_num)
+    }
+
     pub fn send_frame(&mut self, mut frame: RawFrame) -> anyhow::Result<()> {
         let sending_frame = match (&mut frame, &self.inner) {
             (RawFrame::Video(f), EncoderType::Video(e)) => {
@@ -159,6 +185,9 @@ impl Encoder {
                 if let Some(pts) = f.pts() {
                     let new_pts = self.rescale_pts(pts);
                     f.set_pts(Some(new_pts));
+                } else {
+                    // No PTS from decoder/input: set PTS in encoder time_base so output is correct fps
+                    f.set_pts(Some(self.pts_for_frame_index(self.frame_index)));
                 }
 
                 if f.format() != e.format() {

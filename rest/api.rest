@@ -25,7 +25,8 @@ Content-Type: application/json
 {
     "id": "test",
     "input": {
-        "url": "rtsp://172.31.169.114:8554/ff/d4jkxuesheng.mp4"
+        "t": "net",
+        "i": "rtsp://172.31.169.114:8554/ff/d4jkxuesheng.mp4"
     },
     "outputs": [
         {
@@ -46,14 +47,35 @@ Content-Type: application/json
     "id": "test",
     "input": {
         "t": "x11grab",
-        "input": ":99"
+        "i": ":99"
     },
-       "outputs": [
+    "outputs": [
         {
             "t": "zlm",
             "zlm": {
                 "app": "shiben",
                 "stream": "3"
+            }
+        }
+    ]
+}
+
+### Add pipe with device rawvideo lavfi
+POST http://{{Host}}/pipe/add
+Content-Type: application/json
+
+{
+    "id": "test",
+    "input": {
+        "t": "lavfi",
+        "i": "testsrc=size=1920x1080:rate=10"
+    },
+    "outputs": [
+        {
+            "t": "zlm",
+            "zlm": {
+                "app": "shiben",
+                "stream": "4"
             }
         }
     ]

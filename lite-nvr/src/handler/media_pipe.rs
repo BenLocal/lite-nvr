@@ -32,7 +32,7 @@ struct PipeRequest {
 #[derive(Serialize, Deserialize)]
 struct InputRequest {
     t: String,
-    input: String,
+    i: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -101,13 +101,13 @@ async fn add_pipe(Json(config): Json<PipeRequest>) -> ApiJsonResult<String> {
 
     let input = match config.input.t.as_ref() {
         "net" => InputConfig::Network {
-            url: config.input.input,
+            url: config.input.i,
         },
         "file" => InputConfig::File {
-            path: config.input.input,
+            path: config.input.i,
         },
-        "v4l2" | "x11grab" => InputConfig::Device {
-            display: config.input.input,
+        "v4l2" | "x11grab" | "lavfi" => InputConfig::Device {
+            display: config.input.i,
             format: config.input.t.clone(),
         },
         _ => return Err(anyhow::anyhow!("input type is not supported").into()),

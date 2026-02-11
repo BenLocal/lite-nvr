@@ -9,7 +9,7 @@ use ffmpeg_next::Dictionary;
 
 use crate::{
     decoder::{Decoder, DecoderTask},
-    encoder::{Encoder, EncoderTask, Settings},
+    encoder::{Encoder, EncoderTask, Settings, pixel_format_for_libx264},
     frame::{RawFrameCmd, VideoFrame, packet_to_raw_video_frame},
     input::{AvInput, AvInputTask},
     output::{AvOutput, AvOutputStream},
@@ -120,7 +120,16 @@ impl Bus {
                             .await
                     }
                     OutputDest::Mux { format } => {
-                        Self::create_mux_output_stream(state, format, input_stream_index).await
+                        if need_encoder {
+                            Self::create_mux_output_stream_from_encoder(
+                                state,
+                                format,
+                                input_stream_index,
+                            )
+                            .await
+                        } else {
+                            Self::create_mux_output_stream(state, format, input_stream_index).await
+                        }
                     }
                     OutputDest::Encoded => {
                         Self::create_encoded_output_stream(state, input_stream_index).await
@@ -149,6 +158,7 @@ impl Bus {
     fn try_decoder(input_stream: &AvStream, output: &OutputConfig) -> anyhow::Result<bool> {
         let input_codec = input_stream.parameters().id();
 
+        // RAWVIDEO: packets are raw pixels, no decoder. WRAPPED_AVFRAME: packets wrap AVFrame, need decoder to unwrap.
         if input_codec == ffmpeg_next::codec::Id::RAWVIDEO {
             return Ok(false);
         }
@@ -156,7 +166,8 @@ impl Bus {
         match &output.dest {
             OutputDest::Raw => Ok(true),
             OutputDest::File { .. } => Ok(false),
-            OutputDest::Mux { .. } => Ok(false),
+            // Mux (e.g. Zlm -> h264): need decoder when input is WRAPPED_AVFRAME so encoder gets unwrapped frames
+            OutputDest::Mux { .. } => Ok(input_codec == ffmpeg_next::codec::Id::WRAPPED_AVFRAME),
             OutputDest::Net { .. } => Ok(true),
             OutputDest::Encoded => Ok(true),
         }
@@ -169,12 +180,26 @@ impl Bus {
             return Ok(false);
         }
 
-        if input_codec == ffmpeg_next::codec::Id::RAWVIDEO {
+        if input_codec == ffmpeg_next::codec::Id::RAWVIDEO
+            || input_codec == ffmpeg_next::codec::Id::WRAPPED_AVFRAME
+        {
             return Ok(true);
         }
 
         if let OutputDest::Encoded = output.dest {
             return Ok(true);
+        }
+
+        // Mux format "h264" (or similar) requires encoded packets; use encoder when input is not already that codec
+        if let OutputDest::Mux { format } = &output.dest {
+            let need_encode = match format.as_str() {
+                "h264" => input_codec != ffmpeg_next::codec::Id::H264,
+                "hevc" | "h265" => input_codec != ffmpeg_next::codec::Id::HEVC,
+                _ => false,
+            };
+            if need_encode {
+                return Ok(true);
+            }
         }
 
         if output.encode.is_some() {
@@ -336,6 +361,68 @@ impl Bus {
         Ok(Box::pin(stream))
     }
 
+    /// Mux encoded packets (from encoder_tasks) into format (e.g. "h264"). Used when input
+    /// was not already that codec and encoder was started.
+    async fn create_mux_output_stream_from_encoder(
+        state: &mut BusState,
+        format: &str,
+        input_stream_index: usize,
+    ) -> anyhow::Result<VideoRawFrameStream> {
+        let mut encoder_receiver = state
+            .encoder_tasks
+            .get(&input_stream_index)
+            .ok_or(anyhow::anyhow!("encoder task not found"))?
+            .subscribe();
+
+        let input_stream = state
+            .input_streams
+            .iter()
+            .find(|s| s.index() == input_stream_index)
+            .ok_or(anyhow::anyhow!("no matching stream in input"))?;
+
+        let codec_id = match format {
+            "h264" => ffmpeg_next::codec::Id::H264,
+            "hevc" | "h265" => ffmpeg_next::codec::Id::HEVC,
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "unsupported mux format for encoder output: {}",
+                    format
+                ));
+            }
+        };
+        let encoder_output_stream = AvStream::for_encoder_output(input_stream, codec_id);
+
+        let mut stream = AvOutputStream::new(format)?;
+        stream.add_stream(&encoder_output_stream)?;
+        let (writer, reader) = stream.into_split();
+
+        tokio::spawn(async move {
+            let mut writer = writer;
+            while let Ok(cmd) = encoder_receiver.recv().await {
+                match cmd {
+                    RawPacketCmd::Data(mut packet) => {
+                        // Encoder output is single stream; ensure stream index matches mux (0)
+                        packet.get_mut().set_stream(0);
+                        if let Err(e) = writer.write_packet(packet) {
+                            log::error!("mux write_packet error: {}", e.to_string());
+                        }
+                    }
+                    RawPacketCmd::EOF => break,
+                }
+            }
+            if let Err(e) = writer.finish() {
+                log::error!(
+                    "mux finish error: {:#?}\nbacktrace:\n{}",
+                    e,
+                    Backtrace::capture()
+                );
+            }
+            println!("mux stream finished");
+        });
+
+        Ok(Box::pin(reader.map(|pkg| Some(VideoFrame::from(pkg)))))
+    }
+
     async fn create_mux_output_stream(
         state: &mut BusState,
         format: &str,
@@ -364,11 +451,7 @@ impl Bus {
                     RawPacketCmd::Data(packet) => {
                         if packet.index() == target_stream_index {
                             if let Err(e) = writer.write_packet(packet) {
-                                log::error!(
-                                    "mux write_packet error: {:#?}\nbacktrace:\n{}",
-                                    e,
-                                    Backtrace::capture()
-                                );
+                                log::error!("mux write_packet error: {}", e.to_string());
                             }
                         }
                     }
@@ -452,6 +535,15 @@ impl Bus {
         }
     }
 
+    /// Fallback when codec parameters report 0x0 (e.g. WRAPPED_AVFRAME before first frame).
+    fn ensure_video_dimensions(width: u32, height: u32) -> (u32, u32) {
+        const FALLBACK_W: u32 = 320;
+        const FALLBACK_H: u32 = 240;
+        let w = if width == 0 { FALLBACK_W } else { width };
+        let h = if height == 0 { FALLBACK_H } else { height };
+        (w, h)
+    }
+
     async fn start_encoder_task(
         state: &mut BusState,
         input_stream_index: usize,
@@ -467,16 +559,25 @@ impl Bus {
 
         let codec_id = input_stream.parameters().id();
         let encoder_task = EncoderTask::new();
+        // Only RAWVIDEO has raw pixel data in packets; use packet->frame conversion.
+        // WRAPPED_AVFRAME packets wrap AVFrame (not raw pixels), so use decoder path.
         if codec_id == ffmpeg_next::codec::Id::RAWVIDEO {
             let (width, height, pixel_format) =
                 Self::raw_video_params_from_parameters(input_stream.parameters());
+            let (width, height) = Self::ensure_video_dimensions(width, height);
+            let encoder_settings = Settings {
+                width,
+                height,
+                pixel_format: pixel_format_for_libx264(pixel_format),
+                ..Settings::default()
+            };
             let packet_receiver: tokio::sync::broadcast::Receiver<RawPacketCmd> = state
                 .input_task
                 .as_ref()
                 .ok_or(anyhow::anyhow!("input task not found"))?
                 .subscribe();
             let (frame_tx, frame_rx) = tokio::sync::broadcast::channel::<RawFrameCmd>(1024);
-            let encoder = Encoder::new(input_stream, Settings::default(), None)?;
+            let encoder = Encoder::new(input_stream, encoder_settings, None)?;
             // Spawn task: packet -> frame conversion, then forward to encoder
             {
                 let mut packet_rx = packet_receiver;
@@ -507,10 +608,24 @@ impl Bus {
                 .get(&input_stream_index)
                 .ok_or(anyhow::anyhow!("decoder task not found"))?
                 .subscribe();
-            // Decoded path (e.g. WRAPPED_AVFRAME from lavfi): need explicit codec for encoder
-            let encoder_settings = Settings {
-                codec: Some("libx264".to_string()),
-                ..Settings::default()
+            // Decoded path: decoder outputs RawFrame; encoder needs correct size/format.
+            // For WRAPPED_AVFRAME (e.g. lavfi testsrc), use stream params so output resolution matches source.
+            let encoder_settings = if codec_id == ffmpeg_next::codec::Id::WRAPPED_AVFRAME {
+                let (width, height, pixel_format) =
+                    Self::raw_video_params_from_parameters(input_stream.parameters());
+                let (width, height) = Self::ensure_video_dimensions(width, height);
+                Settings {
+                    width,
+                    height,
+                    pixel_format: pixel_format_for_libx264(pixel_format),
+                    codec: Some("libx264".to_string()),
+                    ..Settings::default()
+                }
+            } else {
+                Settings {
+                    codec: Some("libx264".to_string()),
+                    ..Settings::default()
+                }
             };
             let encoder = Encoder::new(input_stream, encoder_settings, None)?;
             encoder_task.start(encoder, encoder_receiver).await;
