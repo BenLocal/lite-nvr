@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub mod audio_mixer;
 pub mod bsf;
 pub mod bus;
 pub mod decoder;

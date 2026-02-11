@@ -42,6 +42,10 @@ impl RawAudioFrame {
     pub fn get_mut(&mut self) -> &mut ffmpeg_next::frame::Audio {
         Arc::make_mut(&mut self.frame)
     }
+
+    pub fn as_audio(&self) -> &ffmpeg_next::frame::Audio {
+        &self.frame
+    }
 }
 
 impl From<ffmpeg_next::frame::Audio> for RawAudioFrame {
