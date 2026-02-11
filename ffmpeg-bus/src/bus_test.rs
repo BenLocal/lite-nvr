@@ -287,8 +287,9 @@ async fn test_device_rawvideo_lavfi() -> anyhow::Result<()> {
 
     let mut file = tokio::fs::File::create(file_name).await?;
     while let Some(frame) = stream.next().await {
-        if let Some(frame) = frame {
-            file.write_all(&frame.data).await?;
+        match frame {
+            Some(f) => file.write_all(&f.data).await?,
+            None => break, // EOF from encoder, stop consuming
         }
     }
     file.sync_all().await?;
