@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     handler::ApiJsonResult,
     manager,
-    media::types::{InputConfig, OutputConfig, OutputDest, PipeConfig},
+    media::types::{EncodeConfig, InputConfig, OutputConfig, OutputDest, PipeConfig},
 };
 
 pub fn meida_pipe_router() -> Router {
@@ -40,6 +40,16 @@ struct OutputRequest {
     net: Option<NetConfigRequest>,
     t: Option<String>,
     zlm: Option<ZlmConfigRequest>,
+    /// Optional encode config for faster encoding: preset ("ultrafast", "superfast", "fast"), bitrate (bps).
+    encode: Option<EncodeRequest>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct EncodeRequest {
+    /// x264 preset: ultrafast (default, fastest), superfast, veryfast, fast, medium, etc.
+    preset: Option<String>,
+    /// Target bitrate in bps.
+    bitrate: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -92,7 +102,12 @@ async fn add_pipe(Json(config): Json<PipeRequest>) -> ApiJsonResult<String> {
                 }
             }
         };
-        outputs.push(OutputConfig { dest, encode: None });
+        let encode = output.encode.map(|e| EncodeConfig {
+            preset: e.preset,
+            bitrate: e.bitrate,
+            ..EncodeConfig::default()
+        });
+        outputs.push(OutputConfig { dest, encode });
     }
 
     if outputs.is_empty() {

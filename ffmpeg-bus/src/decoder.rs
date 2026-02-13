@@ -151,7 +151,9 @@ pub struct DecoderTask {
 impl DecoderTask {
     pub fn new() -> Self {
         let cancel = CancellationToken::new();
-        let (sender, _) = tokio::sync::broadcast::channel(1024);
+        /// Decoder output = raw frames; balance memory vs avoiding Lagged (dropped frames break stream).
+        const FRAME_CHAN_CAP: usize = 16;
+        let (sender, _) = tokio::sync::broadcast::channel(FRAME_CHAN_CAP);
 
         Self {
             cancel,
@@ -168,10 +170,16 @@ impl DecoderTask {
     }
 
     pub async fn start(&self, decoder: Decoder, mut decoder_receiver: RawPacketReceiver) {
+        log::info!(
+            "decoder loop started, stream index: {}",
+            decoder.stream_index()
+        );
         let cancel_clone = self.cancel.clone();
         let sender_clone = self.raw_chan.clone();
+        /// Bounded queue: when decoder is slower than producer, back-pressure instead of unbounded growth (OOM).
+        const PACKET_QUEUE_BOUND: usize = 16;
         tokio::spawn(async move {
-            let (packet_tx, packet_rx) = std::sync::mpsc::channel::<RawPacketCmd>();
+            let (packet_tx, packet_rx) = std::sync::mpsc::sync_channel::<RawPacketCmd>(PACKET_QUEUE_BOUND);
             let current_stream_index = decoder.stream_index();
 
             let handle_cancel = cancel_clone.clone();
@@ -189,7 +197,9 @@ impl DecoderTask {
                                 if packet.index() != current_stream_index {
                                     continue;
                                 }
-                                let _ = packet_tx.send(RawPacketCmd::Data(packet));
+                                if packet_tx.send(RawPacketCmd::Data(packet)).is_err() {
+                                    break;
+                                }
                             }
                             RawPacketCmd::EOF => {
                                 let _ = packet_tx.send(RawPacketCmd::EOF);
@@ -219,13 +229,21 @@ impl DecoderTask {
                     match packet {
                         RawPacketCmd::Data(packet) => {
                             if let Err(e) = decoder.send_packet(packet) {
-                                log::error!("send packet error: {}\nbacktrace:\n{}", e, Backtrace::capture());
+                                log::error!(
+                                    "send packet error: {}\nbacktrace:\n{}",
+                                    e,
+                                    Backtrace::capture()
+                                );
                                 continue;
                             }
                         }
                         RawPacketCmd::EOF => {
                             if let Err(e) = decoder.send_eof() {
-                                log::error!("decoder send eof error: {}\nbacktrace:\n{}", e, Backtrace::capture());
+                                log::error!(
+                                    "decoder send eof error: {}\nbacktrace:\n{}",
+                                    e,
+                                    Backtrace::capture()
+                                );
                             }
                             eof = true;
                         }
@@ -241,7 +259,11 @@ impl DecoderTask {
                             }
                             Ok(None) => break 'outer,
                             Err(e) => {
-                                log::error!("receive frame error: {}\nbacktrace:\n{}", e, Backtrace::capture());
+                                log::error!(
+                                    "receive frame error: {}\nbacktrace:\n{}",
+                                    e,
+                                    Backtrace::capture()
+                                );
                                 break 'outer;
                             }
                         }

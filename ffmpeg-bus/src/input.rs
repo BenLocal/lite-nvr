@@ -16,9 +16,11 @@ pub struct AvInputTask {
 }
 
 impl AvInputTask {
+    /// Input packet channel. Bounded per-frame size; balance memory vs avoiding Lagged drop.
+    const PACKET_CHAN_CAP: usize = 16;
     pub fn new() -> Self {
         let cancel = CancellationToken::new();
-        let (sender, _) = tokio::sync::broadcast::channel(1024);
+        let (sender, _) = tokio::sync::broadcast::channel(Self::PACKET_CHAN_CAP);
 
         Self {
             cancel,
@@ -63,11 +65,11 @@ impl AvInputTask {
 
             tokio::select! {
                 _ = handle => {
-                    println!("read input packet task finished");
+                    log::info!("read input packet task finished");
                     cancel_clone.cancel();
                 }
                 _ = cancel_clone.cancelled() => {
-                    println!("read input packet task cancelled");
+                    log::info!("read input packet task cancelled");
                 }
             }
         });

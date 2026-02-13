@@ -278,7 +278,7 @@ impl DynamicMixerTask {
             }
 
             let _ = handle.await;
-            println!("audio dynamic mixer task finished");
+            log::info!("audio dynamic mixer task finished");
         });
 
         Ok(())

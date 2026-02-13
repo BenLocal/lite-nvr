@@ -133,9 +133,13 @@ impl Encoder {
         encoder.set_frame_rate(Some(stream.rate()));
         encoder.set_time_base(ffmpeg_next::util::mathematics::rescale::TIME_BASE);
 
+        // Encoding efficiency: preset (ultrafast=fastest), tune zerolatency; caller may pass options via EncodeConfig.
+        let need_defaults = options.is_none();
         let mut opts = options.unwrap_or_default();
-        opts.set("preset", "ultrafast");
-        opts.set("tune", "zerolatency");
+        if need_defaults {
+            opts.set("preset", "ultrafast");
+            opts.set("tune", "zerolatency");
+        }
         let encoder = encoder.open_with(opts)?;
         let encoder_time_base: Rational = unsafe { (*encoder.0.as_ptr()).time_base.into() };
 
@@ -251,7 +255,9 @@ pub struct EncoderTask {
 impl EncoderTask {
     pub fn new() -> Self {
         let cancel = CancellationToken::new();
-        let (sender, _) = tokio::sync::broadcast::channel(1024);
+        /// Encoder output = encoded packets (small). Moderate capacity for bursts.
+        const PACKET_CHAN_CAP: usize = 64;
+        let (sender, _) = tokio::sync::broadcast::channel(PACKET_CHAN_CAP);
 
         Self {
             cancel,
@@ -270,25 +276,54 @@ impl EncoderTask {
     pub async fn start(&self, encoder: Encoder, mut encoder_receiver: RawFrameReceiver) {
         let cancel_clone = self.cancel.clone();
         let sender_clone = self.raw_chan.clone();
-
+        log::info!(
+            "encoder loop started, stream index: {}",
+            encoder.stream.index()
+        );
+        /// Bounded queue: when encoder is slower than producer, back-pressure instead of unbounded growth (OOM).
+        const FRAME_QUEUE_BOUND: usize = 128;
+        /// Log "queue full" at most every N drops; use debug level so info logs stay clean.
+        const DROP_LOG_INTERVAL: u64 = 120;
         tokio::spawn(async move {
-            let (tx, rx) = std::sync::mpsc::channel::<RawFrameCmd>();
+            let (tx, rx) = std::sync::mpsc::sync_channel::<RawFrameCmd>(FRAME_QUEUE_BOUND);
             let handle_cancel = cancel_clone.clone();
             let handle = tokio::task::spawn_blocking(move || {
                 Self::encoder_loop(encoder, handle_cancel, rx, sender_clone)
             });
+            let mut dropped_count: u64 = 0;
             loop {
                 tokio::select! {
                     _ = cancel_clone.cancelled() => {
                         break;
                     }
                     Ok(frame) = encoder_receiver.recv() => {
-                        let _ = tx.send(frame);
+                        let is_eof = matches!(&frame, RawFrameCmd::EOF);
+                        let ok = if is_eof {
+                            tx.send(frame).is_ok()
+                        } else {
+                            match tx.try_send(frame) {
+                                Ok(()) => true,
+                                Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                                    dropped_count += 1;
+                                    if dropped_count % DROP_LOG_INTERVAL == 1 {
+                                        log::debug!(
+                                            "encoder frame queue full, dropped {} frames (back-pressure)",
+                                            dropped_count
+                                        );
+                                    }
+                                    true
+                                }
+                                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => false,
+                            }
+                        };
+                        if !ok {
+                            break;
+                        }
                     }
                 }
             }
             let _ = handle.await;
-            println!("encoder task finished");
+            log::info!("encoder task finished");
         });
     }
 

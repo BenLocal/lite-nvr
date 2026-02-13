@@ -173,6 +173,10 @@ impl AvOutput {
     }
 }
 
+/// Bounded capacity for mux output (writer→reader). Each message can be up to 256KB for H.264.
+/// Large enough to avoid dropping under normal load (dropped packets break ffplay); still caps memory.
+const MUX_OUTPUT_CHAN_CAP: usize = 256;
+
 pub struct PacketContext {
     buffer: PacketBufferType,
     current_pts: Option<i64>,
@@ -192,12 +196,12 @@ pub struct AvOutputStream {
     have_written_header: bool,
     have_written_trailer: bool,
     context: Box<PacketContext>,
-    receiver: tokio::sync::mpsc::UnboundedReceiver<OutputMessage>,
+    receiver: tokio::sync::mpsc::Receiver<OutputMessage>,
     /// Input stream index we're muxing (only one stream supported for now).
     input_stream_index: Option<usize>,
 }
 
-pub type PacketBufferType = tokio::sync::mpsc::UnboundedSender<OutputMessage>;
+pub type PacketBufferType = tokio::sync::mpsc::Sender<OutputMessage>;
 
 pub struct OutputMessage {
     pub data: Bytes,
@@ -284,7 +288,7 @@ impl Drop for AvOutputStreamWriter {
 
 /// Reader half of a split `AvOutputStream`. Implements `Stream` and yields encoded packets.
 pub struct AvOutputStreamReader {
-    receiver: tokio::sync::mpsc::UnboundedReceiver<OutputMessage>,
+    receiver: tokio::sync::mpsc::Receiver<OutputMessage>,
 }
 
 impl Stream for AvOutputStreamReader {
@@ -310,7 +314,7 @@ impl AvOutputStream {
         if format == "mp4" {
             set_mp4_movflags(&mut inner)?;
         }
-        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (sender, receiver) = tokio::sync::mpsc::channel(MUX_OUTPUT_CHAN_CAP);
         let mut context = Box::new(PacketContext {
             buffer: sender,
             current_pts: None,
@@ -543,7 +547,7 @@ extern "C" fn output_raw_buf_start_callback(
         // Push the current packet onto the packet buffer with PTS/DTS.
         let buf = std::slice::from_raw_parts(buffer, buffer_size as usize);
         let data = Bytes::copy_from_slice(buf);
-        let _ = packet_context.buffer.send(OutputMessage {
+        let msg = OutputMessage {
             data,
             pts: packet_context.current_pts,
             dts: packet_context.current_dts,
@@ -551,7 +555,10 @@ extern "C" fn output_raw_buf_start_callback(
             codec_id: packet_context.current_codec_id,
             width: packet_context.current_width,
             height: packet_context.current_height,
-        });
+        };
+        if packet_context.buffer.try_send(msg).is_err() {
+            log::warn!("mux output channel full, dropping packet ({} bytes)", buffer_size);
+        }
     }
 
     // Number of bytes written.

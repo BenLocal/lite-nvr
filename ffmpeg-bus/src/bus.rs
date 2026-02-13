@@ -105,7 +105,8 @@ impl Bus {
                     Self::start_decoder_task(state, input_stream_index).await?;
                 }
                 if need_encoder {
-                    Self::start_encoder_task(state, input_stream_index).await?;
+                    Self::start_encoder_task(state, input_stream_index, output.encode.as_ref())
+                        .await?;
                 }
 
                 let stream_result = match &output.dest {
@@ -166,8 +167,12 @@ impl Bus {
         match &output.dest {
             OutputDest::Raw => Ok(true),
             OutputDest::File { .. } => Ok(false),
-            // Mux (e.g. Zlm -> h264): need decoder when input is WRAPPED_AVFRAME so encoder gets unwrapped frames
-            OutputDest::Mux { .. } => Ok(input_codec == ffmpeg_next::codec::Id::WRAPPED_AVFRAME),
+            // Mux: need decoder only when encoder is also needed (e.g. WRAPPED_AVFRAME needs unwrap → encode).
+            // If input is already the target codec (e.g. H.264 → h264 mux), no decoder needed.
+            OutputDest::Mux { .. } => {
+                Ok(input_codec == ffmpeg_next::codec::Id::WRAPPED_AVFRAME
+                    || Self::try_encoder(input_stream, output).unwrap_or(false))
+            }
             OutputDest::Net { .. } => Ok(true),
             OutputDest::Encoded => Ok(true),
         }
@@ -258,7 +263,7 @@ impl Bus {
                     Backtrace::capture()
                 );
             }
-            println!("mux to file finished: {}", path_owned);
+            log::info!("mux to file finished: {}", path_owned);
         });
 
         Ok(Box::pin(futures::stream::empty::<Option<VideoFrame>>()))
@@ -398,16 +403,21 @@ impl Bus {
 
         tokio::spawn(async move {
             let mut writer = writer;
-            while let Ok(cmd) = encoder_receiver.recv().await {
-                match cmd {
-                    RawPacketCmd::Data(mut packet) => {
-                        // Encoder output is single stream; ensure stream index matches mux (0)
-                        packet.get_mut().set_stream(0);
-                        if let Err(e) = writer.write_packet(packet) {
-                            log::error!("mux write_packet error: {}", e.to_string());
+            loop {
+                match encoder_receiver.recv().await {
+                    Ok(cmd) => match cmd {
+                        RawPacketCmd::Data(mut packet) => {
+                            packet.get_mut().set_stream(0);
+                            if let Err(e) = writer.write_packet(packet) {
+                                log::error!("mux write_packet error: {}", e.to_string());
+                            }
                         }
+                        RawPacketCmd::EOF => break,
+                    },
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        log::warn!("mux encoder_receiver lagged, dropped {} messages", n);
                     }
-                    RawPacketCmd::EOF => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
             if let Err(e) = writer.finish() {
@@ -417,7 +427,7 @@ impl Bus {
                     Backtrace::capture()
                 );
             }
-            println!("mux stream finished");
+            log::info!("mux stream finished");
         });
 
         Ok(Box::pin(reader.map(|pkg| Some(VideoFrame::from(pkg)))))
@@ -465,7 +475,7 @@ impl Bus {
                     Backtrace::capture()
                 );
             }
-            println!("mux stream finished");
+            log::info!("mux stream finished");
         });
 
         Ok(Box::pin(reader.map(|pkg| Some(VideoFrame::from(pkg)))))
@@ -544,9 +554,22 @@ impl Bus {
         (w, h)
     }
 
+    /// Build encoder options from EncodeConfig for faster encoding (preset, bitrate).
+    fn encoder_options_from_config(encode: Option<&EncodeConfig>) -> Option<Dictionary> {
+        let encode = encode?;
+        let mut opts = Dictionary::new();
+        opts.set("preset", encode.preset.as_deref().unwrap_or("ultrafast"));
+        opts.set("tune", "zerolatency");
+        if let Some(b) = encode.bitrate {
+            opts.set("b", b.to_string().as_str());
+        }
+        Some(opts)
+    }
+
     async fn start_encoder_task(
         state: &mut BusState,
         input_stream_index: usize,
+        encode: Option<&EncodeConfig>,
     ) -> anyhow::Result<()> {
         let input_stream = state
             .input_streams
@@ -576,8 +599,12 @@ impl Bus {
                 .as_ref()
                 .ok_or(anyhow::anyhow!("input task not found"))?
                 .subscribe();
-            let (frame_tx, frame_rx) = tokio::sync::broadcast::channel::<RawFrameCmd>(1024);
-            let encoder = Encoder::new(input_stream, encoder_settings, None)?;
+            /// Raw frames; balance memory vs avoiding Lagged (dropped frames break stream).
+            const RAW_FRAME_CHAN_CAP: usize = 16;
+            let (frame_tx, frame_rx) =
+                tokio::sync::broadcast::channel::<RawFrameCmd>(RAW_FRAME_CHAN_CAP);
+            let encoder_opts = Self::encoder_options_from_config(encode);
+            let encoder = Encoder::new(input_stream, encoder_settings, encoder_opts)?;
             // Spawn task: packet -> frame conversion, then forward to encoder
             {
                 let mut packet_rx = packet_receiver;
@@ -627,7 +654,8 @@ impl Bus {
                     ..Settings::default()
                 }
             };
-            let encoder = Encoder::new(input_stream, encoder_settings, None)?;
+            let encoder_opts = Self::encoder_options_from_config(encode);
+            let encoder = Encoder::new(input_stream, encoder_settings, encoder_opts)?;
             encoder_task.start(encoder, encoder_receiver).await;
         }
 

@@ -60,7 +60,7 @@ Content-Type: application/json
     ]
 }
 
-### Add pipe with device rawvideo lavfi
+### Add pipe with device rawvideo lavfi (realtime pacing)
 POST http://{{Host}}/pipe/add
 Content-Type: application/json
 
@@ -68,7 +68,7 @@ Content-Type: application/json
     "id": "test",
     "input": {
         "t": "lavfi",
-        "i": "testsrc=size=1920x1080:rate=10"
+        "i": "testsrc=size=1920x1080:rate=10,realtime"
     },
     "outputs": [
         {
