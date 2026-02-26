@@ -248,10 +248,10 @@ async fn forward_raw_packet_stream_to_zlm(
             }
         }
 
-        // Convert time_base (90kHz) to milliseconds (encoder output uses 1/90000)
-        let rate = av.rate();
-        let dts_ms = frame.dts_ms(rate);
-        let pts_ms = frame.pts_ms(rate);
+        // Normalize to 1/90000 then to ms: if time_base != 1/90000, rescale pts/dts first
+        let time_base = av.time_base();
+        let pts_ms = frame.pts_90k_to_ms(time_base);
+        let dts_ms = frame.dts_90k_to_ms(time_base);
 
         // Get packet data (convert AVCC to Annex B if needed)
         let data: std::borrow::Cow<'_, [u8]> = if needs_conversion {
@@ -260,7 +260,7 @@ async fn forward_raw_packet_stream_to_zlm(
             std::borrow::Cow::Borrowed(frame.data.as_ref())
         };
 
-        let zlm_frame = ZlmFrame::new(CodecId::H264, dts_ms, pts_ms, data.as_ref());
+        let zlm_frame = ZlmFrame::new(CodecId::H264, dts_ms as u64, pts_ms as u64, data.as_ref());
         if !media.input_frame(&zlm_frame) {
             log::warn!(
                 "ZLM: input_frame failed: pts_ms={} dts_ms={} len={} is_key={}",

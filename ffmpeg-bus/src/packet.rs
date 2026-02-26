@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bytes::Bytes;
 use ffmpeg_next::Rational;
 
@@ -12,7 +14,7 @@ pub enum RawPacketCmd {
 
 #[derive(Clone)]
 pub struct RawPacket {
-    packet: ffmpeg_next::codec::packet::Packet,
+    packet: Arc<ffmpeg_next::codec::packet::Packet>,
     time_base: Rational,
 }
 
@@ -49,11 +51,15 @@ impl RawPacket {
     }
 
     pub fn set_duration(&mut self, duration: i64) {
-        self.packet.set_duration(duration);
+        if let Some(p) = Arc::get_mut(&mut self.packet) {
+            p.set_duration(duration);
+        } else {
+            Arc::make_mut(&mut self.packet).set_duration(duration);
+        }
     }
 
     pub fn get_mut(&mut self) -> &mut ffmpeg_next::codec::packet::Packet {
-        &mut self.packet
+        Arc::make_mut(&mut self.packet)
     }
 
     /// Get a reference to the inner packet (for BSF and other FFmpeg operations).
@@ -65,8 +71,8 @@ impl RawPacket {
 impl From<(ffmpeg_next::codec::packet::Packet, Rational)> for RawPacket {
     fn from((packet, time_base): (ffmpeg_next::codec::packet::Packet, Rational)) -> Self {
         Self {
-            packet: packet,
-            time_base: time_base,
+            packet: Arc::new(packet),
+            time_base,
         }
     }
 }

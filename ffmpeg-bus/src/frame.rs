@@ -1,7 +1,8 @@
 use std::fmt::{Display, Formatter};
+use std::sync::Arc;
 
 use bytes::Bytes;
-use ffmpeg_next::Rational;
+use ffmpeg_next::{Rational, Rescale};
 
 use crate::output::OutputMessage;
 use crate::packet::RawPacket;
@@ -23,7 +24,7 @@ pub enum RawFrame {
 
 #[derive(Clone)]
 pub struct RawAudioFrame {
-    frame: ffmpeg_next::frame::Audio,
+    frame: Arc<ffmpeg_next::frame::Audio>,
 }
 
 impl RawAudioFrame {
@@ -40,7 +41,7 @@ impl RawAudioFrame {
     }
 
     pub fn get_mut(&mut self) -> &mut ffmpeg_next::frame::Audio {
-        &mut self.frame
+        Arc::make_mut(&mut self.frame)
     }
 
     pub fn as_audio(&self) -> &ffmpeg_next::frame::Audio {
@@ -50,18 +51,22 @@ impl RawAudioFrame {
 
 impl From<ffmpeg_next::frame::Audio> for RawAudioFrame {
     fn from(frame: ffmpeg_next::frame::Audio) -> Self {
-        Self { frame: frame }
+        Self {
+            frame: Arc::new(frame),
+        }
     }
 }
 
 #[derive(Clone)]
 pub struct RawVideoFrame {
-    frame: ffmpeg_next::frame::Video,
+    frame: Arc<ffmpeg_next::frame::Video>,
 }
 
 impl From<ffmpeg_next::frame::Video> for RawVideoFrame {
     fn from(frame: ffmpeg_next::frame::Video) -> Self {
-        Self { frame: frame }
+        Self {
+            frame: Arc::new(frame),
+        }
     }
 }
 
@@ -107,7 +112,7 @@ impl RawVideoFrame {
     }
 
     pub fn get_mut(&mut self) -> &mut ffmpeg_next::frame::Video {
-        &mut self.frame
+        Arc::make_mut(&mut self.frame)
     }
 
     pub fn data(&self) -> Bytes {
@@ -175,18 +180,34 @@ impl VideoFrame {
         }
     }
 
-    pub fn pts_ms(&self, time_base: Rational) -> u64 {
-        let pts_u = self.pts.max(0) as u64;
-        let num = time_base.numerator() as u64;
-        let den = time_base.denominator() as u64;
-        pts_u * num / den
+    pub fn pts_ms(&self, time_base: Rational) -> f64 {
+        let pts_u = self.pts.max(0) as f64;
+        let num = time_base.numerator() as f64;
+        let den = time_base.denominator() as f64;
+        pts_u * num * 1000.0 / den
     }
 
-    pub fn dts_ms(&self, time_base: Rational) -> u64 {
-        let dts_u = self.dts.max(0) as u64;
-        let num = time_base.numerator() as u64;
-        let den = time_base.denominator() as u64;
-        dts_u * num / den
+    pub fn pts_90k_to_ms(&self, time_base: Rational) -> f64 {
+        let tb_90k: ffmpeg_next::Rational = Rational::new(1, 90000);
+        let pts = self.pts.rescale(time_base, tb_90k);
+        let num = time_base.numerator() as f64;
+        let den = time_base.denominator() as f64;
+        (pts as f64) * num * 1000.0 / den
+    }
+
+    pub fn dts_ms(&self, time_base: Rational) -> f64 {
+        let dts_u = self.dts.max(0) as f64;
+        let num = time_base.numerator() as f64;
+        let den = time_base.denominator() as f64;
+        dts_u * num * 1000.0 / den
+    }
+
+    pub fn dts_90k_to_ms(&self, time_base: Rational) -> f64 {
+        let tb_90k: ffmpeg_next::Rational = Rational::new(1, 90000);
+        let dts = self.dts.rescale(time_base, tb_90k);
+        let num = time_base.numerator() as f64;
+        let den = time_base.denominator() as f64;
+        (dts as f64) * num * 1000.0 / den
     }
 }
 
