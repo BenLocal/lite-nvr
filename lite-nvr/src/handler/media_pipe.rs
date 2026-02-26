@@ -84,7 +84,7 @@ async fn add_pipe(Json(config): Json<PipeRequest>) -> ApiJsonResult<String> {
                         zlm.app.as_str(),
                         zlm.stream.as_str(),
                         0.0,
-                        false,
+                        true,
                         false,
                     )))
                 } else {
@@ -107,7 +107,7 @@ async fn add_pipe(Json(config): Json<PipeRequest>) -> ApiJsonResult<String> {
             bitrate: e.bitrate,
             ..EncodeConfig::default()
         });
-        outputs.push(OutputConfig { dest, encode });
+        outputs.push(OutputConfig::new(dest, encode));
     }
 
     if outputs.is_empty() {

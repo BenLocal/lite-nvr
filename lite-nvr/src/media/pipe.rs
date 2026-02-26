@@ -6,10 +6,7 @@ use std::{
     },
 };
 
-use ffmpeg_bus::bus::{
-    Bus as FbBus, InputConfig as FbInputConfig, OutputAvType, OutputConfig as FbOutputConfig,
-    OutputDest as FbOutputDest, VideoRawFrameStream,
-};
+use ffmpeg_bus::bus::{Bus as FbBus, VideoRawFrameStream};
 use futures::StreamExt;
 #[cfg(feature = "zlm")]
 use rszlm::{
@@ -49,6 +46,7 @@ impl Pipe {
     }
 
     /// Check if the pipeline has been cancelled
+    #[allow(dead_code)]
     pub fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled()
     }
@@ -72,7 +70,7 @@ impl Pipe {
         let cancel = self.cancel.clone();
 
         // Map and add input
-        let fb_input = to_fb_input(&self.config.input);
+        let fb_input = self.config.input.clone().into();
         if let Err(e) = bus.add_input(fb_input, None).await {
             log::error!(
                 "Pipe: add_input failed: {:#}\nbacktrace:\n{}",
@@ -87,7 +85,7 @@ impl Pipe {
         let mut join_handles = Vec::new();
         for (i, output_config) in self.config.outputs.iter().enumerate() {
             let id = format!("out_{}", i);
-            let fb_output = match to_fb_output(&id, output_config) {
+            let fb_output = match output_config.clone().into() {
                 Some(o) => o,
                 None => {
                     log::warn!(
@@ -154,49 +152,6 @@ impl Pipe {
         }
 
         self.started.store(false, Ordering::Relaxed);
-    }
-}
-
-fn to_fb_input(input: &InputConfig) -> FbInputConfig {
-    match input {
-        InputConfig::Network { url } => FbInputConfig::Net { url: url.clone() },
-        InputConfig::File { path } => FbInputConfig::File { path: path.clone() },
-        InputConfig::Device { display, format } => FbInputConfig::Device {
-            display: display.clone(),
-            format: format.clone(),
-        },
-    }
-}
-
-fn to_fb_output(id: &str, config: &OutputConfig) -> Option<FbOutputConfig> {
-    let av_type = OutputAvType::Video; // pipe only uses video for now
-    let dest = match &config.dest {
-        OutputDest::Network { url, format } => FbOutputDest::Net {
-            url: url.clone(),
-            format: Some(format.clone()),
-        },
-        OutputDest::RawFrame { .. } => FbOutputDest::Raw,
-        OutputDest::RawPacket { .. } => FbOutputDest::Encoded,
-        #[cfg(feature = "zlm")]
-        OutputDest::Zlm(_) => FbOutputDest::Mux {
-            format: "h264".to_string(),
-        },
-    };
-    let mut fb = FbOutputConfig::new(id.to_string(), av_type, dest);
-    if let Some(ref e) = config.encode {
-        fb = fb.with_encode(to_fb_encode_config(e));
-    }
-    Some(fb)
-}
-
-fn to_fb_encode_config(e: &EncodeConfig) -> ffmpeg_bus::bus::EncodeConfig {
-    ffmpeg_bus::bus::EncodeConfig {
-        codec: e.codec.clone(),
-        width: e.width,
-        height: e.height,
-        bitrate: e.bitrate,
-        preset: e.preset.clone(),
-        pixel_format: e.pixel_format.clone(),
     }
 }
 
@@ -357,53 +312,50 @@ impl PipeConfigBuilder {
     /// if encode is None, the output will be remuxed
     /// if encode is Some, the output will be encoded
     pub fn add_rtsp_output(mut self, url: impl Into<String>, encode: Option<EncodeConfig>) -> Self {
-        self.outputs.push(OutputConfig {
-            dest: OutputDest::Network {
+        self.outputs.push(OutputConfig::new(
+            OutputDest::Network {
                 url: url.into(),
                 format: "rtsp".to_string(),
             },
             encode,
-        });
+        ));
+
         self
     }
 
     /// Add direct remux output (no re-encoding)
     pub fn add_remux_output(mut self, url: impl Into<String>, format: impl Into<String>) -> Self {
-        self.outputs.push(OutputConfig {
-            dest: OutputDest::Network {
+        self.outputs.push(OutputConfig::new(
+            OutputDest::Network {
                 url: url.into(),
                 format: format.into(),
             },
-            encode: None,
-        });
+            None,
+        ));
         self
     }
 
     /// Add raw frame output
     pub fn add_raw_frame_output(mut self, sink: Arc<RawSinkSource>) -> Self {
-        self.outputs.push(OutputConfig {
-            dest: OutputDest::RawFrame { sink },
-            encode: None,
-        });
+        self.outputs
+            .push(OutputConfig::new(OutputDest::RawFrame { sink }, None));
         self
     }
 
     /// Add encoded packet output
     pub fn add_raw_packet_output(mut self, sink: Arc<RawSinkSource>, encode: EncodeConfig) -> Self {
-        self.outputs.push(OutputConfig {
-            dest: OutputDest::RawPacket { sink },
-            encode: Some(encode),
-        });
+        self.outputs.push(OutputConfig::new(
+            OutputDest::RawPacket { sink },
+            Some(encode),
+        ));
         self
     }
 
     /// Add zlm output
     #[cfg(feature = "zlm")]
     pub fn add_zlm_output(mut self, media: Arc<rszlm::media::Media>) -> Self {
-        self.outputs.push(OutputConfig {
-            dest: OutputDest::Zlm(media),
-            encode: None,
-        });
+        self.outputs
+            .push(OutputConfig::new(OutputDest::Zlm(media), None));
         self
     }
 

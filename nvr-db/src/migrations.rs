@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::db::{DatabaseConfig, database};
+use crate::db::{DatabaseConfig, NvrDatabase};
 
 const MIGRATIONS_TABLE_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS _migrations (
@@ -16,7 +16,7 @@ struct Migrations;
 
 pub async fn migrate(url: &str) -> anyhow::Result<()> {
     let config = DatabaseConfig::new(url);
-    let db = database(&config).await;
+    let db = NvrDatabase::new(&config).await?;
 
     let mut conn = db.connect()?;
     ensure_migrations_table(&conn).await?;

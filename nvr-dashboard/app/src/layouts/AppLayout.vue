@@ -244,18 +244,18 @@ function onLogoError() {
   color: var(--p-text-color);
 }
 
-/* Sidebar - 与 header 相同间距：左边距 = --layout-gap */
+/* Sidebar - 与 main-container 同一垂直范围：上/下各留 --layout-gap，与内容区对齐 */
 .layout-sidebar {
   position: fixed;
   width: var(--layout-sidebar-width);
   left: var(--layout-gap);
-  top: var(--layout-topbar-height);
-  height: calc(100vh - var(--layout-topbar-height));
+  top: calc(var(--layout-topbar-height) + var(--layout-gap));
+  height: calc(100vh - var(--layout-topbar-height) - 2 * var(--layout-gap));
   z-index: 996;
   overflow-y: auto;
   background-color: var(--p-content-background);
   border-radius: var(--p-content-border-radius, 4px);
-  padding: 0.5rem var(--layout-gap);
+  padding: var(--layout-gap) var(--layout-gap);
   box-shadow:
     0 1px 3px rgba(0, 0, 0, 0.04),
     0 0 2px rgba(0, 0, 0, 0.06);
@@ -275,7 +275,7 @@ function onLogoError() {
 }
 
 .layout-menu-section {
-  margin: 0.5rem 0;
+  margin: 0 0 0.5rem 0;
 }
 
 .layout-menu-section-title {
@@ -328,11 +328,15 @@ function onLogoError() {
   font-weight: 500;
 }
 
-/* Main content - 与 header/sidebar 相同间距：左右下 = --layout-gap，上 = topbar + gap */
+/* Main content - 与 sidebar 同一垂直范围：上/下各留 --layout-gap，与 aside 对齐 */
 .layout-main-container {
   margin-left: calc(var(--layout-gap) + var(--layout-sidebar-width) + var(--layout-gap));
-  padding: calc(var(--layout-topbar-height) + var(--layout-gap)) var(--layout-gap) var(--layout-gap) var(--layout-gap);
-  min-height: 100vh;
+  margin-top: calc(var(--layout-topbar-height) + var(--layout-gap));
+  margin-bottom: var(--layout-gap);
+  height: calc(100vh - var(--layout-topbar-height) - 2 * var(--layout-gap));
+  padding: 0 var(--layout-gap);
+  display: flex;
+  flex-direction: column;
   transition: margin-left 0.2s;
 }
 
@@ -375,7 +379,10 @@ function onLogoError() {
 
   .layout-main-container {
     margin-left: 0;
-    padding: calc(var(--layout-topbar-height) + var(--layout-gap)) var(--layout-gap) var(--layout-gap) var(--layout-gap);
+    margin-top: calc(var(--layout-topbar-height) + var(--layout-gap));
+    margin-bottom: var(--layout-gap);
+    height: calc(100vh - var(--layout-topbar-height) - 2 * var(--layout-gap));
+    padding: 0 var(--layout-gap);
   }
 
   .layout-main-container.layout-sidebar-inactive {

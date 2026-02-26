@@ -169,10 +169,8 @@ impl Bus {
             OutputDest::File { .. } => Ok(false),
             // Mux: need decoder only when encoder is also needed (e.g. WRAPPED_AVFRAME needs unwrap → encode).
             // If input is already the target codec (e.g. H.264 → h264 mux), no decoder needed.
-            OutputDest::Mux { .. } => {
-                Ok(input_codec == ffmpeg_next::codec::Id::WRAPPED_AVFRAME
-                    || Self::try_encoder(input_stream, output).unwrap_or(false))
-            }
+            OutputDest::Mux { .. } => Ok(input_codec == ffmpeg_next::codec::Id::WRAPPED_AVFRAME
+                || Self::try_encoder(input_stream, output).unwrap_or(false)),
             OutputDest::Net { .. } => Ok(true),
             OutputDest::Encoded => Ok(true),
         }

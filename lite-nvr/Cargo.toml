@@ -21,6 +21,8 @@ ffmpeg-bus = { path = "../ffmpeg-bus" }
 nvr-db = { path = "../nvr-db" }
 nvr-dashboard = { path = "../nvr-dashboard" }
 rszlm = { git = "https://github.com/BenLocal/rszlm.git", optional = true }
+uuid = "1.21.0"
+turso = "0.4"
 
 # Only built when target is Linux (see also build.rs for feature "linux" cfg)
 [target.'cfg(target_os = "linux")'.dependencies]

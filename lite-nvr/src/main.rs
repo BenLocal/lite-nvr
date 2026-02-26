@@ -1,7 +1,10 @@
 use tokio_util::sync::CancellationToken;
 
+use crate::db::init_app_db;
+
 mod api;
 mod config;
+mod db;
 mod handler;
 mod manager;
 mod media;
@@ -20,6 +23,8 @@ fn init_logging() {
 async fn main() -> ! {
     init_logging();
     ffmpeg_bus::init().expect("ffmpeg_bus init");
+
+    // migrate database
     let config = config::config();
     nvr_db::migrations::migrate(config.db_url())
         .await
@@ -28,15 +33,20 @@ async fn main() -> ! {
             std::process::exit(1);
         });
 
+    // init app db
+    init_app_db(config.db_url()).await.unwrap();
+
     let cancel = CancellationToken::new();
 
+    // start api server
     let cancel_clone = cancel.clone();
     api::start_api_server(cancel_clone);
 
     #[cfg(feature = "zlm")]
     {
+        // start zlm server
         let cancel_clone = cancel.clone();
-        zlm::start_zlm_server(cancel_clone);
+        zlm::server::start_zlm_server(cancel_clone).unwrap();
     }
 
     loop {

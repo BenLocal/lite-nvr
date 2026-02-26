@@ -1,4 +1,4 @@
-@Host=localHost:8080
+@Host=localhost:8080
 
 ### user route index
 GET http://{{Host}}/user
