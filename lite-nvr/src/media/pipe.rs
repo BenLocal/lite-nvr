@@ -97,7 +97,7 @@ impl Pipe {
             };
 
             match bus.add_output(fb_output).await {
-                Ok(stream) => {
+                Ok((av, stream)) => {
                     // RawFrame or RawPacket: forward stream to sink
                     match &output_config.dest {
                         OutputDest::RawFrame { sink } => {
@@ -118,7 +118,7 @@ impl Pipe {
                         OutputDest::Zlm(media) => {
                             let media = Arc::clone(media);
                             let handle = tokio::spawn(async move {
-                                forward_raw_packet_stream_to_zlm(stream, media).await;
+                                forward_raw_packet_stream_to_zlm(stream, av, media).await;
                             });
                             join_handles.push(handle);
                         }
@@ -180,42 +180,46 @@ async fn forward_frame_stream_to_sink(
 }
 
 /// Forward raw (demuxed) packet stream from ffmpeg-bus to ZLMediaKit Media.
-/// The ffmpeg-bus Mux output with format "h264" uses a large buffer (256KB) so each.
-/// chunk is complete NALUs (Annex B). PTS/DTS are converted from 90kHz to milliseconds.
+/// The ffmpeg-bus Mux output with format "h264" uses a large buffer (256KB) so each
+/// chunk is complete NALUs (Annex B). PTS/DTS are converted to milliseconds.
 /// Automatically converts H.264/H.265 from MP4 (AVCC/HVCC) to Annex B format if needed.
-/// PTS/DTS are converted to milliseconds based on the stream's time_base.
+///
+/// Time base: the **input** stream may have any time_base (e.g. testsrc 1/10), but the
+/// frames we receive here come from the **encoder** path (Mux from encoder). The encoder
+/// uses time_base 1/90000, so frame.pts/dts are in 90kHz units; we convert to ms by /90.
 #[cfg(feature = "zlm")]
 async fn forward_raw_packet_stream_to_zlm(
     mut stream: VideoRawFrameStream,
+    av: ffmpeg_bus::stream::AvStream,
     media: Arc<rszlm::media::Media>,
 ) {
     use ffmpeg_bus::bsf::{convert_avcc_to_annexb, is_annexb_packet};
 
+    let default_width = av.width();
+    let default_height = av.height();
+    let default_fps = av.fps();
     let mut track_initialized = false;
     let mut needs_conversion = false;
     let mut conversion_checked = false;
 
-    let default_width = 1920i32;
-    let default_height = 1080i32;
-    let default_fps = 25.0f32;
-
     while let Some(opt) = stream.next().await {
         let Some(frame) = opt else { continue };
 
-        // Initialize track on first frame
+        let (w, h) = (
+            if frame.width > 0 {
+                frame.width as i32
+            } else {
+                default_width as i32
+            },
+            if frame.height > 0 {
+                frame.height as i32
+            } else {
+                default_height as i32
+            },
+        );
+
+        // Wait for second frame to estimate fps, then init track once with correct fps
         if !track_initialized {
-            let (w, h) = (
-                if frame.width > 0 {
-                    frame.width as i32
-                } else {
-                    default_width
-                },
-                if frame.height > 0 {
-                    frame.height as i32
-                } else {
-                    default_height
-                },
-            );
             media.init_track(&Track::new(
                 CodecId::H264,
                 Some(CodecArgs::Video(VideoCodecArgs {
@@ -226,29 +230,28 @@ async fn forward_raw_packet_stream_to_zlm(
             ));
             media.init_complete();
             track_initialized = true;
-
             log::info!("ZLM: track initialized ({}x{}, fps={})", w, h, default_fps);
-        }
 
-        // Check if we need BSF conversion (only check once on first packet)
-        if !conversion_checked {
-            // Try to detect from packet data
-            let packet_data = frame.data.as_ref();
-            if is_annexb_packet(packet_data) {
-                needs_conversion = false;
-                log::info!("ZLM: detected Annex B format, no conversion needed");
-            } else {
-                needs_conversion = true;
-                log::info!("ZLM: detected MP4 format, will use BSF conversion");
+            // Conversion check (use current frame; same stream as first)
+            if !conversion_checked {
+                let packet_data = frame.data.as_ref();
+                needs_conversion = !is_annexb_packet(packet_data);
+                conversion_checked = true;
+                log::info!(
+                    "ZLM: {}",
+                    if needs_conversion {
+                        "detected MP4 format, will use BSF conversion"
+                    } else {
+                        "detected Annex B format, no conversion needed"
+                    }
+                );
             }
-            conversion_checked = true;
         }
 
-        // Convert time_base (90kHz) to milliseconds
-        // time_base 1/90000 -> ms: value/90
-        const TB_90K_TO_MS: u64 = 90;
-        let dts_ms = frame.dts.max(0) as u64 / TB_90K_TO_MS;
-        let pts_ms = frame.pts.max(0) as u64 / TB_90K_TO_MS;
+        // Convert time_base (90kHz) to milliseconds (encoder output uses 1/90000)
+        let rate = av.rate();
+        let dts_ms = frame.dts_ms(rate);
+        let pts_ms = frame.pts_ms(rate);
 
         // Get packet data (convert AVCC to Annex B if needed)
         let data: std::borrow::Cow<'_, [u8]> = if needs_conversion {

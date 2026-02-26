@@ -24,7 +24,10 @@ impl DecoderType {
     ) -> anyhow::Result<()> {
         let time_base = packet.time_base();
         let packet = packet.get_mut();
-        packet.rescale_ts(time_base, decoder_time_base);
+        // Only rescale when time bases differ; rescale_ts can cause EINVAL for some codecs (e.g. WRAPPED_AVFRAME).
+        if time_base != decoder_time_base {
+            packet.rescale_ts(time_base, decoder_time_base);
+        }
         match self {
             DecoderType::Video(video_decoder) => {
                 video_decoder.send_packet(packet)?;

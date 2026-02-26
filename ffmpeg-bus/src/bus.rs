@@ -138,10 +138,10 @@ impl Bus {
                 };
 
                 match stream_result {
-                    Ok(stream) => {
+                    Ok((av, stream)) => {
                         state.output_config.insert(id.clone(), output);
                         result
-                            .send(Ok(stream))
+                            .send(Ok((av, stream)))
                             .map_err(|_| anyhow::anyhow!("send result error: receiver dropped"))?;
                     }
                     Err(e) => {
@@ -217,7 +217,7 @@ impl Bus {
         state: &mut BusState,
         path: &str,
         input_stream_index: usize,
-    ) -> anyhow::Result<VideoRawFrameStream> {
+    ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
         let mut input_receiver = state
             .input_task
             .as_ref()
@@ -264,7 +264,10 @@ impl Bus {
             log::info!("mux to file finished: {}", path_owned);
         });
 
-        Ok(Box::pin(futures::stream::empty::<Option<VideoFrame>>()))
+        Ok((
+            target_stream.clone(),
+            Box::pin(futures::stream::empty::<Option<VideoFrame>>()),
+        ))
     }
 
     /// Mux to a network URL (e.g. rtmp://, rtsp://). Remux only (input packets).
@@ -274,7 +277,7 @@ impl Bus {
         url: &str,
         format: Option<&str>,
         input_stream_index: usize,
-    ) -> anyhow::Result<VideoRawFrameStream> {
+    ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
         let mut input_receiver = state
             .input_task
             .as_ref()
@@ -340,13 +343,21 @@ impl Bus {
             log::info!("mux to net finished: {}", url_owned);
         });
 
-        Ok(Box::pin(futures::stream::empty::<Option<VideoFrame>>()))
+        Ok((
+            target_stream.clone(),
+            Box::pin(futures::stream::empty::<Option<VideoFrame>>()),
+        ))
     }
 
     async fn create_encoded_output_stream(
         state: &mut BusState,
         input_stream_index: usize,
-    ) -> anyhow::Result<VideoRawFrameStream> {
+    ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
+        let av = state
+            .input_streams
+            .iter()
+            .find(|s| s.index() == input_stream_index)
+            .ok_or(anyhow::anyhow!("stream not found"))?;
         let encoder_receiver = state
             .encoder_tasks
             .get(&input_stream_index)
@@ -361,7 +372,7 @@ impl Bus {
             }
         });
 
-        Ok(Box::pin(stream))
+        Ok((av.clone(), Box::pin(stream)))
     }
 
     /// Mux encoded packets (from encoder_tasks) into format (e.g. "h264"). Used when input
@@ -370,7 +381,7 @@ impl Bus {
         state: &mut BusState,
         format: &str,
         input_stream_index: usize,
-    ) -> anyhow::Result<VideoRawFrameStream> {
+    ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
         let mut encoder_receiver = state
             .encoder_tasks
             .get(&input_stream_index)
@@ -428,14 +439,17 @@ impl Bus {
             log::info!("mux stream finished");
         });
 
-        Ok(Box::pin(reader.map(|pkg| Some(VideoFrame::from(pkg)))))
+        Ok((
+            encoder_output_stream.clone(),
+            Box::pin(reader.map(|pkg| Some(VideoFrame::from(pkg)))),
+        ))
     }
 
     async fn create_mux_output_stream(
         state: &mut BusState,
         format: &str,
         input_stream_index: usize,
-    ) -> anyhow::Result<VideoRawFrameStream> {
+    ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
         let mut input_receiver = state
             .input_task
             .as_ref()
@@ -476,13 +490,21 @@ impl Bus {
             log::info!("mux stream finished");
         });
 
-        Ok(Box::pin(reader.map(|pkg| Some(VideoFrame::from(pkg)))))
+        Ok((
+            target_stream.clone(),
+            Box::pin(reader.map(|pkg| Some(VideoFrame::from(pkg)))),
+        ))
     }
 
     async fn create_decoder_raw_output_stream(
         state: &mut BusState,
         stream_index: usize,
-    ) -> anyhow::Result<VideoRawFrameStream> {
+    ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
+        let av = state
+            .input_streams
+            .iter()
+            .find(|s| s.index() == stream_index)
+            .ok_or(anyhow::anyhow!("stream not found"))?;
         let stream = BroadcastStream::new(
             state
                 .decoder_tasks
@@ -505,7 +527,7 @@ impl Bus {
             }
         });
 
-        Ok(Box::pin(stream))
+        Ok((av.clone(), Box::pin(stream)))
     }
 
     async fn add_input_internal(
@@ -553,7 +575,7 @@ impl Bus {
     }
 
     /// Build encoder options from EncodeConfig for faster encoding (preset, bitrate).
-    fn encoder_options_from_config(encode: Option<&EncodeConfig>) -> Option<Dictionary> {
+    fn encoder_options_from_config(encode: Option<&EncodeConfig>) -> Option<Dictionary<'_>> {
         let encode = encode?;
         let mut opts = Dictionary::new();
         opts.set("preset", encode.preset.as_deref().unwrap_or("ultrafast"));
@@ -748,7 +770,10 @@ impl Bus {
         rx.await?
     }
 
-    pub async fn add_output(&self, output: OutputConfig) -> anyhow::Result<VideoRawFrameStream> {
+    pub async fn add_output(
+        &self,
+        output: OutputConfig,
+    ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(BusCommand::AddOutput { output, result: tx })
@@ -804,7 +829,7 @@ pub enum BusCommand {
     },
     AddOutput {
         output: OutputConfig,
-        result: tokio::sync::oneshot::Sender<anyhow::Result<VideoRawFrameStream>>,
+        result: tokio::sync::oneshot::Sender<anyhow::Result<(AvStream, VideoRawFrameStream)>>,
     },
 }
 

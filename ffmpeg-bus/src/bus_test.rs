@@ -44,7 +44,7 @@ async fn test_mux_h264() -> anyhow::Result<()> {
             format: "h264".to_string(),
         },
     );
-    let mut stream = bus.add_output(output_config).await?;
+    let (_, mut stream) = bus.add_output(output_config).await?;
 
     let mut file = tokio::fs::File::create(file_name).await?;
     while let Some(frame) = stream.next().await {
@@ -87,7 +87,7 @@ async fn test_mux_aac() -> anyhow::Result<()> {
             format: "adts".to_string(),
         },
     );
-    let mut stream = bus.add_output(output_config).await?;
+    let (_, mut stream) = bus.add_output(output_config).await?;
 
     let mut file = tokio::fs::File::create(file_name).await?;
     while let Some(frame) = stream.next().await {
@@ -283,7 +283,7 @@ async fn test_device_rawvideo_lavfi() -> anyhow::Result<()> {
         OutputAvType::Video,
         OutputDest::Encoded,
     );
-    let mut stream = bus.add_output(output_config).await?;
+    let (_, mut stream) = bus.add_output(output_config).await?;
 
     let mut file = tokio::fs::File::create(file_name).await?;
     while let Some(frame) = stream.next().await {

@@ -32,6 +32,24 @@ impl AvStream {
         self.parameters.medium() == ffmpeg_next::media::Type::Audio
     }
 
+    pub fn width(&self) -> u32 {
+        unsafe {
+            let ptr = self.parameters.as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
+            (*ptr).width.max(0) as u32
+        }
+    }
+
+    pub fn height(&self) -> u32 {
+        unsafe {
+            let ptr = self.parameters.as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
+            (*ptr).height.max(0) as u32
+        }
+    }
+
+    pub fn fps(&self) -> f32 {
+        self.rate.numerator() as f32 / self.rate.denominator() as f32
+    }
+
     /// Build an AvStream suitable for mux encoder output: same dimensions/time_base/rate as
     /// `input`, but with `codec_id` (e.g. H264). Used when muxing encoded packets.
     pub fn for_encoder_output(input: &AvStream, codec_id: ffmpeg_next::codec::Id) -> Self {
