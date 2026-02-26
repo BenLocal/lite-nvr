@@ -79,8 +79,7 @@ async fn add_pipe(Json(config): Json<PipeRequest>) -> ApiJsonResult<String> {
         let dest = match output.t.unwrap_or_default().as_str() {
             "zlm" => {
                 if let Some(zlm) = output.zlm {
-                    OutputDest::Zlm(Arc::new(rszlm::media::Media::new(
-                        "__defaultVhost__",
+                    OutputDest::Zlm(Arc::new(rszlm::media::Media::new_with_default_vhost(
                         zlm.app.as_str(),
                         zlm.stream.as_str(),
                         0.0,
