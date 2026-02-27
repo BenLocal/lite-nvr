@@ -126,6 +126,7 @@ impl Encoder {
             None => ffmpeg_next::codec::Context::new(),
         };
 
+        // TODO set global header
         let mut encoder = encoder_context.encoder().video()?;
         encoder.set_width(settings.width);
         encoder.set_height(settings.height);
@@ -153,47 +154,10 @@ impl Encoder {
         })
     }
 
-    fn rescale_pts(&self, pts: i64) -> i64 {
-        let src_tb = self.stream.time_base();
-        let dst_tb = self.encoder_time_base;
-        let num = src_tb.0 as i128 * dst_tb.1 as i128;
-        let den = src_tb.1 as i128 * dst_tb.0 as i128;
-        if den == 0 {
-            pts
-        } else {
-            (pts as i128 * num / den) as i64
-        }
-    }
-
-    /// PTS in encoder time_base when input has no PTS (e.g. decoder output AV_NOPTS_VALUE).
-    /// Ensures monotonic timestamps at correct frame rate so downstream (e.g. ZLMediaKit) does not clear cache.
-    fn pts_for_frame_index(&self, frame_index: i64) -> i64 {
-        let rate = self.stream.rate();
-        let tb = self.encoder_time_base;
-        if rate.0 <= 0 {
-            return frame_index;
-        }
-        // 1 frame = 1/fps seconds; in encoder time_base: frame_index * (tb.den / (fps * tb.num))
-        let fps_num = rate.0 as i64;
-        let fps_den = rate.1 as i64;
-        let tb_num = tb.0 as i64;
-        let tb_den = tb.1 as i64;
-        (frame_index * tb_den * fps_den) / (tb_num * fps_num)
-    }
-
     pub fn send_frame(&mut self, mut frame: RawFrame) -> anyhow::Result<()> {
         let sending_frame = match (&mut frame, &self.inner) {
             (RawFrame::Video(f), EncoderType::Video(e)) => {
                 let f = f.get_mut();
-
-                if let Some(pts) = f.pts() {
-                    let new_pts = self.rescale_pts(pts);
-                    f.set_pts(Some(new_pts));
-                } else {
-                    // No PTS from decoder/input: set PTS in encoder time_base so output is correct fps
-                    f.set_pts(Some(self.pts_for_frame_index(self.frame_index)));
-                }
-
                 if f.format() != e.format() {
                     if self.scaler.is_none() {
                         self.scaler =
@@ -210,6 +174,7 @@ impl Encoder {
 
                     let mut converted = ffmpeg_next::frame::Video::empty();
                     self.scaler.as_mut().unwrap().run(f, &mut converted)?;
+                    // Copy over PTS from old frame.
                     converted.set_pts(f.pts());
                     Some(RawFrame::Video(converted.into()))
                 } else {

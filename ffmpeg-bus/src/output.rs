@@ -222,6 +222,8 @@ pub struct AvOutputStreamWriter {
     context: Box<PacketContext>,
     /// Input stream index we're muxing (only write packets with this stream index).
     input_stream_index: Option<usize>,
+    /// Last DTS written (enforce monotonically increasing DTS for muxer).
+    last_dts: Option<i64>,
 }
 
 impl AvOutputStreamWriter {
@@ -239,9 +241,30 @@ impl AvOutputStreamWriter {
             self.have_written_header = true;
         }
 
-        self.context.current_pts = packet.pts();
-        self.context.current_dts = packet.dts();
-        self.context.current_is_key = packet.is_key();
+        let time_base = packet.time_base();
+        let p = packet.get_mut();
+        p.set_stream(0);
+        p.set_position(-1);
+        let out_time_base = self.inner.stream(0).unwrap().time_base();
+        p.rescale_ts(time_base, out_time_base);
+
+        // Enforce monotonically increasing DTS (muxer requirement)
+        let dts = p.dts().unwrap_or(0);
+        let new_dts = match self.last_dts {
+            Some(last) if dts <= last => last + 1,
+            _ => dts,
+        };
+        if new_dts != dts {
+            p.set_dts(Some(new_dts));
+            if p.pts().map(|x| x < new_dts).unwrap_or(true) {
+                p.set_pts(Some(new_dts));
+            }
+        }
+        self.last_dts = Some(new_dts);
+
+        self.context.current_pts = p.pts();
+        self.context.current_dts = p.dts();
+        self.context.current_is_key = p.is_key();
         if let Some(stream) = self.inner.stream(0) {
             let params = stream.parameters();
             if params.medium() == MediaType::Video {
@@ -252,12 +275,12 @@ impl AvOutputStreamWriter {
             }
         }
 
-        let time_base = packet.time_base();
-        let p = packet.get_mut();
-        p.set_stream(0);
-        p.set_position(-1);
-        let out_time_base = self.inner.stream(0).unwrap().time_base();
-        p.rescale_ts(time_base, out_time_base);
+        log::debug!("write_packet: pts={:?}, dts={:?}", p.pts(), p.dts());
+        log::debug!(
+            "write_packet: time_base={:?}, out_time_base={:?}",
+            time_base,
+            out_time_base
+        );
         p.write(&mut self.inner)?;
 
         self.context.current_pts = None;
@@ -372,6 +395,7 @@ impl AvOutputStream {
                     have_written_trailer,
                     context,
                     input_stream_index,
+                    last_dts: None,
                 },
                 AvOutputStreamReader { receiver },
             )
@@ -557,7 +581,10 @@ extern "C" fn output_raw_buf_start_callback(
             height: packet_context.current_height,
         };
         if packet_context.buffer.try_send(msg).is_err() {
-            log::warn!("mux output channel full, dropping packet ({} bytes)", buffer_size);
+            log::warn!(
+                "mux output channel full, dropping packet ({} bytes)",
+                buffer_size
+            );
         }
     }
 

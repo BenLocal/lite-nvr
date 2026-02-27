@@ -14,12 +14,15 @@ impl AvStream {
     pub fn index(&self) -> usize {
         self.index
     }
+
     pub fn parameters(&self) -> &Parameters {
         &self.parameters
     }
+
     pub fn time_base(&self) -> Rational {
         self.time_base
     }
+
     pub fn rate(&self) -> Rational {
         self.rate
     }

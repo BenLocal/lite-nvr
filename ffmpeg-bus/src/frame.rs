@@ -187,27 +187,11 @@ impl VideoFrame {
         pts_u * num * 1000.0 / den
     }
 
-    pub fn pts_90k_to_ms(&self, time_base: Rational) -> f64 {
-        let tb_90k: ffmpeg_next::Rational = Rational::new(1, 90000);
-        let pts = self.pts.rescale(time_base, tb_90k);
-        let num = time_base.numerator() as f64;
-        let den = time_base.denominator() as f64;
-        (pts as f64) * num * 1000.0 / den
-    }
-
     pub fn dts_ms(&self, time_base: Rational) -> f64 {
         let dts_u = self.dts.max(0) as f64;
         let num = time_base.numerator() as f64;
         let den = time_base.denominator() as f64;
         dts_u * num * 1000.0 / den
-    }
-
-    pub fn dts_90k_to_ms(&self, time_base: Rational) -> f64 {
-        let tb_90k: ffmpeg_next::Rational = Rational::new(1, 90000);
-        let dts = self.dts.rescale(time_base, tb_90k);
-        let num = time_base.numerator() as f64;
-        let den = time_base.denominator() as f64;
-        (dts as f64) * num * 1000.0 / den
     }
 }
 

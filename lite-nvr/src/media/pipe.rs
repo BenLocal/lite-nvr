@@ -250,8 +250,14 @@ async fn forward_raw_packet_stream_to_zlm(
 
         // Normalize to 1/90000 then to ms: if time_base != 1/90000, rescale pts/dts first
         let time_base = av.time_base();
-        let pts_ms = frame.pts_90k_to_ms(time_base);
-        let dts_ms = frame.dts_90k_to_ms(time_base);
+        let pts_ms = frame.pts_ms(time_base);
+        let dts_ms = frame.dts_ms(time_base);
+        log::debug!(
+            "ZLM: pts_ms={} dts_ms={},time_base={:?}",
+            pts_ms,
+            dts_ms,
+            time_base
+        );
 
         // Get packet data (convert AVCC to Annex B if needed)
         let data: std::borrow::Cow<'_, [u8]> = if needs_conversion {
