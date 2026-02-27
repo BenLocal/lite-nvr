@@ -1,5 +1,5 @@
 use rszlm::{
-    init::EnvInitBuilder,
+    init::{EnvIni, EnvInitBuilder},
     server::{http_server_start, rtmp_server_start, rtsp_server_start},
 };
 use tokio_util::sync::CancellationToken;
@@ -16,6 +16,11 @@ pub(crate) fn start_zlm_server(cancel: CancellationToken) -> anyhow::Result<()> 
                 .log_mask(0)
                 .thread_num(20)
                 .build();
+
+            {
+                let ini = EnvIni::global().lock().unwrap();
+                ini.set_option("hls.broadcastRecordTs", "1");
+            }
 
             http_server_start(8553, false);
             rtsp_server_start(8554, false);
