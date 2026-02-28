@@ -17,7 +17,7 @@ pub struct AvInputTask {
 
 impl AvInputTask {
     /// Input packet channel. Bounded per-frame size; balance memory vs avoiding Lagged drop.
-    const PACKET_CHAN_CAP: usize = 16;
+    const PACKET_CHAN_CAP: usize = 1024;
     pub fn new() -> Self {
         let cancel = CancellationToken::new();
         let (sender, _) = tokio::sync::broadcast::channel(Self::PACKET_CHAN_CAP);

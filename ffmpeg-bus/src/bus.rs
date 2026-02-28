@@ -82,14 +82,21 @@ impl Bus {
                     return Err(anyhow::anyhow!("output already exists"));
                 }
 
-                // try to start input task
-                if state.input_task.is_none() && state.input_config.is_some() {
-                    if let Err(e) = Self::start_input_task(state).await {
-                        let msg = format!("{:#}", e);
-                        let _ = result.send(Err(anyhow::anyhow!("{}", msg)));
-                        return Err(anyhow::anyhow!("{}", msg));
+                // Phase 1: prepare input (open file, create broadcast channel) but do NOT
+                // start reading packets yet — subscribers must be registered first.
+                let deferred_input = if state.input_task.is_none() && state.input_config.is_some() {
+                    match Self::prepare_input_task(state).await {
+                        Ok(input) => Some(input),
+                        Err(e) => {
+                            let msg = format!("{:#}", e);
+                            let _ = result.send(Err(anyhow::anyhow!("{}", msg)));
+                            return Err(anyhow::anyhow!("{}", msg));
+                        }
                     }
-                }
+                } else {
+                    None
+                };
+
                 let input_stream = state
                     .input_streams
                     .iter()
@@ -136,6 +143,11 @@ impl Bus {
                         Self::create_encoded_output_stream(state, input_stream_index).await
                     }
                 };
+
+                // Phase 2: NOW start reading packets — all subscribers are registered.
+                if let Some(input) = deferred_input {
+                    Self::begin_input_reading(state, input).await;
+                }
 
                 match stream_result {
                     Ok((av, stream)) => {
@@ -238,7 +250,15 @@ impl Bus {
 
         tokio::spawn(async move {
             let mut output = output;
-            while let Ok(cmd) = input_receiver.recv().await {
+            loop {
+                let cmd = match input_receiver.recv().await {
+                    Ok(cmd) => cmd,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        log::warn!("mux_to_file lagged by {} packets", n);
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
                 match cmd {
                     RawPacketCmd::Data(packet) => {
                         if packet.index() == target_stream_index {
@@ -317,7 +337,15 @@ impl Bus {
 
         tokio::spawn(async move {
             let mut output = output;
-            while let Ok(cmd) = input_receiver.recv().await {
+            loop {
+                let cmd = match input_receiver.recv().await {
+                    Ok(cmd) => cmd,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        log::warn!("mux_to_net lagged by {} packets", n);
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
                 match cmd {
                     RawPacketCmd::Data(packet) => {
                         if packet.index() == target_stream_index {
@@ -468,7 +496,15 @@ impl Bus {
 
         tokio::spawn(async move {
             let mut writer = writer;
-            while let Ok(cmd) = input_receiver.recv().await {
+            loop {
+                let cmd = match input_receiver.recv().await {
+                    Ok(cmd) => cmd,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        log::warn!("mux_output_stream lagged by {} packets", n);
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
                 match cmd {
                     RawPacketCmd::Data(packet) => {
                         if packet.index() == target_stream_index {
@@ -543,7 +579,8 @@ impl Bus {
         }
 
         if !state.output_config.is_empty() && state.input_task.is_none() {
-            Self::start_input_task(state).await?;
+            let input = Self::prepare_input_task(state).await?;
+            Self::begin_input_reading(state, input).await;
         }
         Ok(())
     }
