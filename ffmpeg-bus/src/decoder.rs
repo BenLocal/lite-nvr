@@ -90,31 +90,92 @@ pub struct Decoder {
     decoder_time_base: Rational,
 }
 
+use crate::hw::find_hw_decoder;
+
 impl Decoder {
     pub fn new(stream: &AvStream) -> anyhow::Result<Self> {
-        let mut decoder_ctx = ffmpeg_next::codec::Context::new();
-        unsafe {
-            (*decoder_ctx.as_mut_ptr()).time_base = stream.time_base().into();
-        }
-        decoder_ctx.set_parameters(stream.parameters().clone())?;
-
         let s = if stream.is_video() {
-            let video_decoder = decoder_ctx.decoder().video()?;
-            let decoder_time_base = video_decoder.time_base();
+            let codec_id = stream.parameters().id();
 
-            if video_decoder.format() == ffmpeg_next::format::Pixel::None
-                || video_decoder.width() == 0
-                || video_decoder.height() == 0
-            {
-                return Err(anyhow::anyhow!("missing codec parameters"));
-            }
+            // Try hardware decoder first, then fall back to software decoder.
+            let try_hw_decode = |codec: ffmpeg_next::Codec| -> anyhow::Result<Self> {
+                let mut decoder_ctx = ffmpeg_next::codec::Context::new_with_codec(codec);
+                unsafe {
+                    (*decoder_ctx.as_mut_ptr()).time_base = stream.time_base().into();
+                }
+                decoder_ctx.set_parameters(stream.parameters().clone())?;
+                let video_decoder = decoder_ctx.decoder().video()?;
+                let decoder_time_base = video_decoder.time_base();
 
-            Self {
-                stream: stream.clone(),
-                inner: DecoderType::Video(video_decoder),
-                decoder_time_base,
+                if video_decoder.format() == ffmpeg_next::format::Pixel::None
+                    || video_decoder.width() == 0
+                    || video_decoder.height() == 0
+                {
+                    return Err(anyhow::anyhow!("missing codec parameters"));
+                }
+
+                Ok(Self {
+                    stream: stream.clone(),
+                    inner: DecoderType::Video(video_decoder),
+                    decoder_time_base,
+                })
+            };
+
+            // Attempt hardware decoder
+            let hw_result = find_hw_decoder(codec_id).and_then(|codec| {
+                let name = codec.name().to_string();
+                match try_hw_decode(codec) {
+                    Ok(dec) => {
+                        log::info!("using hardware decoder: {}", name);
+                        Some(dec)
+                    }
+                    Err(e) => {
+                        log::warn!("hardware decoder {} failed to open: {}, falling back to software", name, e);
+                        None
+                    }
+                }
+            });
+
+            if let Some(dec) = hw_result {
+                dec
+            } else {
+                // Software fallback
+                let sw_decoder_name = ffmpeg_next::decoder::find(codec_id)
+                    .map(|c| c.name().to_string())
+                    .unwrap_or_else(|| format!("{:?}", codec_id));
+                log::info!("using software video decoder: {} (codec_id={:?})", sw_decoder_name, codec_id);
+                let mut decoder_ctx = ffmpeg_next::codec::Context::new();
+                unsafe {
+                    (*decoder_ctx.as_mut_ptr()).time_base = stream.time_base().into();
+                }
+                decoder_ctx.set_parameters(stream.parameters().clone())?;
+                let video_decoder = decoder_ctx.decoder().video()?;
+                let decoder_time_base = video_decoder.time_base();
+
+                if video_decoder.format() == ffmpeg_next::format::Pixel::None
+                    || video_decoder.width() == 0
+                    || video_decoder.height() == 0
+                {
+                    return Err(anyhow::anyhow!("missing codec parameters"));
+                }
+
+                Self {
+                    stream: stream.clone(),
+                    inner: DecoderType::Video(video_decoder),
+                    decoder_time_base,
+                }
             }
         } else if stream.is_audio() {
+            let audio_codec_id = stream.parameters().id();
+            let audio_decoder_name = ffmpeg_next::decoder::find(audio_codec_id)
+                .map(|c| c.name().to_string())
+                .unwrap_or_else(|| format!("{:?}", audio_codec_id));
+            log::info!("using audio decoder: {} (codec_id={:?})", audio_decoder_name, audio_codec_id);
+            let mut decoder_ctx = ffmpeg_next::codec::Context::new();
+            unsafe {
+                (*decoder_ctx.as_mut_ptr()).time_base = stream.time_base().into();
+            }
+            decoder_ctx.set_parameters(stream.parameters().clone())?;
             let audio_decoder = decoder_ctx.decoder().audio()?;
             let decoder_time_base = audio_decoder.time_base();
             Self {

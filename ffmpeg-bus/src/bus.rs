@@ -712,7 +712,10 @@ impl Bus {
         Ok(())
     }
 
-    async fn start_input_task(state: &mut BusState) -> anyhow::Result<()> {
+    /// Phase 1: Open input, populate streams, create AvInputTask (broadcast channel ready
+    /// for subscribers), but do NOT start reading packets yet.
+    /// Returns the AvInput that must be passed to `begin_input_reading` later.
+    async fn prepare_input_task(state: &mut BusState) -> anyhow::Result<AvInput> {
         let options = state.input_options.as_ref().map(|options| {
             ffmpeg_next::Dictionary::from_iter(
                 options.iter().map(|(k, v)| (k.as_str(), v.as_str())),
@@ -741,11 +744,15 @@ impl Bus {
 
         state.input_task = Some(AvInputTask::new());
 
+        Ok(input)
+    }
+
+    /// Phase 2: Start actually reading packets from the input.
+    /// Call this AFTER all subscribers (decoder, encoder, mux) have been registered.
+    async fn begin_input_reading(state: &BusState, input: AvInput) {
         if let Some(task) = state.input_task.as_ref() {
             task.start(input).await;
         }
-
-        Ok(())
     }
 
     pub async fn add_input(

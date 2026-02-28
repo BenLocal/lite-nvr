@@ -92,15 +92,8 @@ impl Default for Settings {
     }
 }
 
-/// Returns a pixel format suitable for libx264. Source formats not supported by libx264 (e.g. rgb24)
-/// are mapped to YUV420P; the encoder will use its internal scaler to convert when sending frames.
-pub fn pixel_format_for_libx264(source: ffmpeg_next::format::Pixel) -> ffmpeg_next::format::Pixel {
-    use ffmpeg_next::format::Pixel;
-    match source {
-        Pixel::RGB24 | Pixel::BGR24 => Pixel::YUV420P,
-        _ => source,
-    }
-}
+pub use crate::hw::{pixel_format_for_encoder, pixel_format_for_libx264};
+use crate::hw::find_hw_encoder;
 
 pub struct Encoder {
     stream: AvStream,
@@ -117,31 +110,86 @@ impl Encoder {
         settings: Settings,
         options: Option<Dictionary>,
     ) -> anyhow::Result<Self> {
-        let encoder_context = match settings.codec {
-            Some(codec) => {
-                let codec = ffmpeg_next::encoder::find_by_name(&codec)
-                    .ok_or(anyhow::anyhow!("codec not found"))?;
-                ffmpeg_next::codec::Context::new_with_codec(codec)
+        let (encoder_context, selected_codec_name) = match settings.codec {
+            Some(ref codec) => {
+                // Try hardware encoder first, then fall back to software encoder.
+                if let Some(hw_codec) = find_hw_encoder(codec) {
+                    let hw_name = hw_codec.name().to_string();
+                    log::info!("attempting hardware encoder: {}", hw_name);
+                    (
+                        ffmpeg_next::codec::Context::new_with_codec(hw_codec),
+                        hw_name,
+                    )
+                } else {
+                    log::info!("no hardware encoder found, using software encoder: {}", codec);
+                    let sw_codec = ffmpeg_next::encoder::find_by_name(codec)
+                        .ok_or(anyhow::anyhow!("codec not found: {}", codec))?;
+                    (
+                        ffmpeg_next::codec::Context::new_with_codec(sw_codec),
+                        codec.clone(),
+                    )
+                }
             }
-            None => ffmpeg_next::codec::Context::new(),
+            None => (ffmpeg_next::codec::Context::new(), String::new()),
         };
 
-        // TODO set global header
-        let mut encoder = encoder_context.encoder().video()?;
-        encoder.set_width(settings.width);
-        encoder.set_height(settings.height);
-        encoder.set_format(settings.pixel_format);
-        encoder.set_frame_rate(Some(stream.rate()));
-        encoder.set_time_base(ffmpeg_next::util::mathematics::rescale::TIME_BASE);
+        // Try to open the encoder; if hardware encoder fails, retry with software.
+        let open_encoder = |ctx: ffmpeg_next::codec::Context,
+                            opts: Option<Dictionary>,
+                            settings: &Settings|
+         -> anyhow::Result<ffmpeg_next::codec::encoder::Video> {
+            let mut encoder = ctx.encoder().video()?;
+            encoder.set_width(settings.width);
+            encoder.set_height(settings.height);
+            encoder.set_format(settings.pixel_format);
+            encoder.set_frame_rate(Some(stream.rate()));
+            encoder.set_time_base(ffmpeg_next::util::mathematics::rescale::TIME_BASE);
 
-        // Encoding efficiency: preset (ultrafast=fastest), tune zerolatency; caller may pass options via EncodeConfig.
-        let need_defaults = options.is_none();
-        let mut opts = options.unwrap_or_default();
-        if need_defaults {
-            opts.set("preset", "ultrafast");
-            opts.set("tune", "zerolatency");
-        }
-        let encoder = encoder.open_with(opts)?;
+            let need_defaults = opts.is_none();
+            let mut opts = opts.unwrap_or_default();
+            if need_defaults {
+                opts.set("preset", "ultrafast");
+                opts.set("tune", "zerolatency");
+            }
+            let encoder = encoder.open_with(opts)?;
+            Ok(encoder)
+        };
+
+        let encoder = match open_encoder(
+            encoder_context,
+            options.clone(),
+            &settings,
+        ) {
+            Ok(enc) => {
+                log::info!("encoder opened successfully: {}", selected_codec_name);
+                enc
+            }
+            Err(e) => {
+                // If it was a hardware encoder attempt, fall back to software
+                if let Some(ref codec) = settings.codec {
+                    let is_hw = selected_codec_name != *codec;
+                    if is_hw {
+                        log::warn!(
+                            "hardware encoder {} failed: {}, falling back to {}",
+                            selected_codec_name,
+                            e,
+                            codec
+                        );
+                        let sw_codec = ffmpeg_next::encoder::find_by_name(codec)
+                            .ok_or(anyhow::anyhow!("codec not found: {}", codec))?;
+                        let sw_ctx = ffmpeg_next::codec::Context::new_with_codec(sw_codec);
+                        let enc = open_encoder(sw_ctx, options, &settings)?;
+                        log::info!("encoder opened successfully (fallback): {}", codec);
+                        enc
+                    } else {
+                        return Err(e);
+                    }
+                } else {
+                    return Err(e);
+                }
+            }
+        };
+
         let encoder_time_base: Rational = unsafe { (*encoder.0.as_ptr()).time_base.into() };
 
         Ok(Self {

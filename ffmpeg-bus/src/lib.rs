@@ -13,6 +13,7 @@ pub mod decoder;
 pub mod device;
 pub mod encoder;
 pub mod frame;
+pub mod hw;
 pub mod input;
 pub mod metadata;
 pub mod output;
