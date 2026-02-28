@@ -4,6 +4,7 @@ use axum::{
 };
 use reqwest::StatusCode;
 
+pub mod device;
 pub mod media_pipe;
 pub mod system;
 pub mod user;
