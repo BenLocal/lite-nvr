@@ -7,6 +7,7 @@ use crate::{
     frame::{
         RawAudioFrame, RawFrame, RawFrameCmd, RawFrameReceiver, RawFrameSender, RawVideoFrame,
     },
+    hw,
     packet::{RawPacket, RawPacketCmd, RawPacketReceiver},
     stream::AvStream,
 };
@@ -91,22 +92,79 @@ pub struct Decoder {
 }
 
 impl Decoder {
-    pub fn new(stream: &AvStream) -> anyhow::Result<Self> {
-        let mut decoder_ctx = ffmpeg_next::codec::Context::new();
+    fn open_video_decoder_with_codec(
+        stream: &AvStream,
+        codec: ffmpeg_next::Codec,
+    ) -> anyhow::Result<(ffmpeg_next::codec::decoder::Video, Rational)> {
+        let mut decoder_ctx = ffmpeg_next::codec::Context::new_with_codec(codec);
         unsafe {
             (*decoder_ctx.as_mut_ptr()).time_base = stream.time_base().into();
         }
         decoder_ctx.set_parameters(stream.parameters().clone())?;
+        let video_decoder = decoder_ctx.decoder().video()?;
+        let decoder_time_base = video_decoder.time_base();
+        Ok((video_decoder, decoder_time_base))
+    }
 
+    pub fn new(stream: &AvStream) -> anyhow::Result<Self> {
         let s = if stream.is_video() {
-            let video_decoder = decoder_ctx.decoder().video()?;
-            let decoder_time_base = video_decoder.time_base();
-
-            if video_decoder.format() == ffmpeg_next::format::Pixel::None
-                || video_decoder.width() == 0
-                || video_decoder.height() == 0
-            {
-                return Err(anyhow::anyhow!("missing codec parameters"));
+            let mut selected_name = "default".to_string();
+            let mut selected_is_hw = false;
+            let mut first_hw_failure: Option<String> = None;
+            let mut opened: Option<(ffmpeg_next::codec::decoder::Video, Rational)> = None;
+            for candidate in hw::video_decoder_candidates(stream.parameters().id()) {
+                let Some(codec) = ffmpeg_next::decoder::find_by_name(&candidate.name) else {
+                    continue;
+                };
+                match Self::open_video_decoder_with_codec(stream, codec) {
+                    Ok(v) => {
+                        selected_name = candidate.name.clone();
+                        selected_is_hw = candidate.is_hw;
+                        opened = Some(v);
+                        break;
+                    }
+                    Err(e) => {
+                        if candidate.is_hw && first_hw_failure.is_none() {
+                            first_hw_failure =
+                                Some(format!("{} open failed: {}", candidate.name, e));
+                        }
+                        log::info!(
+                            "video decoder candidate rejected: name={}, hw={}, reason={}",
+                            candidate.name,
+                            candidate.is_hw,
+                            e
+                        );
+                    }
+                }
+            }
+            if opened.is_none() {
+                // ultimate software fallback: default codec from stream parameters
+                let mut decoder_ctx = ffmpeg_next::codec::Context::new();
+                unsafe {
+                    (*decoder_ctx.as_mut_ptr()).time_base = stream.time_base().into();
+                }
+                decoder_ctx.set_parameters(stream.parameters().clone())?;
+                let video_decoder = decoder_ctx.decoder().video()?;
+                let decoder_time_base = video_decoder.time_base();
+                opened = Some((video_decoder, decoder_time_base));
+            }
+            let (video_decoder, decoder_time_base) =
+                opened.ok_or_else(|| anyhow::anyhow!("unable to open video decoder"))?;
+            if selected_is_hw {
+                log::info!(
+                    "video decoder selected: {} (hardware), stream_index={}",
+                    selected_name,
+                    stream.index()
+                );
+            } else {
+                if let Some(reason) = first_hw_failure {
+                    log::info!("hardware decode unavailable, fallback to software: {}", reason);
+                }
+                log::info!(
+                    "video decoder selected: {} (software), stream_index={}",
+                    selected_name,
+                    stream.index()
+                );
             }
 
             Self {
@@ -115,6 +173,11 @@ impl Decoder {
                 decoder_time_base,
             }
         } else if stream.is_audio() {
+            let mut decoder_ctx = ffmpeg_next::codec::Context::new();
+            unsafe {
+                (*decoder_ctx.as_mut_ptr()).time_base = stream.time_base().into();
+            }
+            decoder_ctx.set_parameters(stream.parameters().clone())?;
             let audio_decoder = decoder_ctx.decoder().audio()?;
             let decoder_time_base = audio_decoder.time_base();
             Self {

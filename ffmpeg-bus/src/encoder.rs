@@ -5,6 +5,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     frame::{RawFrame, RawFrameCmd, RawFrameReceiver},
+    hw,
     packet::{RawPacket, RawPacketCmd, RawPacketReceiver, RawPacketSender},
     scaler::Scaler,
     stream::AvStream,
@@ -86,7 +87,7 @@ impl Default for Settings {
             width: 1920,
             height: 1080,
             keyframe_interval: 25,
-            codec: Some("libx264".to_string()),
+            codec: Some("h264".to_string()),
             pixel_format: ffmpeg_next::format::Pixel::YUV420P,
         }
     }
@@ -112,21 +113,13 @@ pub struct Encoder {
 }
 
 impl Encoder {
-    pub fn new(
+    fn open_video_encoder_with_codec(
         stream: &AvStream,
-        settings: Settings,
+        codec: ffmpeg_next::Codec,
+        settings: &Settings,
         options: Option<Dictionary>,
-    ) -> anyhow::Result<Self> {
-        let encoder_context = match settings.codec {
-            Some(codec) => {
-                let codec = ffmpeg_next::encoder::find_by_name(&codec)
-                    .ok_or(anyhow::anyhow!("codec not found"))?;
-                ffmpeg_next::codec::Context::new_with_codec(codec)
-            }
-            None => ffmpeg_next::codec::Context::new(),
-        };
-
-        // TODO set global header
+    ) -> anyhow::Result<(ffmpeg_next::codec::encoder::Video, Rational)> {
+        let encoder_context = ffmpeg_next::codec::Context::new_with_codec(codec);
         let mut encoder = encoder_context.encoder().video()?;
         encoder.set_width(settings.width);
         encoder.set_height(settings.height);
@@ -134,7 +127,6 @@ impl Encoder {
         encoder.set_frame_rate(Some(stream.rate()));
         encoder.set_time_base(ffmpeg_next::util::mathematics::rescale::TIME_BASE);
 
-        // Encoding efficiency: preset (ultrafast=fastest), tune zerolatency; caller may pass options via EncodeConfig.
         let need_defaults = options.is_none();
         let mut opts = options.unwrap_or_default();
         if need_defaults {
@@ -143,6 +135,71 @@ impl Encoder {
         }
         let encoder = encoder.open_with(opts)?;
         let encoder_time_base: Rational = unsafe { (*encoder.0.as_ptr()).time_base.into() };
+        Ok((encoder, encoder_time_base))
+    }
+
+    pub fn new(
+        stream: &AvStream,
+        settings: Settings,
+        options: Option<Dictionary>,
+    ) -> anyhow::Result<Self> {
+        let requested = settings.codec.as_deref();
+        let candidates = hw::video_encoder_candidates(requested);
+        let mut selected_name: Option<String> = None;
+        let mut selected_is_hw = false;
+        let mut first_hw_failure: Option<String> = None;
+        let mut opened: Option<(ffmpeg_next::codec::encoder::Video, Rational)> = None;
+
+        for candidate in candidates {
+            let Some(codec) = ffmpeg_next::encoder::find_by_name(&candidate.name) else {
+                continue;
+            };
+            match Self::open_video_encoder_with_codec(stream, codec, &settings, options.clone()) {
+                Ok(v) => {
+                    selected_name = Some(candidate.name.clone());
+                    selected_is_hw = candidate.is_hw;
+                    opened = Some(v);
+                    break;
+                }
+                Err(e) => {
+                    if candidate.is_hw && first_hw_failure.is_none() {
+                        first_hw_failure =
+                            Some(format!("{} open failed: {}", candidate.name, e));
+                    }
+                    log::info!(
+                        "video encoder candidate rejected: name={}, hw={}, reason={}",
+                        candidate.name,
+                        candidate.is_hw,
+                        e
+                    );
+                }
+            }
+        }
+
+        let (encoder, encoder_time_base) = opened.ok_or_else(|| {
+            anyhow::anyhow!(
+                "no usable video encoder for requested codec {:?}",
+                settings.codec
+            )
+        })?;
+        if selected_is_hw {
+            log::info!(
+                "video encoder selected: {} (hardware), stream_index={}",
+                selected_name.as_deref().unwrap_or("unknown"),
+                stream.index()
+            );
+        } else {
+            if let Some(reason) = first_hw_failure {
+                log::info!("hardware encode unavailable, fallback to software: {}", reason);
+            } else {
+                log::info!("video encoder selected: software fallback");
+            }
+            log::info!(
+                "video encoder selected: {} (software), stream_index={}",
+                selected_name.as_deref().unwrap_or("unknown"),
+                stream.index()
+            );
+        }
 
         Ok(Self {
             stream: stream.clone(),

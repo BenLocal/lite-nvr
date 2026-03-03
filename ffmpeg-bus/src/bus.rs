@@ -608,6 +608,14 @@ impl Bus {
         Some(opts)
     }
 
+    fn encoder_codec_from_config(encode: Option<&EncodeConfig>) -> String {
+        encode
+            .map(|e| e.codec.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("h264")
+            .to_string()
+    }
+
     async fn start_encoder_task(
         state: &mut BusState,
         input_stream_index: usize,
@@ -630,10 +638,12 @@ impl Bus {
             let (width, height, pixel_format) =
                 Self::raw_video_params_from_parameters(input_stream.parameters());
             let (width, height) = Self::ensure_video_dimensions(width, height);
+            let codec = Self::encoder_codec_from_config(encode);
             let encoder_settings = Settings {
                 width,
                 height,
                 pixel_format: pixel_format_for_libx264(pixel_format),
+                codec: Some(codec),
                 ..Settings::default()
             };
             let packet_receiver: tokio::sync::broadcast::Receiver<RawPacketCmd> = state
@@ -679,6 +689,7 @@ impl Bus {
                 .subscribe();
             // Decoded path: decoder outputs RawFrame; encoder needs correct size/format.
             // For WRAPPED_AVFRAME (e.g. lavfi testsrc), use stream params so output resolution matches source.
+            let codec = Self::encoder_codec_from_config(encode);
             let encoder_settings = if codec_id == ffmpeg_next::codec::Id::WRAPPED_AVFRAME {
                 let (width, height, pixel_format) =
                     Self::raw_video_params_from_parameters(input_stream.parameters());
@@ -687,12 +698,12 @@ impl Bus {
                     width,
                     height,
                     pixel_format: pixel_format_for_libx264(pixel_format),
-                    codec: Some("libx264".to_string()),
+                    codec: Some(codec.clone()),
                     ..Settings::default()
                 }
             } else {
                 Settings {
-                    codec: Some("libx264".to_string()),
+                    codec: Some(codec),
                     ..Settings::default()
                 }
             };

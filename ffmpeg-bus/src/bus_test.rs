@@ -4,6 +4,8 @@ use futures::StreamExt;
 use tokio::io::AsyncWriteExt as _;
 
 use crate::bus::{Bus, InputConfig, OutputAvType, OutputConfig, OutputDest};
+use crate::encoder::{Encoder, Settings};
+use crate::input::AvInput;
 use crate::metadata::probe;
 
 /// Path to scripts/test.mp4 relative to workspace root (parent of ffmpeg-bus). Works regardless of cwd.
@@ -129,6 +131,59 @@ async fn test_mux_only_video_mp4() -> anyhow::Result<()> {
     // Source is ~5s @ 10fps; wait for mux to finish (read + write) then verify
     tokio::time::sleep(std::time::Duration::from_secs(8)).await;
     verify_output_mp4("output.mp4", Some(5.0), Some(10)).await?;
+    Ok(())
+}
+
+/// Stable init-level regression: prefer HW H.264 encoder and fallback to software automatically.
+/// Uses scripts/test.mp4 to obtain real stream parameters, then only validates encoder init path.
+#[test]
+fn test_encoder_init_auto_hw_fallback_from_test_mp4() -> anyhow::Result<()> {
+    crate::init()?;
+    let input_path = test_mp4_path();
+    if !input_path.exists() {
+        log::warn!("skip: {} not found", input_path.display());
+        return Ok(());
+    }
+
+    let input = AvInput::new(input_path.to_string_lossy().as_ref(), None, None)?;
+    let video_stream = input
+        .streams()
+        .values()
+        .find(|s| s.is_video())
+        .ok_or_else(|| anyhow::anyhow!("no video stream in test.mp4"))?
+        .clone();
+
+    let settings = Settings {
+        codec: Some("h264".to_string()),
+        ..Settings::default()
+    };
+    let _encoder = Encoder::new(&video_stream, settings, None)?;
+    Ok(())
+}
+
+/// Stable init-level regression: force software libx264 init from scripts/test.mp4.
+#[test]
+fn test_encoder_init_force_software_from_test_mp4() -> anyhow::Result<()> {
+    crate::init()?;
+    let input_path = test_mp4_path();
+    if !input_path.exists() {
+        log::warn!("skip: {} not found", input_path.display());
+        return Ok(());
+    }
+
+    let input = AvInput::new(input_path.to_string_lossy().as_ref(), None, None)?;
+    let video_stream = input
+        .streams()
+        .values()
+        .find(|s| s.is_video())
+        .ok_or_else(|| anyhow::anyhow!("no video stream in test.mp4"))?
+        .clone();
+
+    let settings = Settings {
+        codec: Some("libx264".to_string()),
+        ..Settings::default()
+    };
+    let _encoder = Encoder::new(&video_stream, settings, None)?;
     Ok(())
 }
 
