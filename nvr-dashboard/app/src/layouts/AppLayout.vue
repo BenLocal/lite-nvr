@@ -3,10 +3,14 @@ import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import Menu from 'primevue/menu'
 import Button from 'primevue/button'
+import { useConfirm } from 'primevue/useconfirm'
+import { useToast } from 'primevue/usetoast'
 import { useAuth } from '../composables/useAuth'
 
 const router = useRouter()
 const { logout } = useAuth()
+const confirm = useConfirm()
+const toast = useToast()
 
 const sidebarCollapsed = ref(false)
 const userMenu = ref<InstanceType<typeof Menu> | null>(null)
@@ -22,10 +26,7 @@ const userMenuItems = ref([
   {
     label: '退出登录',
     icon: 'pi pi-sign-out',
-    command: () => {
-      logout()
-      router.push('/login')
-    },
+    command: onLogoutRequest,
   },
 ])
 
@@ -49,6 +50,34 @@ function toggleUserMenu(event: Event) {
 
 function onLogoError() {
   logoUrl.value = ''
+}
+
+function onLogoutRequest() {
+  confirm.require({
+    header: '退出登录',
+    message: '确认退出当前账号吗？',
+    icon: 'pi pi-exclamation-triangle',
+    rejectLabel: '取消',
+    acceptLabel: '确认',
+    accept: async () => {
+      logout()
+      await router.push('/login')
+      toast.add({
+        severity: 'warn',
+        summary: '已退出',
+        detail: '你已安全退出登录',
+        life: 2000,
+      })
+    },
+    reject: () => {
+      toast.add({
+        severity: 'info',
+        summary: '已取消',
+        detail: '已取消退出操作',
+        life: 1500,
+      })
+    },
+  })
 }
 </script>
 

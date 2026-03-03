@@ -1,6 +1,8 @@
 import 'primeicons/primeicons.css'
 import { createApp } from 'vue'
 import PrimeVue from 'primevue/config'
+import ConfirmationService from 'primevue/confirmationservice'
+import ToastService from 'primevue/toastservice'
 import Aura from '@primeuix/themes/aura'
 import App from './App.vue'
 import router from './router'
@@ -20,6 +22,8 @@ app.use(PrimeVue, {
     DataTable: { root: { class: 'p-datatable-sm' } },
   },
 })
+app.use(ConfirmationService)
+app.use(ToastService)
 app.use(router)
 
 app.mount('#app')

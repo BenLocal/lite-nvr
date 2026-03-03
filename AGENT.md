@@ -190,3 +190,32 @@ npm run build
 3. 验证结果（实际执行的命令与结论）
 4. 风险与回滚点（如有）
 5. 未完成项与原因（如有）
+
+## 13. 前端规则优先级（nvr-dashboard）
+
+凡是修改 `nvr-dashboard/app/` 的任务，Agent 必须优先读取并遵循：
+
+- `nvr-dashboard/app/RULES.md`
+
+执行优先级：
+- 若本文件与 `nvr-dashboard/app/RULES.md` 在前端实现细节上有冲突，以 `RULES.md` 为准。
+- 若用户明确提出与规则冲突的需求，先执行用户需求，并在结果中标注偏离点。
+
+前端关键规则摘要（详细以 `RULES.md` 原文为准）：
+- API 请求分层：
+  - 所有 HTTP 请求必须放在 `src/api`。
+  - 按业务域拆分文件（如 `src/api/user.ts`）。
+  - 公共请求行为（base URL、鉴权头、错误处理）统一在 `src/api/request.ts`。
+  - 组件/页面/composable 不得直接写请求逻辑。
+- 表单与校验：
+  - 默认使用 `@primevue/forms`。
+  - 错误态需使用 `invalid`（输入框红边）。
+  - 字段错误信息显示在输入框下方，使用 PrimeVue 风格组件。
+- 交互反馈：
+  - 禁止使用 `window.alert`、`window.confirm`、`alert()`、`confirm()`。
+  - 确认框使用 `primevue/confirmdialog`。
+  - 警告/提示使用 `primevue/toast`。
+  - 根组件挂载 `ConfirmDialog` 与 `Toast`，页面内通过 `useConfirm`、`useToast` 调用。
+- 表单宽度一致性：
+  - 统一使用 `class="field-input"`。
+  - 对包裹型组件（如 `Password/InputNumber/Select`）保证外层与内层均为 `width: 100%`。

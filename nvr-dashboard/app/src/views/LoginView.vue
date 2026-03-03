@@ -1,39 +1,70 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
+import Form from '@primevue/forms/form'
 import InputText from 'primevue/inputtext'
 import Password from 'primevue/password'
 import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
 import Message from 'primevue/message'
 import { useAuth } from '../composables/useAuth'
+import { loginByPassword } from '../api/user'
 
 const router = useRouter()
 const { login } = useAuth()
 
-const username = ref('')
-const password = ref('')
-const rememberMe = ref(false)
 const error = ref('')
 const loading = ref(false)
 
-function onSubmit() {
-  error.value = ''
-  if (!username.value.trim()) {
-    error.value = '请输入用户名'
-    return
+const initialValues = {
+  username: '',
+  password: '',
+  rememberMe: false,
+}
+
+function resolver({ values }: { values: Record<string, unknown> }) {
+  const errors: Record<string, { message: string }[]> = {}
+  const username = String(values.username ?? '').trim()
+  const password = String(values.password ?? '')
+
+  if (!username) {
+    errors.username = [{ message: '请输入用户名' }]
   }
-  if (!password.value) {
-    error.value = '请输入密码'
+  if (!password) {
+    errors.password = [{ message: '请输入密码' }]
+  }
+
+  return {
+    values: {
+      ...values,
+      username,
+      password,
+    },
+    errors,
+  }
+}
+
+async function onSubmit(event: { valid: boolean; values: Record<string, unknown> }) {
+  error.value = ''
+  if (!event.valid) {
     return
   }
   loading.value = true
-  setTimeout(() => {
-    login('token-' + Date.now())
+
+  try {
+    const data = await loginByPassword({
+      username: String(event.values.username ?? ''),
+      password: String(event.values.password ?? ''),
+    })
+
+    login(data.token, Boolean(event.values.rememberMe))
     loading.value = false
     const redirect = (router.currentRoute.value.query.redirect as string) || '/'
     router.push(redirect)
-  }, 400)
+  } catch {
+    loading.value = false
+    error.value = '用户名或密码错误'
+  }
 }
 </script>
 
@@ -53,7 +84,7 @@ function onSubmit() {
         <h1 class="login-title">欢迎使用 NVR 控制台</h1>
         <p class="login-subtitle">登录以继续</p>
 
-        <form class="login-form" @submit.prevent="onSubmit">
+        <Form v-slot="$form" :resolver="resolver" :initial-values="initialValues" class="login-form" @submit="onSubmit">
           <Message v-if="error" severity="error" :closable="false" class="login-error">
             {{ error }}
           </Message>
@@ -62,31 +93,49 @@ function onSubmit() {
             <label for="username">用户名</label>
             <InputText
               id="username"
-              v-model="username"
+              name="username"
               type="text"
               placeholder="请输入用户名"
               class="field-input"
+              :invalid="$form.username?.invalid"
               autocomplete="username"
             />
+            <Message
+              v-if="$form.username?.invalid"
+              severity="error"
+              size="small"
+              variant="simple"
+            >
+              {{ $form.username.error?.message }}
+            </Message>
           </div>
 
           <div class="field">
             <label for="password">密码</label>
             <Password
               id="password"
-              v-model="password"
+              name="password"
               placeholder="请输入密码"
               :feedback="false"
               toggle-mask
               class="field-input"
+              :invalid="$form.password?.invalid"
               input-class="field-input-inner"
               autocomplete="current-password"
             />
+            <Message
+              v-if="$form.password?.invalid"
+              severity="error"
+              size="small"
+              variant="simple"
+            >
+              {{ $form.password.error?.message }}
+            </Message>
           </div>
 
           <div class="login-options">
             <div class="remember-me">
-              <Checkbox v-model="rememberMe" input-id="remember" :binary="true" />
+              <Checkbox name="rememberMe" input-id="remember" :binary="true" />
               <label for="remember">记住我</label>
             </div>
             <a href="#" class="forgot-link" @click.prevent>忘记密码？</a>
@@ -98,7 +147,7 @@ function onSubmit() {
             :loading="loading"
             class="login-button"
           />
-        </form>
+        </Form>
       </div>
     </div>
   </div>
@@ -194,6 +243,14 @@ function onSubmit() {
 }
 
 .field-input-inner {
+  width: 100%;
+}
+
+:deep(.p-password.field-input) {
+  width: 100%;
+}
+
+:deep(.p-password.field-input .p-password-input) {
   width: 100%;
 }
 

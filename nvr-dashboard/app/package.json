@@ -13,6 +13,7 @@
     "format": "eslint . --fix --cache"
   },
   "dependencies": {
+    "@primevue/forms": "^4.5.4",
     "@primeuix/themes": "^2.0.3",
     "primeicons": "^7.0.0",
     "primevue": "^4.5.4",

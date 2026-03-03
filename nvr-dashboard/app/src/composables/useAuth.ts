@@ -1,17 +1,20 @@
 import { computed } from 'vue'
-
-const AUTH_KEY = 'nvr-auth-token'
+import { clearAuthToken, getAuthToken, setAuthToken } from '../auth/token'
 
 export function useAuth() {
-  const isLoggedIn = computed(() => !!localStorage.getItem(AUTH_KEY))
+  const isLoggedIn = computed(() => !!getAuthToken())
 
-  function login(token: string) {
-    localStorage.setItem(AUTH_KEY, token)
+  function login(token: string, rememberMe = true) {
+    setAuthToken(token, rememberMe)
+  }
+
+  function getToken() {
+    return getAuthToken()
   }
 
   function logout() {
-    localStorage.removeItem(AUTH_KEY)
+    clearAuthToken()
   }
 
-  return { isLoggedIn, login, logout }
+  return { isLoggedIn, login, logout, getToken }
 }
