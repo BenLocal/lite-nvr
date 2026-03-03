@@ -39,4 +39,4 @@ This is a lightweight NVR project built as a Rust workspace. It follows a layere
 1. The layering is clear, and the core media path has well-defined module boundaries.
 2. The frontend is currently a basic shell (device page is not yet connected to real data).
 3. Password verification logic in login is not enabled yet (currently returns a generated token).
-4. There are minor naming/spelling issues (for example, `meida_pipe_router` and `foramts`) that should be cleaned up later.
+4. Minor naming/spelling issues have been cleaned up (for example, `media_pipe_router` and `formats`).

@@ -13,7 +13,7 @@ use crate::{
     media::types::{EncodeConfig, InputConfig, OutputConfig, OutputDest, PipeConfig},
 };
 
-pub fn meida_pipe_router() -> Router {
+pub fn media_pipe_router() -> Router {
     Router::new()
         .route("/", get(index))
         .route("/list", get(list_pipes))

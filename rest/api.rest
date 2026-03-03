@@ -88,8 +88,8 @@ GET http://{{Host}}/pipe/remove/test
 ### system route index
 GET http://{{Host}}/system
 
-### List device foramts
-GET http://{{Host}}/system/list/device/foramts
+### List device formats
+GET http://{{Host}}/system/list/device/formats
 Content-Type: application/json
 
 {

@@ -8,7 +8,7 @@ use crate::handler::ApiJsonResult;
 pub fn system_router() -> Router {
     Router::new()
         .route("/", get(index))
-        .route("/list/device/foramts", get(list_device_foramts))
+        .route("/list/device/formats", get(list_device_formats))
         .route("/list/v4l2/devices", get(list_v4l2_device))
         .route("/list/x11grab/devices", get(list_x11grab_device))
 }
@@ -33,7 +33,7 @@ async fn index() -> &'static str {
     "system route!"
 }
 
-async fn list_device_foramts(
+async fn list_device_formats(
     Json(request): Json<DeviceListRequest>,
 ) -> ApiJsonResult<Vec<DeviceFormatInfoItem>> {
     match request.kind {
