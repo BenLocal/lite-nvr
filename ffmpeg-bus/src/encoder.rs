@@ -308,13 +308,13 @@ impl EncoderTask {
                     match frame {
                         RawFrameCmd::Data(frame) => {
                             if let Err(e) = encoder.send_frame(frame) {
-                                eprintln!("send packet error: {}", e);
+                                log::error!("send packet error: {}", e);
                                 continue;
                             }
                         }
                         RawFrameCmd::EOF => {
                             if let Err(e) = encoder.send_eof() {
-                                eprintln!("send eof error: {}", e);
+                                log::error!("send eof error: {}", e);
                             }
                             eof = true;
                         }
@@ -329,7 +329,7 @@ impl EncoderTask {
                                 break 'outer;
                             }
                             Err(e) => {
-                                eprintln!("receive packet error: {}", e);
+                                log::error!("receive packet error: {}", e);
                                 break 'outer;
                             }
                         }
@@ -343,7 +343,7 @@ impl EncoderTask {
             }
         }
 
-        println!(
+        log::info!(
             "end of av encode task loop, stream base_time: {:#?}, encoder_time_base: {:#?}",
             encoder.stream.time_base(),
             encoder.encoder_time_base

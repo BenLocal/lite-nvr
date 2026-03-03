@@ -29,7 +29,7 @@ async fn main() -> ! {
     nvr_db::migrations::migrate(config.db_url())
         .await
         .unwrap_or_else(|e| {
-            eprintln!("Error migrating database: {}", e);
+            log::error!("Error migrating database: {}", e);
             std::process::exit(1);
         });
 

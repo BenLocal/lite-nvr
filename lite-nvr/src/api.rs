@@ -11,12 +11,12 @@ pub(crate) fn start_api_server(cancel: CancellationToken) {
             .nest("/nvr", nvr_dashboard::app_router(None));
 
         let listener = TcpListener::bind("0.0.0.0:8080").await.unwrap();
-        println!("API server started on port 8080");
+        log::info!("API server started on port 8080");
         if let Err(e) = axum::serve(listener, app)
             .with_graceful_shutdown(shutdown_signal(cancel))
             .await
         {
-            println!("Error starting API server: {}", e);
+            log::error!("Error starting API server: {}", e);
         }
     });
 }
@@ -24,7 +24,7 @@ pub(crate) fn start_api_server(cancel: CancellationToken) {
 async fn shutdown_signal(cancel: CancellationToken) {
     tokio::select! {
         _ = cancel.cancelled() => {
-            println!("Shutting down API server...");
+            log::info!("Shutting down API server...");
         }
     }
 }

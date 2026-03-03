@@ -45,9 +45,9 @@ impl AvInputTask {
                         }
                         None => {
                             // End of stream, break the loop
-                            println!("end of read input stream:");
+                            log::info!("end of read input stream:");
                             for (index, stream) in input.streams.iter() {
-                                println!(
+                                log::info!(
                                     "stream index: {}, stream id: {:#?}, time_base: {:#?}",
                                     index,
                                     stream.parameters().id(),

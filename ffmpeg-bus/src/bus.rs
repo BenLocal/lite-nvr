@@ -753,9 +753,9 @@ impl Bus {
         };
 
         let streams = input.streams();
-        println!("start add input streams: ");
+        log::info!("start add input streams:");
         for (index, stream) in streams {
-            println!(
+            log::info!(
                 "stream index: {}, stream id: {:#?}, time_base: {:#?}",
                 index,
                 stream.parameters().id(),

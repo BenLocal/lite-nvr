@@ -15,7 +15,7 @@ pub struct ApiError(anyhow::Error);
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        eprintln!("ApiError: {:?}", self.0);
+        log::error!("ApiError: {:?}", self.0);
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Manager went wrong because service inner error"),

@@ -25,7 +25,7 @@ async fn test_mux_h264() -> anyhow::Result<()> {
 
     let input_path = test_mp4_path();
     if !input_path.exists() {
-        eprintln!("skip: {} not found", input_path.display());
+        log::warn!("skip: {} not found", input_path.display());
         return Ok(());
     }
 
@@ -69,7 +69,7 @@ async fn test_mux_aac() -> anyhow::Result<()> {
 
     let input_path = test_mp4_path();
     if !input_path.exists() {
-        eprintln!("skip: {} not found", input_path.display());
+        log::warn!("skip: {} not found", input_path.display());
         return Ok(());
     }
 
@@ -106,7 +106,7 @@ async fn test_mux_aac() -> anyhow::Result<()> {
 async fn test_mux_only_video_mp4() -> anyhow::Result<()> {
     let input_path = test_mp4_path();
     if !input_path.exists() {
-        eprintln!("skip: {} not found", input_path.display());
+        log::warn!("skip: {} not found", input_path.display());
         return Ok(());
     }
 

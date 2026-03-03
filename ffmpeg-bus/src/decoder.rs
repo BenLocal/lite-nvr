@@ -279,7 +279,7 @@ impl DecoderTask {
                 break;
             }
         }
-        println!(
+        log::info!(
             "end of av decode task loop, stream base_time: {:#?}, decoder_time_base: {:#?}",
             decoder.stream.time_base(),
             decoder.decoder_time_base
