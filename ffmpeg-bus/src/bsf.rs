@@ -162,25 +162,5 @@ impl FilteredPacket {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_is_annexb() {
-        assert!(is_annexb_packet(&[0x00, 0x00, 0x00, 0x01, 0x67]));
-        assert!(is_annexb_packet(&[0x00, 0x00, 0x01, 0x67]));
-        assert!(!is_annexb_packet(&[0x01, 0x00, 0x00, 0x00]));
-        assert!(!is_annexb_packet(&[0x00, 0x00]));
-    }
-
-    #[test]
-    fn test_avcc_to_annexb() {
-        // One NAL: length 4, then 4 bytes NAL
-        let avcc = [0, 0, 0, 4, 0x65, 0x88, 0x81, 0x00];
-        let out = convert_avcc_to_annexb(&avcc);
-        assert_eq!(
-            &out[..],
-            &[0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x81, 0x00][..]
-        );
-    }
-}
+#[path = "bsf_test.rs"]
+mod bsf_test;

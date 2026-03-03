@@ -70,6 +70,7 @@ impl Bus {
                     input.stop();
                     drop(input);
                 }
+                state.pending_input = None;
                 state.input_config = None;
                 result
                     .send(Ok(()))
@@ -84,7 +85,7 @@ impl Bus {
 
                 // try to start input task
                 if state.input_task.is_none() && state.input_config.is_some() {
-                    if let Err(e) = Self::start_input_task(state).await {
+                    if let Err(e) = Self::prepare_input_task(state).await {
                         let msg = format!("{:#}", e);
                         let _ = result.send(Err(anyhow::anyhow!("{}", msg)));
                         return Err(anyhow::anyhow!("{}", msg));
@@ -140,6 +141,11 @@ impl Bus {
                 match stream_result {
                     Ok((av, stream)) => {
                         state.output_config.insert(id.clone(), output);
+                        if let Err(e) = Self::start_input_task(state).await {
+                            let msg = format!("{:#}", e);
+                            let _ = result.send(Err(anyhow::anyhow!("{}", msg)));
+                            return Err(anyhow::anyhow!("{}", msg));
+                        }
                         result
                             .send(Ok((av, stream)))
                             .map_err(|_| anyhow::anyhow!("send result error: receiver dropped"))?;
@@ -238,9 +244,9 @@ impl Bus {
 
         tokio::spawn(async move {
             let mut output = output;
-            while let Ok(cmd) = input_receiver.recv().await {
-                match cmd {
-                    RawPacketCmd::Data(packet) => {
+            loop {
+                match input_receiver.recv().await {
+                    Ok(RawPacketCmd::Data(packet)) => {
                         if packet.index() == target_stream_index {
                             if let Err(e) = output.write_packet(target_stream_index, packet) {
                                 log::error!(
@@ -251,7 +257,12 @@ impl Bus {
                             }
                         }
                     }
-                    RawPacketCmd::EOF => break,
+                    Ok(RawPacketCmd::EOF) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        log::warn!("mux to file lagged, dropped {} messages", n);
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
             if let Err(e) = output.finish() {
@@ -317,9 +328,9 @@ impl Bus {
 
         tokio::spawn(async move {
             let mut output = output;
-            while let Ok(cmd) = input_receiver.recv().await {
-                match cmd {
-                    RawPacketCmd::Data(packet) => {
+            loop {
+                match input_receiver.recv().await {
+                    Ok(RawPacketCmd::Data(packet)) => {
                         if packet.index() == target_stream_index {
                             if let Err(e) = output.write_packet(target_stream_index, packet) {
                                 log::error!(
@@ -330,7 +341,12 @@ impl Bus {
                             }
                         }
                     }
-                    RawPacketCmd::EOF => break,
+                    Ok(RawPacketCmd::EOF) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        log::warn!("mux to net lagged, dropped {} messages", n);
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
             if let Err(e) = output.finish() {
@@ -468,16 +484,21 @@ impl Bus {
 
         tokio::spawn(async move {
             let mut writer = writer;
-            while let Ok(cmd) = input_receiver.recv().await {
-                match cmd {
-                    RawPacketCmd::Data(packet) => {
+            loop {
+                match input_receiver.recv().await {
+                    Ok(RawPacketCmd::Data(packet)) => {
                         if packet.index() == target_stream_index {
                             if let Err(e) = writer.write_packet(packet) {
                                 log::error!("mux write_packet error: {}", e.to_string());
                             }
                         }
                     }
-                    RawPacketCmd::EOF => break,
+                    Ok(RawPacketCmd::EOF) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        log::warn!("mux input_receiver lagged, dropped {} messages", n);
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
             if let Err(e) = writer.finish() {
@@ -543,6 +564,7 @@ impl Bus {
         }
 
         if !state.output_config.is_empty() && state.input_task.is_none() {
+            Self::prepare_input_task(state).await?;
             Self::start_input_task(state).await?;
         }
         Ok(())
@@ -712,7 +734,10 @@ impl Bus {
         Ok(())
     }
 
-    async fn start_input_task(state: &mut BusState) -> anyhow::Result<()> {
+    async fn prepare_input_task(state: &mut BusState) -> anyhow::Result<()> {
+        if state.input_task.is_some() {
+            return Ok(());
+        }
         let options = state.input_options.as_ref().map(|options| {
             ffmpeg_next::Dictionary::from_iter(
                 options.iter().map(|(k, v)| (k.as_str(), v.as_str())),
@@ -740,6 +765,15 @@ impl Bus {
         }
 
         state.input_task = Some(AvInputTask::new());
+        state.pending_input = Some(input);
+        Ok(())
+    }
+
+    async fn start_input_task(state: &mut BusState) -> anyhow::Result<()> {
+        let input = match state.pending_input.take() {
+            Some(input) => input,
+            None => return Ok(()),
+        };
 
         if let Some(task) = state.input_task.as_ref() {
             task.start(input).await;
@@ -797,6 +831,7 @@ struct BusState {
     input_options: Option<HashMap<String, String>>,
     output_config: HashMap<String, OutputConfig>,
     input_task: Option<AvInputTask>,
+    pending_input: Option<AvInput>,
     input_streams: Vec<AvStream>,
     decoder_tasks: HashMap<usize, DecoderTask>,
     encoder_tasks: HashMap<usize, EncoderTask>,
@@ -808,6 +843,7 @@ impl BusState {
             input_config: None,
             output_config: HashMap::new(),
             input_task: None,
+            pending_input: None,
             input_streams: Vec::new(),
             decoder_tasks: HashMap::new(),
             encoder_tasks: HashMap::new(),

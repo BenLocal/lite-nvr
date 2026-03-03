@@ -2,7 +2,7 @@ use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
 use bytes::Bytes;
-use ffmpeg_next::{Rational, Rescale};
+use ffmpeg_next::Rational;
 
 use crate::output::OutputMessage;
 use crate::packet::RawPacket;
@@ -276,3 +276,7 @@ impl From<RawPacket> for VideoFrame {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "frame_test.rs"]
+mod frame_test;
