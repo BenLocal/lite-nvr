@@ -18,12 +18,52 @@ jobs:
   rust-check:
     name: Check and Test
     runs-on: ubuntu-latest
+    env:
+      # Override .cargo/config.toml default ("ffmpeg"), use CI-installed FFmpeg >= 7.
+      FFMPEG_DIR: /opt/ffmpeg
+      PKG_CONFIG_PATH: /opt/ffmpeg/lib/pkgconfig
+      LD_LIBRARY_PATH: /opt/ffmpeg/lib
+      FFMPEG_VERSION: 7.1.1
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            build-essential \
+            yasm \
+            nasm \
+            curl \
+            tar
+
+      - name: Cache FFmpeg build
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: /opt/ffmpeg
+          key: ffmpeg-${{ runner.os }}-${{ env.FFMPEG_VERSION }}
+
+      - name: Build and install FFmpeg
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+          curl -L "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" -o /tmp/ffmpeg.tar.xz
+          tar -xf /tmp/ffmpeg.tar.xz -C /tmp
+          cd /tmp/ffmpeg-${FFMPEG_VERSION}
+          ./configure \
+            --prefix=/opt/ffmpeg \
+            --enable-shared \
+            --disable-static \
+            --disable-programs \
+            --disable-doc
+          make -j"$(nproc)"
+          sudo make install
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
