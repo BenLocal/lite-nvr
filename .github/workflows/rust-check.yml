@@ -23,7 +23,8 @@ jobs:
       FFMPEG_DIR: /opt/ffmpeg
       PKG_CONFIG_PATH: /opt/ffmpeg/lib/pkgconfig
       LD_LIBRARY_PATH: /opt/ffmpeg/lib
-      FFMPEG_SERIES: n7.1
+      FFMPEG_PACKAGE: ffmpeg-n7.1-latest-linux64-gpl-shared-7.1.tar.xz
+      FFMPEG_PACKAGE_FALLBACK: ffmpeg-n7.1-latest-linux64-gpl-shared.tar.xz
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,7 +38,6 @@ jobs:
           sudo apt-get install -y \
             pkg-config \
             curl \
-            jq \
             tar \
             xz-utils
 
@@ -46,30 +46,19 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /opt/ffmpeg
-          key: ffmpeg-btbn-${{ runner.os }}-${{ env.FFMPEG_SERIES }}
+          key: ffmpeg-btbn-${{ runner.os }}-${{ env.FFMPEG_PACKAGE }}
 
       - name: Download and install FFmpeg from BtbN releases
         if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
-          API_URL="https://api.github.com/repos/BtbN/FFmpeg-Builds/releases"
-          ASSET_URL="$(
-            curl -fsSL "${API_URL}" | jq -r --arg series "${FFMPEG_SERIES}" '
-              [
-                .[] | select(.tag_name | startswith($series))
-                | .assets[]
-                | select(.name | test("^ffmpeg-" + $series + ".*linux64-gpl-shared.*\\.tar\\.xz$"))
-                | .browser_download_url
-              ] | first // empty
-            '
-          )"
+          BASE_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
+          ASSET_URL="${BASE_URL}/${FFMPEG_PACKAGE}"
+          FALLBACK_URL="${BASE_URL}/${FFMPEG_PACKAGE_FALLBACK}"
 
-          if [ -z "${ASSET_URL}" ]; then
-            echo "No matching BtbN FFmpeg asset found for series ${FFMPEG_SERIES}" >&2
-            exit 1
+          if ! curl -fL "${ASSET_URL}" -o /tmp/ffmpeg.tar.xz; then
+            curl -fL "${FALLBACK_URL}" -o /tmp/ffmpeg.tar.xz
           fi
-
-          curl -fL "${ASSET_URL}" -o /tmp/ffmpeg.tar.xz
           rm -rf /tmp/ffmpeg-extract
           mkdir -p /tmp/ffmpeg-extract
           tar -xf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg-extract
