@@ -19,11 +19,11 @@ jobs:
     name: Check and Test
     runs-on: ubuntu-latest
     env:
-      # Override .cargo/config.toml default ("ffmpeg"), use CI-installed FFmpeg >= 7.
+      # Override .cargo/config.toml default ("ffmpeg"), use CI-downloaded FFmpeg 7.x.
       FFMPEG_DIR: /opt/ffmpeg
       PKG_CONFIG_PATH: /opt/ffmpeg/lib/pkgconfig
       LD_LIBRARY_PATH: /opt/ffmpeg/lib
-      FFMPEG_VERSION: 7.1.1
+      FFMPEG_SERIES: n7.1
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,39 +31,65 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install build dependencies
+      - name: Install download dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             pkg-config \
-            build-essential \
-            yasm \
-            nasm \
             curl \
-            tar
+            jq \
+            tar \
+            xz-utils
 
       - name: Cache FFmpeg build
         id: cache-ffmpeg
         uses: actions/cache@v4
         with:
           path: /opt/ffmpeg
-          key: ffmpeg-${{ runner.os }}-${{ env.FFMPEG_VERSION }}
+          key: ffmpeg-btbn-${{ runner.os }}-${{ env.FFMPEG_SERIES }}
 
-      - name: Build and install FFmpeg
+      - name: Download and install FFmpeg from BtbN releases
         if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
-          curl -L "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" -o /tmp/ffmpeg.tar.xz
-          tar -xf /tmp/ffmpeg.tar.xz -C /tmp
-          cd /tmp/ffmpeg-${FFMPEG_VERSION}
-          ./configure \
-            --prefix=/opt/ffmpeg \
-            --enable-shared \
-            --disable-static \
-            --disable-programs \
-            --disable-doc
-          make -j"$(nproc)"
-          sudo make install
+          API_URL="https://api.github.com/repos/BtbN/FFmpeg-Builds/releases"
+          ASSET_URL="$(
+            curl -fsSL "${API_URL}" | jq -r --arg series "${FFMPEG_SERIES}" '
+              [
+                .[] | select(.tag_name | startswith($series))
+                | .assets[]
+                | select(.name | test("^ffmpeg-" + $series + ".*linux64-gpl-shared.*\\.tar\\.xz$"))
+                | .browser_download_url
+              ] | first // empty
+            '
+          )"
+
+          if [ -z "${ASSET_URL}" ]; then
+            echo "No matching BtbN FFmpeg asset found for series ${FFMPEG_SERIES}" >&2
+            exit 1
+          fi
+
+          curl -fL "${ASSET_URL}" -o /tmp/ffmpeg.tar.xz
+          rm -rf /tmp/ffmpeg-extract
+          mkdir -p /tmp/ffmpeg-extract
+          tar -xf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg-extract
+          ROOT_DIR="$(find /tmp/ffmpeg-extract -mindepth 1 -maxdepth 1 -type d | head -n1)"
+
+          if [ -z "${ROOT_DIR}" ]; then
+            echo "Extracted FFmpeg directory not found" >&2
+            exit 1
+          fi
+
+          sudo rm -rf "${FFMPEG_DIR}"
+          sudo mkdir -p "${FFMPEG_DIR}"
+          sudo cp -a "${ROOT_DIR}/." "${FFMPEG_DIR}/"
+
+      - name: Verify FFmpeg installation
+        run: |
+          set -euxo pipefail
+          "${FFMPEG_DIR}/bin/ffmpeg" -version | head -n1
+          test -f "${FFMPEG_DIR}/include/libavutil/avutil.h"
+          test -f "${FFMPEG_DIR}/lib/pkgconfig/libavutil.pc"
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
