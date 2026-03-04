@@ -120,7 +120,6 @@ async function onSubmit(event: { valid: boolean; values: Record<string, unknown>
               toggle-mask
               class="field-input"
               :invalid="$form.password?.invalid"
-              input-class="field-input-inner"
               autocomplete="current-password"
             />
             <Message
@@ -170,7 +169,7 @@ async function onSubmit(event: { valid: boolean; values: Record<string, unknown>
 
 .login-left-content {
   max-width: 28rem;
-  color: rgba(255, 255, 255, 0.95);
+  color: rgb(255 255 255 / 95%);
 }
 
 .login-brand {
@@ -238,22 +237,6 @@ async function onSubmit(event: { valid: boolean; values: Record<string, unknown>
   color: var(--p-text-color);
 }
 
-.field-input {
-  width: 100%;
-}
-
-.field-input-inner {
-  width: 100%;
-}
-
-:deep(.p-password.field-input) {
-  width: 100%;
-}
-
-:deep(.p-password.field-input .p-password-input) {
-  width: 100%;
-}
-
 .login-options {
   display: flex;
   align-items: center;
@@ -289,7 +272,7 @@ async function onSubmit(event: { valid: boolean; values: Record<string, unknown>
   margin-top: 0.25rem;
 }
 
-@media (max-width: 768px) {
+@media (width <= 768px) {
   .login-page {
     flex-direction: column;
   }

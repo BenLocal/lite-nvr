@@ -1,4 +1,5 @@
 <script setup lang="ts">
+// Legacy page: currently not mounted by router (home route uses DashboardView).
 import { useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import { useConfirm } from 'primevue/useconfirm'

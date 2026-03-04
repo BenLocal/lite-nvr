@@ -15,28 +15,6 @@ import Card from 'primevue/card'
 </template>
 
 <style scoped>
-.content-section {
-  max-width: 100%;
-}
-
-.content-card {
-  margin-bottom: 1rem;
-  border: 1px solid var(--p-content-border-color, #e5e7eb);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
-}
-
-.content-card :deep(.p-card-title) {
-  font-size: 1.125rem;
-}
-
-.content-card :deep(.p-card-subtitle) {
-  font-size: 0.8125rem;
-}
-
-.content-card :deep(.p-card-content) {
-  padding: 0.75rem 0;
-}
-
 .content-text {
   margin: 0;
   font-size: 0.875rem;

@@ -35,6 +35,12 @@ async fn main() -> ! {
 
     // init app db
     init_app_db(config.db_url()).await.unwrap();
+    nvr_db::migrations::ensure_default_admin_user(config.db_url())
+        .await
+        .unwrap_or_else(|e| {
+        log::error!("Error ensuring default admin user: {}", e);
+        std::process::exit(1);
+    });
 
     let cancel = CancellationToken::new();
 

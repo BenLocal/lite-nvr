@@ -187,6 +187,7 @@ function onLogoutRequest() {
   --layout-gap: 1rem;
   --layout-sidebar-width: 14rem;
   --layout-topbar-height: 3rem;
+
   min-height: 100vh;
   background-color: var(--p-surface-50);
 }
@@ -286,8 +287,8 @@ function onLogoutRequest() {
   border-radius: var(--p-content-border-radius, 4px);
   padding: var(--layout-gap) var(--layout-gap);
   box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.04),
-    0 0 2px rgba(0, 0, 0, 0.06);
+    0 1px 3px rgb(0 0 0 / 4%),
+    0 0 2px rgb(0 0 0 / 6%);
   border: 1px solid var(--p-content-border-color);
   transition: transform 0.2s, left 0.2s;
 }
@@ -304,7 +305,7 @@ function onLogoutRequest() {
 }
 
 .layout-menu-section {
-  margin: 0 0 0.5rem 0;
+  margin: 0 0 0.5rem;
 }
 
 .layout-menu-section-title {
@@ -382,13 +383,13 @@ function onLogoutRequest() {
 }
 
 /* 大屏下内容区最大宽度，避免过宽 */
-@media (min-width: 1200px) {
+@media (width >= 1200px) {
   .layout-main-container {
     max-width: 1504px;
   }
 }
 
-@media (max-width: 991px) {
+@media (width <= 991px) {
   .layout-wrapper {
     --layout-gap: 0.75rem;
   }
@@ -399,7 +400,7 @@ function onLogoutRequest() {
     height: 100vh;
     border-radius: 0;
     border-left: none;
-    box-shadow: 2px 0 8px rgba(0, 0, 0, 0.15);
+    box-shadow: 2px 0 8px rgb(0 0 0 / 15%);
   }
 
   .layout-sidebar-collapsed {

@@ -9,8 +9,12 @@
     "preview": "vite preview",
     "build-only": "vite build",
     "type-check": "vue-tsc --build",
-    "lint": "eslint . --fix --cache",
-    "format": "eslint . --fix --cache"
+    "lint:eslint": "eslint . --cache",
+    "lint:eslint:fix": "eslint . --fix --cache",
+    "lint:style": "stylelint \"src/**/*.{css,vue}\"",
+    "lint:style:fix": "stylelint \"src/**/*.{css,vue}\" --fix",
+    "lint": "run-s lint:eslint lint:style",
+    "format": "run-s lint:eslint:fix lint:style:fix"
   },
   "dependencies": {
     "@primevue/forms": "^4.5.4",
@@ -31,6 +35,10 @@
     "eslint-plugin-vue": "~10.7.0",
     "jiti": "^2.6.1",
     "npm-run-all2": "^8.0.4",
+    "postcss-html": "^1.8.0",
+    "stylelint": "^16.25.0",
+    "stylelint-config-standard": "^39.0.1",
+    "stylelint-config-standard-vue": "^1.0.0",
     "typescript": "~5.9.3",
     "vite": "^7.3.1",
     "vite-plugin-vue-devtools": "^8.0.5",

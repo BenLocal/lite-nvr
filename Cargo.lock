@@ -1806,12 +1806,15 @@ name = "nvr-db"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "argon2",
  "chrono",
  "futures",
  "rust-embed",
  "serde",
+ "serde_json",
  "tokio",
  "turso",
+ "uuid",
 ]
 
 [[package]]

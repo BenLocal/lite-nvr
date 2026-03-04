@@ -1,0 +1,35 @@
+name: Rust Check
+
+on:
+  push:
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/rust-check.yml'
+  pull_request:
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/rust-check.yml'
+
+jobs:
+  rust-check:
+    name: Check and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cargo check (workspace)
+        run: cargo check --workspace
+
+      - name: Cargo test (workspace, no doctest)
+        run: cargo test --workspace --lib --bins --tests --no-fail-fast

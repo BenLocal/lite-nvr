@@ -12,15 +12,15 @@ const API_BASE = import.meta.env.DEV ? '/api' : ''
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = 'GET', body, headers, ...rest } = options
   const token = getAuthToken()
+  const requestHeaders = new Headers(headers)
+  requestHeaders.set('Content-Type', 'application/json')
+  if (token) {
+    requestHeaders.set('Authorization', `Bearer ${token}`)
+  }
 
-  const authHeaders = token ? { Authorization: `Bearer ${token}` } : {}
   const response = await fetch(`${API_BASE}${path}`, {
     method,
-    headers: {
-      'Content-Type': 'application/json',
-      ...authHeaders,
-      ...headers,
-    },
+    headers: requestHeaders,
     body: body === undefined ? undefined : JSON.stringify(body),
     ...rest,
   })
