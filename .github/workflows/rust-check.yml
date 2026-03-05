@@ -22,7 +22,8 @@ jobs:
       # Override .cargo/config.toml default ("ffmpeg"), use CI-downloaded FFmpeg 7.x.
       FFMPEG_DIR: /opt/ffmpeg
       PKG_CONFIG_PATH: /opt/ffmpeg/lib/pkgconfig
-      LD_LIBRARY_PATH: /opt/ffmpeg/lib
+      ZLM_DIR: /opt/zlm
+      LD_LIBRARY_PATH: /opt/ffmpeg/lib:/opt/zlm/lib
       FFMPEG_PACKAGE: ffmpeg-n7.1-latest-linux64-gpl-shared-7.1.tar.xz
       FFMPEG_PACKAGE_FALLBACK: ffmpeg-n7.1-latest-linux64-gpl-shared.tar.xz
     steps:
@@ -38,8 +39,10 @@ jobs:
           sudo apt-get install -y \
             pkg-config \
             curl \
+            jq \
             tar \
-            xz-utils
+            xz-utils \
+            unzip
 
       - name: Cache FFmpeg build
         id: cache-ffmpeg
@@ -79,6 +82,72 @@ jobs:
           "${FFMPEG_DIR}/bin/ffmpeg" -version | head -n1
           test -f "${FFMPEG_DIR}/include/libavutil/avutil.h"
           test -f "${FFMPEG_DIR}/lib/pkgconfig/libavutil.pc"
+
+      - name: Cache ZLMediaKit build
+        id: cache-zlm
+        uses: actions/cache@v4
+        with:
+          path: /opt/zlm
+          key: zlm-benlocal-${{ runner.os }}-latest
+
+      - name: Download and install ZLMediaKit from BenLocal release
+        if: steps.cache-zlm.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+          API_URL="https://api.github.com/repos/BenLocal/ZLMediaKit-Build/releases/latest"
+          ASSET_URL="$(
+            curl -fsSL "${API_URL}" | jq -r '
+              [
+                .assets[]
+                | select(.name | test("(?i)linux"))
+                | select(.name | test("(?i)(x86_64|amd64|linux64|64)"))
+                | select(.name | test("(?i)\\.(tar\\.gz|tar\\.xz|zip)$"))
+                | select(.name | test("(?i)(sha256|sha512|md5|checksum)") | not)
+                | .browser_download_url
+              ] | first // empty
+            '
+          )"
+
+          if [ -z "${ASSET_URL}" ]; then
+            echo "No suitable Linux package found in BenLocal/ZLMediaKit-Build latest release" >&2
+            exit 1
+          fi
+
+          rm -rf /tmp/zlm-extract
+          mkdir -p /tmp/zlm-extract
+          curl -fL "${ASSET_URL}" -o /tmp/zlm.pkg
+
+          case "${ASSET_URL}" in
+            *.zip) unzip -q /tmp/zlm.pkg -d /tmp/zlm-extract ;;
+            *.tar.gz|*.tgz) tar -xzf /tmp/zlm.pkg -C /tmp/zlm-extract ;;
+            *.tar.xz) tar -xJf /tmp/zlm.pkg -C /tmp/zlm-extract ;;
+            *)
+              echo "Unsupported ZLM package format: ${ASSET_URL}" >&2
+              exit 1
+              ;;
+          esac
+
+          HEADER_PATH="$(find /tmp/zlm-extract -type f -name mk_mediakit.h | head -n1)"
+          LIB_PATH="$(find /tmp/zlm-extract -type f \( -name 'libmk_api.so' -o -name 'libmk_api.dylib' -o -name 'mk_api.dll' \) | head -n1)"
+
+          if [ -z "${HEADER_PATH}" ] || [ -z "${LIB_PATH}" ]; then
+            echo "ZLMediaKit package missing mk_mediakit.h or mk_api library" >&2
+            exit 1
+          fi
+
+          INCLUDE_DIR="$(dirname "${HEADER_PATH}")"
+          LIB_DIR="$(dirname "${LIB_PATH}")"
+
+          sudo rm -rf "${ZLM_DIR}"
+          sudo mkdir -p "${ZLM_DIR}/include" "${ZLM_DIR}/lib"
+          sudo cp -a "${INCLUDE_DIR}/." "${ZLM_DIR}/include/"
+          sudo cp -a "${LIB_DIR}/." "${ZLM_DIR}/lib/"
+
+      - name: Verify ZLMediaKit installation
+        run: |
+          set -euxo pipefail
+          test -f "${ZLM_DIR}/include/mk_mediakit.h"
+          ls -l "${ZLM_DIR}/lib"/libmk_api.so*
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
