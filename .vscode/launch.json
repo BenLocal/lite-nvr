@@ -23,14 +23,14 @@
             }
         },
         {
-            "name": "Debug executable 'lite-nvr'",
+            "name": "Debug executable 'nvr'",
             "type": "lldb",
             "request": "launch",
             "cargo": {
                 "args": [
                     "run",
-                    "--package=lite-nvr",
-                    "--bin=lite-nvr"
+                    "--package=nvr",
+                    "--bin=nvr"
                 ],
                 "env": {
                     "LD_LIBRARY_PATH": "${workspaceFolder}/ffmpeg/lib:${workspaceFolder}/zlm/lib",
@@ -41,14 +41,14 @@
             "args": []
         },
         {
-            "name": "Debug unit tests in executable 'lite-nvr'",
+            "name": "Debug unit tests in executable 'nvr'",
             "type": "lldb",
             "request": "launch",
             "cargo": {
                 "args": [
                     "test",
-                    "--package=lite-nvr",
-                    "--bin=lite-nvr"
+                    "--package=nvr",
+                    "--bin=nvr"
                 ],
                 "env": {
                     "LD_LIBRARY_PATH": "${workspaceFolder}/ffmpeg/lib:${workspaceFolder}/zlm/lib",
