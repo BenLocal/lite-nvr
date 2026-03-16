@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Card from 'primevue/card'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
@@ -13,22 +13,58 @@ import { Form } from '@primevue/forms'
 import ConfirmDialog from 'primevue/confirmdialog'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
+import flvjs from 'flv.js'
 
 interface Device {
   id: number
   name: string
   status: string
   input: any
-  outputs: any[]
+  output: any
   created_at?: string
   updated_at?: string
+}
+
+const createDefaultOutput = (streamName = 'stream') => ({
+  t: 'zlm',
+  zlm: {
+    app: 'live',
+    stream: streamName
+  },
+  encode: {
+    preset: '',
+    bitrate: null
+  }
+})
+
+const normalizeOutput = (output: any, name = '') => {
+  const stream = output?.zlm?.stream || name || 'stream'
+  return {
+    ...createDefaultOutput(stream),
+    ...output,
+    t: 'zlm',
+    zlm: {
+      app: output?.zlm?.app || 'live',
+      stream
+    },
+    encode: {
+      preset: output?.encode?.preset || '',
+      bitrate: output?.encode?.bitrate ?? null
+    }
+  }
 }
 
 const devices = ref<Device[]>([])
 const loading = ref(true) // Changed default loading to true
 const showDialog = ref(false)
+const showPreviewDialog = ref(false)
 const isEdit = ref(false)
 const submitting = ref(false)
+const previewDevice = ref<Device | null>(null)
+const previewVideoRef = ref<HTMLVideoElement | null>(null)
+const previewLoading = ref(false)
+const previewError = ref('')
+let flvPlayer: flvjs.Player | null = null
 const formData = ref({
   id: 0,
   name: '',
@@ -36,7 +72,7 @@ const formData = ref({
     t: 'net',
     i: ''
   },
-  outputs: [] as any[]
+  output: createDefaultOutput()
 })
 
 const inputOptions = [
@@ -44,26 +80,6 @@ const inputOptions = [
   { label: '本地设备 (v4l2/DirectShow)', value: 'v4l2' },
   { label: '屏幕录制 (x11grab/gdigrab)', value: 'x11grab' }
 ]
-
-const outputOptions = [
-  { label: 'Network 推流 (Rtsp/Rtmp)', value: 'net' },
-  { label: 'ZLM 内部转发 (推荐)', value: 'zlm' },
-  { label: 'RawFrame (原始视频帧)', value: 'raw_frame' },
-  { label: 'RawPacket (原始数据包)', value: 'raw_packet' }
-]
-
-const addOutput = () => {
-  formData.value.outputs.push({
-    t: 'zlm',
-    zlm: { app: 'live', stream: formData.value.name || 'stream' },
-    net: { url: '', format: 'rtsp' },
-    encode: { preset: '', bitrate: null }
-  })
-}
-
-const removeOutput = (index: number) => {
-  formData.value.outputs.splice(index, 1)
-}
 
 const confirm = useConfirm()
 const toast = useToast()
@@ -102,7 +118,7 @@ const resetForm = () => {
       t: 'net',
       i: ''
     },
-    outputs: []
+    output: createDefaultOutput()
   }
 }
 
@@ -114,17 +130,23 @@ const openAddDevice = () => {
 
 const openEditDevice = (device: Device) => {
   isEdit.value = true
-  // Deep copy the input and outputs so modifications don't instantly reflect
+  // Deep copy the input/output so modifications don't instantly reflect
   formData.value = {
-    ...device,
+    id: device.id,
+    name: device.name,
     input: device.input ? JSON.parse(JSON.stringify(device.input)) : { t: 'net', i: '' },
-    outputs: device.outputs ? JSON.parse(JSON.stringify(device.outputs)) : []
+    output: normalizeOutput(
+      device.output ? JSON.parse(JSON.stringify(device.output)) : null,
+      device.name
+    )
   }
   showDialog.value = true
 }
 
 const saveDevice = async () => {
-  if (!formData.value.name || !formData.value.input.i) return // Updated validation
+  if (!formData.value.name || !formData.value.input.i) return
+
+  formData.value.output = normalizeOutput(formData.value.output, formData.value.name)
 
   submitting.value = true
   try {
@@ -138,8 +160,8 @@ const saveDevice = async () => {
       },
       body: JSON.stringify({
         name: formData.value.name,
-        input: formData.value.input, // Added input
-        outputs: formData.value.outputs // Added outputs
+        input: formData.value.input,
+        output: formData.value.output
       })
     })
 
@@ -201,6 +223,100 @@ const getStatusSeverity = (status: string) => {
       return 'info'
   }
 }
+
+const getPreviewFlvUrl = (device: Device) => {
+  const app = device.output?.zlm?.app || 'live'
+  const stream = device.output?.zlm?.stream || device.name || 'stream'
+  const hostname = window.location.hostname || '127.0.0.1'
+  return `http://${hostname}:8553/${encodeURIComponent(app)}/${encodeURIComponent(stream)}.live.flv`
+}
+
+const destroyPreviewPlayer = () => {
+  if (flvPlayer) {
+    flvPlayer.pause()
+    flvPlayer.unload()
+    flvPlayer.detachMediaElement()
+    flvPlayer.destroy()
+    flvPlayer = null
+  }
+}
+
+const initPreviewPlayer = async () => {
+  if (!showPreviewDialog.value || !previewDevice.value) return
+
+  await nextTick()
+
+  const video = previewVideoRef.value
+  if (!video) return
+
+  destroyPreviewPlayer()
+  previewError.value = ''
+
+  if (!flvjs.isSupported()) {
+    previewError.value = '当前浏览器不支持 FLV 直播预览'
+    return
+  }
+
+  previewLoading.value = true
+  const previewUrl = getPreviewFlvUrl(previewDevice.value)
+  flvPlayer = flvjs.createPlayer(
+    {
+      type: 'flv',
+      isLive: true,
+      url: previewUrl
+    },
+    {
+      enableStashBuffer: false,
+      stashInitialSize: 128
+    }
+  )
+
+  flvPlayer.attachMediaElement(video)
+  flvPlayer.load()
+
+  flvPlayer.on(flvjs.Events.LOADING_COMPLETE, () => {
+    previewLoading.value = false
+  })
+  flvPlayer.on(flvjs.Events.ERROR, (_errorType, _errorDetail, errorInfo) => {
+    previewLoading.value = false
+    previewError.value = `预览失败: ${errorInfo?.msg || 'FLV 流连接异常'}`
+  })
+
+  try {
+    await video.play()
+    previewLoading.value = false
+  } catch (error) {
+    previewLoading.value = false
+    previewError.value = '浏览器阻止了自动播放，请手动点击画面播放'
+  }
+}
+
+const openPreview = (device: Device) => {
+  previewDevice.value = device
+  previewError.value = ''
+  previewLoading.value = true
+  showPreviewDialog.value = true
+}
+
+const closePreview = () => {
+  showPreviewDialog.value = false
+  previewDevice.value = null
+  previewLoading.value = false
+  previewError.value = ''
+  destroyPreviewPlayer()
+}
+
+watch(showPreviewDialog, (visible) => {
+  if (visible) {
+    initPreviewPlayer()
+  } else {
+    destroyPreviewPlayer()
+  }
+})
+
+onBeforeUnmount(() => {
+  destroyPreviewPlayer()
+})
 </script>
 
 <template>
@@ -228,8 +344,9 @@ const getStatusSeverity = (status: string) => {
             </template>
           </Column>
           <Column field="created_at" header="接入时间"></Column>
-          <Column header="操作" :exportable="false" style="min-width: 12rem">
+          <Column header="操作" :exportable="false" style="min-width: 16rem">
             <template #body="slotProps">
+              <Button icon="pi pi-video" outlined rounded class="mr-2" @click="openPreview(slotProps.data)" />
               <Button icon="pi pi-pencil" outlined rounded class="mr-2" @click="openEditDevice(slotProps.data)" />
               <Button icon="pi pi-trash" outlined rounded severity="danger" @click="confirmDelete(slotProps.data.id)" />
             </template>
@@ -263,60 +380,33 @@ const getStatusSeverity = (status: string) => {
 
         <Divider />
 
-        <!-- Outputs Section -->
-        <div class="flex justify-between items-center mb-2">
-          <h3 class="text-lg font-bold mb-0">输出流配置 (Outputs)</h3>
-          <Button label="添加输出" icon="pi pi-plus" size="small" @click="addOutput" />
-        </div>
-
-        <div v-for="(out, index) in formData.outputs" :key="index" class="output-card">
-          <Button icon="pi pi-times" text rounded severity="danger" class="btn-remove" @click="removeOutput(index)" />
-          
+        <h3 class="text-lg font-bold mb-0">输出流配置 (Output)</h3>
+        <div class="output-card">
           <div class="form-row">
             <label class="form-label">输出类型</label>
-            <Select v-model="out.t" :options="outputOptions" optionLabel="label" optionValue="value" class="form-input" />
+            <InputText value="ZLM 推流" class="form-input" disabled />
           </div>
 
-          <!-- ZLM Config -->
-          <div v-if="out.t === 'zlm'">
-            <div class="form-row">
-              <label class="form-label">ZLM App</label>
-              <InputText v-model="out.zlm.app" class="form-input" placeholder="live" />
-            </div>
-            <div class="form-row">
-              <label class="form-label">ZLM Stream</label>
-              <InputText v-model="out.zlm.stream" class="form-input" placeholder="stream" />
-            </div>
+          <div class="form-row">
+            <label class="form-label">ZLM App</label>
+            <InputText v-model.trim="formData.output.zlm.app" class="form-input" placeholder="live" />
+          </div>
+          <div class="form-row">
+            <label class="form-label">ZLM Stream</label>
+            <InputText v-model.trim="formData.output.zlm.stream" class="form-input" placeholder="stream" />
           </div>
 
-          <!-- Net Config -->
-          <div v-if="out.t === 'net'">
-            <div class="form-row">
-              <label class="form-label">推流地址</label>
-              <InputText v-model="out.net.url" class="form-input" placeholder="rtmp://server/live/stream" />
-            </div>
-            <div class="form-row">
-              <label class="form-label">格式</label>
-              <InputText v-model="out.net.format" class="form-input" placeholder="flv" />
-            </div>
-          </div>
-
-          <!-- Encode Config (Optional) -->
           <div class="output-divider">
             <span class="output-divider-title">高级编码选项 (留空则使用默认配置)</span>
             <div class="form-row">
               <label class="form-label">x264 Preset</label>
-              <InputText v-model="out.encode.preset" class="form-input p-inputtext-sm" placeholder="ultrafast, superfast..." />
+              <InputText v-model.trim="formData.output.encode.preset" class="form-input p-inputtext-sm" placeholder="ultrafast, superfast..." />
             </div>
             <div class="form-row">
               <label class="form-label">目标码率(bps)</label>
-              <InputText v-model="out.encode.bitrate" type="number" class="form-input p-inputtext-sm" placeholder="2000000 (2Mbps)" />
+              <InputText v-model="formData.output.encode.bitrate" type="number" class="form-input p-inputtext-sm" placeholder="2000000 (2Mbps)" />
             </div>
           </div>
-        </div>
-
-        <div v-if="formData.outputs.length === 0" class="text-center p-4 text-surface-500">
-          目前没有添加任何输出流。设备接收到数据后将被直接丢弃。
         </div>
 
         <div class="form-actions border-t border-surface-200 dark:border-surface-700 pt-4 mt-4">
@@ -324,6 +414,43 @@ const getStatusSeverity = (status: string) => {
           <Button type="submit" label="保存" :loading="submitting" />
         </div>
       </Form>
+    </Dialog>
+
+    <Dialog
+      v-model:visible="showPreviewDialog"
+      :style="{ width: '72rem', maxWidth: '96vw' }"
+      header="Live Preview"
+      :modal="true"
+      @hide="closePreview"
+    >
+      <div class="preview-shell">
+        <div class="preview-meta" v-if="previewDevice">
+          <div>
+            <div class="preview-title">{{ previewDevice.name }}</div>
+            <div class="preview-subtitle">默认 FLV 直播预览</div>
+          </div>
+          <code class="preview-url">{{ getPreviewFlvUrl(previewDevice) }}</code>
+        </div>
+
+        <div class="preview-stage">
+          <video
+            ref="previewVideoRef"
+            class="preview-video"
+            controls
+            autoplay
+            muted
+            playsinline
+          ></video>
+
+          <div v-if="previewLoading" class="preview-overlay">
+            正在连接直播流...
+          </div>
+
+          <div v-if="previewError" class="preview-error">
+            {{ previewError }}
+          </div>
+        </div>
+      </div>
     </Dialog>
   </div>
 </template>
@@ -405,13 +532,6 @@ const getStatusSeverity = (status: string) => {
   border-radius: 6px;
   margin-bottom: 1rem;
   background-color: var(--p-surface-50, #f9fafb);
-  position: relative;
-}
-
-.btn-remove {
-  position: absolute;
-  top: 0.5rem;
-  right: 0.5rem;
 }
 
 .output-divider {
@@ -426,5 +546,104 @@ const getStatusSeverity = (status: string) => {
   font-weight: 600;
   margin-bottom: 0.5rem;
   color: var(--p-text-muted-color);
+}
+
+.preview-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.preview-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--p-content-border-color, #e5e7eb);
+  border-radius: 10px;
+  background: linear-gradient(135deg, #f7fafc 0%, #eef6ff 100%);
+}
+
+.preview-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #10233d;
+}
+
+.preview-subtitle {
+  margin-top: 0.25rem;
+  font-size: 0.8125rem;
+  color: #5b6b82;
+}
+
+.preview-url {
+  max-width: 55%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.8125rem;
+  color: #0f4c81;
+}
+
+.preview-stage {
+  position: relative;
+  overflow: hidden;
+  min-height: 30rem;
+  border-radius: 16px;
+  border: 1px solid #d8e2ef;
+  background:
+    radial-gradient(circle at top left, rgba(73, 139, 255, 0.16), transparent 32%),
+    linear-gradient(160deg, #09111d 0%, #0f1b2c 55%, #08101a 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.preview-video {
+  display: block;
+  width: 100%;
+  height: min(70vh, 42rem);
+  object-fit: contain;
+  background: transparent;
+}
+
+.preview-overlay,
+.preview-error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  text-align: center;
+  font-size: 0.95rem;
+}
+
+.preview-overlay {
+  color: #dbe8ff;
+  background: rgba(7, 15, 29, 0.48);
+  backdrop-filter: blur(4px);
+}
+
+.preview-error {
+  color: #ffd7d7;
+  background: rgba(58, 10, 10, 0.45);
+}
+
+@media (max-width: 768px) {
+  .preview-meta {
+    flex-direction: column;
+  }
+
+  .preview-url {
+    max-width: 100%;
+  }
+
+  .preview-stage {
+    min-height: 18rem;
+  }
+
+  .preview-video {
+    height: min(56vh, 24rem);
+  }
 }
 </style>

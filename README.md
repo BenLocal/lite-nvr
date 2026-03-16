@@ -37,10 +37,26 @@ bash scripts/pre_install_deps.sh
 
 On macOS this installs `ffmpeg@7` via Homebrew and creates symlinks into `./ffmpeg/`.
 
+### ZLMediaKit note
+
+The bundled `./zlm/lib/libmk_api.so` in this repository currently depends on OpenSSL 1.1:
+
+```bash
+ldd zlm/lib/libmk_api.so
+```
+
+On modern Linux distributions that only ship OpenSSL 3, enabling the `zlm` feature will fail with:
+
+```text
+error while loading shared libraries: libssl.so.1.1: cannot open shared object file: No such file or directory
+```
+
+Use the core app without ZLM by default, or provide a ZLMediaKit build that links against your system OpenSSL.
+
 ### 2. Build & Run
 
 ```bash
-cargo run --package lite-nvr
+cargo run -p nvr
 ```
 
 The API server starts on `http://localhost:8080` by default.
