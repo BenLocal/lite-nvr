@@ -117,11 +117,8 @@ impl AvInput {
             }
             (Some(fmt_name), None) => {
                 let fmt = Self::find_input_format(fmt_name)?;
-                let ctx = ffmpeg_next::format::open_with(
-                    path,
-                    &Format::Input(fmt),
-                    Dictionary::new(),
-                )?;
+                let ctx =
+                    ffmpeg_next::format::open_with(path, &Format::Input(fmt), Dictionary::new())?;
                 ctx.input()
             }
             (None, Some(opts)) => ffmpeg_next::format::input_with_dictionary(path, opts)?,

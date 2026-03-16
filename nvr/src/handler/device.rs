@@ -1,19 +1,16 @@
 use axum::{
-    extract::Path,
     Json, Router,
+    extract::Path,
     routing::{get, post},
 };
 use nvr_db::device::{Device, DeviceCreate, DeviceUpdate};
 
-use crate::{
-    db::app_db_conn,
-    handler::ApiJsonResult,
-};
+use crate::{db::app_db_conn, handler::ApiJsonResult};
 
 pub fn device_router() -> Router {
     Router::new()
         .route("/", get(list_devices).post(create_device))
-        .route("/{id}", post(update_device))
+        .route("/{id}", post(update_device).put(update_device))
         .route("/{id}/delete", post(delete_device))
 }
 

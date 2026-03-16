@@ -130,7 +130,11 @@ impl Decoder {
                         Some(dec)
                     }
                     Err(e) => {
-                        log::warn!("hardware decoder {} failed to open: {}, falling back to software", name, e);
+                        log::warn!(
+                            "hardware decoder {} failed to open: {}, falling back to software",
+                            name,
+                            e
+                        );
                         None
                     }
                 }
@@ -143,7 +147,11 @@ impl Decoder {
                 let sw_decoder_name = ffmpeg_next::decoder::find(codec_id)
                     .map(|c| c.name().to_string())
                     .unwrap_or_else(|| format!("{:?}", codec_id));
-                log::info!("using software video decoder: {} (codec_id={:?})", sw_decoder_name, codec_id);
+                log::info!(
+                    "using software video decoder: {} (codec_id={:?})",
+                    sw_decoder_name,
+                    codec_id
+                );
                 let mut decoder_ctx = ffmpeg_next::codec::Context::new();
                 unsafe {
                     (*decoder_ctx.as_mut_ptr()).time_base = stream.time_base().into();
@@ -170,7 +178,11 @@ impl Decoder {
             let audio_decoder_name = ffmpeg_next::decoder::find(audio_codec_id)
                 .map(|c| c.name().to_string())
                 .unwrap_or_else(|| format!("{:?}", audio_codec_id));
-            log::info!("using audio decoder: {} (codec_id={:?})", audio_decoder_name, audio_codec_id);
+            log::info!(
+                "using audio decoder: {} (codec_id={:?})",
+                audio_decoder_name,
+                audio_codec_id
+            );
             let mut decoder_ctx = ffmpeg_next::codec::Context::new();
             unsafe {
                 (*decoder_ctx.as_mut_ptr()).time_base = stream.time_base().into();
@@ -243,7 +255,8 @@ impl DecoderTask {
         /// Bounded queue: when decoder is slower than producer, back-pressure instead of unbounded growth (OOM).
         const PACKET_QUEUE_BOUND: usize = 16;
         tokio::spawn(async move {
-            let (packet_tx, packet_rx) = std::sync::mpsc::sync_channel::<RawPacketCmd>(PACKET_QUEUE_BOUND);
+            let (packet_tx, packet_rx) =
+                std::sync::mpsc::sync_channel::<RawPacketCmd>(PACKET_QUEUE_BOUND);
             let current_stream_index = decoder.stream_index();
 
             let handle_cancel = cancel_clone.clone();

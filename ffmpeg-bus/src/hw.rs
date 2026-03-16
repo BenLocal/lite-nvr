@@ -30,18 +30,8 @@ pub fn find_hw_decoder(codec_id: ffmpeg_next::codec::Id) -> Option<ffmpeg_next::
 /// Returns the first available hardware encoder, or None if none is found.
 pub fn find_hw_encoder(codec_name: &str) -> Option<ffmpeg_next::Codec> {
     let hw_names: &[&str] = match codec_name {
-        "libx264" | "h264" => &[
-            "h264_nvenc",
-            "h264_vaapi",
-            "h264_qsv",
-            "h264_v4l2m2m",
-        ],
-        "libx265" | "hevc" | "h265" => &[
-            "hevc_nvenc",
-            "hevc_vaapi",
-            "hevc_qsv",
-            "hevc_v4l2m2m",
-        ],
+        "libx264" | "h264" => &["h264_nvenc", "h264_vaapi", "h264_qsv", "h264_v4l2m2m"],
+        "libx265" | "hevc" | "h265" => &["hevc_nvenc", "hevc_vaapi", "hevc_qsv", "hevc_v4l2m2m"],
         "libvpx" | "libvpx-vp9" | "vp9" => &["vp9_vaapi", "vp9_qsv"],
         "libaom-av1" | "libsvtav1" | "av1" => &["av1_nvenc", "av1_vaapi", "av1_qsv"],
         _ => &[],

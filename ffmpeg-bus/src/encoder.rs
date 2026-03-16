@@ -92,8 +92,8 @@ impl Default for Settings {
     }
 }
 
-pub use crate::hw::{pixel_format_for_encoder, pixel_format_for_libx264};
 use crate::hw::find_hw_encoder;
+pub use crate::hw::{pixel_format_for_encoder, pixel_format_for_libx264};
 
 pub struct Encoder {
     stream: AvStream,
@@ -121,7 +121,10 @@ impl Encoder {
                         hw_name,
                     )
                 } else {
-                    log::info!("no hardware encoder found, using software encoder: {}", codec);
+                    log::info!(
+                        "no hardware encoder found, using software encoder: {}",
+                        codec
+                    );
                     let sw_codec = ffmpeg_next::encoder::find_by_name(codec)
                         .ok_or(anyhow::anyhow!("codec not found: {}", codec))?;
                     (
@@ -155,11 +158,7 @@ impl Encoder {
             Ok(encoder)
         };
 
-        let encoder = match open_encoder(
-            encoder_context,
-            options.clone(),
-            &settings,
-        ) {
+        let encoder = match open_encoder(encoder_context, options.clone(), &settings) {
             Ok(enc) => {
                 log::info!("encoder opened successfully: {}", selected_codec_name);
                 enc
