@@ -181,8 +181,8 @@ function previewInfoItems() {
   const media = previewMediaInfo.value
   const stats = previewStats.value
   return [
-    { label: '视频编码', value: formatInfoValue(media.videoCodec) },
-    { label: '音频编码', value: formatInfoValue(media.audioCodec) },
+    { label: '视频编码', value: formatCodecInfo(media.videoCodec, 'video') },
+    { label: '音频编码', value: formatCodecInfo(media.audioCodec, 'audio') },
     { label: '分辨率', value: media.width && media.height ? `${media.width} x ${media.height}` : '-' },
     { label: 'FPS', value: formatInfoValue(media.fps ?? stats.fps) },
     { label: '码率', value: formatInfoValue(stats.speed ?? stats.currentSegmentBitrate, ' bps') },
@@ -227,6 +227,81 @@ function onPreviewInfoDrag(event: PointerEvent) {
 function stopPreviewInfoDrag() {
   previewInfoDrag.value = null
   window.removeEventListener('pointermove', onPreviewInfoDrag)
+}
+
+function formatCodecInfo(value: unknown, kind: 'video' | 'audio') {
+  if (typeof value !== 'string' || !value) {
+    return '-'
+  }
+
+  if (kind === 'video') {
+    return formatVideoCodec(value)
+  }
+  return formatAudioCodec(value)
+}
+
+function formatVideoCodec(codec: string) {
+  if (codec.startsWith('avc1.')) {
+    const profileLevel = codec.slice(5)
+    if (profileLevel.length === 6) {
+      const profileHex = profileLevel.slice(0, 2).toUpperCase()
+      const levelHex = profileLevel.slice(4, 6)
+      const profileName =
+        {
+          '42': 'Baseline',
+          '4D': 'Main',
+          '58': 'Extended',
+          '64': 'High',
+          '6E': 'High 10',
+          '7A': 'High 4:2:2',
+          F4: 'High 4:4:4',
+        }[profileHex] ?? 'Unknown'
+      const levelNum = Number.parseInt(levelHex, 16)
+      const level = Number.isFinite(levelNum) ? `L${(levelNum / 10).toFixed(1)}` : ''
+      return `H.264 / ${profileName}${level ? `@${level}` : ''}`
+    }
+    return 'H.264'
+  }
+
+  if (codec.startsWith('hev1.') || codec.startsWith('hvc1.')) {
+    return 'H.265 / HEVC'
+  }
+
+  if (codec.startsWith('vp8')) {
+    return 'VP8'
+  }
+
+  if (codec.startsWith('vp9')) {
+    return 'VP9'
+  }
+
+  if (codec.startsWith('av01')) {
+    return 'AV1'
+  }
+
+  return codec
+}
+
+function formatAudioCodec(codec: string) {
+  if (codec.startsWith('mp4a.40.2')) {
+    return 'AAC-LC'
+  }
+  if (codec.startsWith('mp4a.40.5')) {
+    return 'HE-AAC'
+  }
+  if (codec.startsWith('mp4a.40.29')) {
+    return 'HE-AACv2'
+  }
+  if (codec.startsWith('mp4a.40.34')) {
+    return 'MP3'
+  }
+  if (codec.startsWith('opus')) {
+    return 'Opus'
+  }
+  if (codec.startsWith('vorbis')) {
+    return 'Vorbis'
+  }
+  return codec
 }
 </script>
 
@@ -291,9 +366,8 @@ function stopPreviewInfoDrag() {
   top: 0.25rem;
   right: 0.25rem;
   z-index: 3;
-  background: rgb(8 13 22 / 72%);
+  background: transparent;
   color: white;
-  backdrop-filter: blur(10px);
 }
 
 .preview-stage {
@@ -309,11 +383,11 @@ function stopPreviewInfoDrag() {
   width: min(32rem, calc(100% - 1rem));
   max-width: calc(100% - 1rem);
   padding: 0.75rem;
-  border: 1px solid rgb(255 255 255 / 12%);
+  border: 1px solid rgb(255 255 255 / 24%);
   border-radius: 0.9rem;
-  background: rgb(8 13 22 / 58%);
-  box-shadow: 0 14px 40px rgb(0 0 0 / 26%);
-  backdrop-filter: blur(14px);
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
 }
 
 .preview-info-panel-header {
@@ -344,9 +418,9 @@ function stopPreviewInfoDrag() {
 .preview-info-card {
   min-width: 0;
   padding: 0.65rem 0.75rem;
-  border: 1px solid rgb(255 255 255 / 10%);
+  border: 1px solid rgb(255 255 255 / 16%);
   border-radius: 0.75rem;
-  background: rgb(255 255 255 / 4%);
+  background: transparent;
 }
 
 .preview-info-label {
