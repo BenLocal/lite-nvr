@@ -1,10 +1,10 @@
 # AGENT.md
 
-本文件给自动化编码代理（AI Agent）快速上手 `lite-nvr` 项目使用。
+本文件给自动化编码代理（AI Agent）快速上手 `nvr-server` 项目使用。
 
 ## 1. 项目定位
 
-`lite-nvr` 是一个 Rust 实现的轻量 NVR（Network Video Recorder）：
+`nvr-server` 是一个 Rust 实现的轻量 NVR（Network Video Recorder）：
 - 接入多种视频源（RTSP/RTMP、文件、屏幕、测试源、V4L2）
 - 基于 FFmpeg 做解复用、编解码、封装
 - 输出到 ZLMediaKit / 网络流
@@ -12,7 +12,7 @@
 
 ## 2. 仓库结构（Workspace）
 
-- `lite-nvr/`: 主服务（API、pipe 管理、ZLMediaKit 集成）
+- `nvr-server/`: 主服务（API、pipe 管理、ZLMediaKit 集成）
 - `ffmpeg-bus/`: 媒体处理核心（input/decoder/encoder/output）
 - `nvr-db/`: 数据库访问与 migration（SQLite）
 - `nvr-dashboard/`: 前端 Dashboard（Vue）
@@ -38,7 +38,7 @@ bash scripts/pre_install_deps.sh
 ### 启动主服务
 
 ```bash
-cargo run --package lite-nvr
+cargo run --package nvr-server
 ```
 
 默认行为：
@@ -85,7 +85,7 @@ npm run dev
 ## 7. 高风险区域
 
 - `ffmpeg-bus/` 的编解码与封装链路（容易引入时序/格式回归）
-- `lite-nvr/src/media/pipe.rs`（输入输出拼装、编码配置、raw 数据路径）
+- `nvr-server/src/media/pipe.rs`（输入输出拼装、编码配置、raw 数据路径）
 - feature `zlm` 相关逻辑（有条件编译，修改后需关注无 `zlm` 场景）
 
 ## 8. 提交前检查清单
@@ -109,7 +109,7 @@ npm run dev
 
 约束：
 - `type` 仅限：`feat` `fix` `refactor` `perf` `test` `docs` `chore`
-- `scope` 建议使用 crate 名：`lite-nvr` `ffmpeg-bus` `nvr-db` `nvr-dashboard`
+- `scope` 建议使用 crate 名：`nvr-server` `ffmpeg-bus` `nvr-db` `nvr-dashboard`
 - `subject` 用祈使句，<= 72 字符，不加句号
 - `body` 必须写“动机 + 方案 + 风险/兼容性”
 - 涉及 breaking change 时，在 `footer` 增加 `BREAKING CHANGE: ...`
@@ -117,7 +117,7 @@ npm run dev
 示例：
 
 ```text
-fix(lite-nvr): avoid pipe status race on cancel
+fix(nvr-server): avoid pipe status race on cancel
 
 在并发 remove/status 请求下，pipe 可能返回已释放句柄。
 通过在 manager 增加状态快照与原子切换，避免读取悬垂状态。
@@ -137,20 +137,20 @@ cargo check --workspace
 cargo test -p nvr-db
 ```
 
-### B. Rust 服务侧改动（`lite-nvr/`）
+### B. Rust 服务侧改动（`nvr-server/`）
 
 ```bash
-cargo test -p lite-nvr
+cargo test -p nvr-server
 ```
 
 若改动涉及 `/pipe/*`、`/user/*`、`/system/*` 路由：
 - 使用 `rest/api.rest` 或 `curl` 至少验证 1 条成功链路与 1 条失败链路。
 
-### C. 媒体链路改动（`ffmpeg-bus/` 或 `lite-nvr/src/media/`）
+### C. 媒体链路改动（`ffmpeg-bus/` 或 `nvr-server/src/media/`）
 
 ```bash
 cargo test -p ffmpeg-bus
-cargo test -p lite-nvr media::pipe
+cargo test -p nvr-server media::pipe
 ```
 
 并补充：

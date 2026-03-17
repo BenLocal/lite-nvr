@@ -1,8 +1,12 @@
 [package]
-name = "lite-nvr"
+name = "nvr-server"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "nvr-server"
+path = "src/main.rs"
+test = false
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

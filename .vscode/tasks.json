@@ -2,9 +2,9 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "lite-nvr: hot reload",
+      "label": "nvr-server: hot reload",
       "type": "shell",
-      "command": "RUST_LOG=info DYLD_LIBRARY_PATH=${workspaceFolder}/ffmpeg/lib:${workspaceFolder}/zlm/lib LD_LIBRARY_PATH=${workspaceFolder}/ffmpeg/lib:${workspaceFolder}/zlm/lib cargo watch -w lite-nvr/src -w nvr-db/src -w ffmpeg-bus/src -x \"run -p lite-nvr\"",
+      "command": "RUST_LOG=info DYLD_LIBRARY_PATH=${workspaceFolder}/ffmpeg/lib:${workspaceFolder}/zlm/lib LD_LIBRARY_PATH=${workspaceFolder}/ffmpeg/lib:${workspaceFolder}/zlm/lib cargo watch -w nvr-server/src -w nvr-db/src -w ffmpeg-bus/src -x \"run -p nvr-server\"",
       "options": {
         "cwd": "${workspaceFolder}"
       },

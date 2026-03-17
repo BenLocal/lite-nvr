@@ -1591,32 +1591,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lite-nvr"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "argon2",
- "axum",
- "bytes",
- "env_logger",
- "ffmpeg-bus",
- "ffmpeg-sys-next",
- "futures",
- "log",
- "nvr-dashboard",
- "nvr-db",
- "reqwest",
- "rszlm",
- "serde",
- "serde_json",
- "tokio",
- "tokio-linux-video",
- "tokio-util",
- "turso",
- "uuid",
-]
-
-[[package]]
 name = "litemap"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1813,6 +1787,32 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "turso",
+ "uuid",
+]
+
+[[package]]
+name = "nvr-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "axum",
+ "bytes",
+ "env_logger",
+ "ffmpeg-bus",
+ "ffmpeg-sys-next",
+ "futures",
+ "log",
+ "nvr-dashboard",
+ "nvr-db",
+ "reqwest",
+ "rszlm",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-linux-video",
+ "tokio-util",
  "turso",
  "uuid",
 ]

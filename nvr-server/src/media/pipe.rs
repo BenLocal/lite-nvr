@@ -155,7 +155,7 @@ impl Pipe {
     }
 }
 
-/// Forwards ffmpeg-bus VideoFrame stream to lite-nvr RawSinkSource (VideoRawFrame).
+/// Forwards ffmpeg-bus VideoFrame stream to nvr-server RawSinkSource (VideoRawFrame).
 async fn forward_frame_stream_to_sink(
     mut stream: ffmpeg_bus::bus::VideoRawFrameStream,
     sink: Arc<RawSinkSource>,
