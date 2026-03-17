@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use nvr_db::device::DeviceInfo;
+use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     db::app_db_conn,
@@ -8,7 +10,28 @@ use crate::{
     media::types::{InputConfig, OutputConfig, OutputDest, PipeConfig},
 };
 
-pub(crate) async fn init_device_pipes() -> anyhow::Result<()> {
+pub(crate) fn init_device_pipes(
+    zlm_ready: oneshot::Receiver<()>,
+    cancel: CancellationToken,
+) -> anyhow::Result<()> {
+    tokio::spawn(async move {
+        tokio::select! {
+         _ = zlm_ready => {
+            log::info!("ZLM server is ready");
+            init_device_pipes_inner().await.unwrap_or_else(|e| {
+                log::error!("Failed to init device pipes: {:#}", e);
+             });
+         },
+         _ = cancel.cancelled() => {
+             log::info!("Cancel signal received");
+             return;
+         },
+        }
+    });
+    Ok(())
+}
+
+async fn init_device_pipes_inner() -> anyhow::Result<()> {
     let conn = app_db_conn()?;
     let devices = nvr_db::device::list(&conn).await?;
     let total = devices.len();

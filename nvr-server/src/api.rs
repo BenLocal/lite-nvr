@@ -6,6 +6,7 @@ pub(crate) fn start_api_server(cancel: CancellationToken, port: u16) {
     tokio::spawn(async move {
         let api = Router::new()
             .nest("/device", crate::handler::device::device_router())
+            .nest("/playback", crate::handler::playback::playback_router())
             .nest("/user", crate::handler::user::user_router())
             .nest("/pipe", crate::handler::media_pipe::media_pipe_router())
             .nest("/system", crate::handler::system::system_router());

@@ -1,3 +1,5 @@
+#[cfg(feature = "zlm")]
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use crate::db::init_app_db;
@@ -14,9 +16,9 @@ mod zlm;
 
 fn init_logging() {
     env_logger::Builder::from_default_env()
-        .filter_level(log::LevelFilter::Trace)
-        .filter_module("ffmpeg_next", log::LevelFilter::Trace)
-        .filter_module("ffmpeg_bus", log::LevelFilter::Trace)
+        .filter_level(log::LevelFilter::Info)
+        //.filter_module("ffmpeg_next", log::LevelFilter::Trace)
+        //.filter_module("ffmpeg_bus", log::LevelFilter::Trace)
         .init();
 }
 
@@ -43,25 +45,27 @@ async fn main() -> ! {
             std::process::exit(1);
         });
 
-    crate::init::device::init_device_pipes()
-        .await
-        .unwrap_or_else(|e| {
-            log::error!("Error initializing device pipes: {}", e);
-            std::process::exit(1);
-        });
-
     let cancel = CancellationToken::new();
 
-    // start api server
-    let cancel_clone = cancel.clone();
-    api::start_api_server(cancel_clone, 18080);
-
+    let (ready_tx, ready_rx) = oneshot::channel();
     #[cfg(feature = "zlm")]
     {
         // start zlm server
         let cancel_clone = cancel.clone();
-        zlm::server::start_zlm_server(cancel_clone).unwrap();
+        zlm::server::start_zlm_server(cancel_clone, ready_tx).unwrap();
     }
+    #[cfg(not(feature = "zlm"))]
+    {
+        ready_tx.send(()).unwrap();
+    }
+
+    // init device pipes
+    let cancel_clone = cancel.clone();
+    crate::init::device::init_device_pipes(ready_rx, cancel_clone).unwrap();
+
+    // start api server
+    let cancel_clone = cancel.clone();
+    api::start_api_server(cancel_clone, 18080);
 
     loop {
         tokio::select! {

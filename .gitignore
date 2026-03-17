@@ -1,6 +1,7 @@
 /target
 /ffmpeg
 /zlm
+/data
 
 
 output.mp4

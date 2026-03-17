@@ -29,6 +29,8 @@ rszlm = { git = "https://github.com/BenLocal/rszlm.git", optional = true }
 uuid = "1.21.0"
 turso = "0.4"
 argon2 = "0.5"
+harsh = "0.2"
+md5 = "0.7"
 
 # Only built when target is Linux (see also build.rs for feature "linux" cfg)
 [target.'cfg(target_os = "linux")'.dependencies]

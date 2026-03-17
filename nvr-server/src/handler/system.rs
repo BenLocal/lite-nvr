@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(target_os = "linux")]
 use tokio_linux_video::Device;
 
-use crate::handler::ApiJsonResult;
+use crate::handler::{ApiJsonResult, ok_json};
 
 pub fn system_router() -> Router {
     Router::new()
@@ -44,7 +44,7 @@ async fn list_device_formats(
                 _ => return Err(anyhow::anyhow!("invalid direction").into()),
             }?;
 
-            Ok(Json(
+            Ok(ok_json(
                 video_devices
                     .iter()
                     .map(|d| DeviceFormatInfoItem {
@@ -63,7 +63,7 @@ async fn list_device_formats(
                 _ => return Err(anyhow::anyhow!("invalid direction").into()),
             }?;
 
-            Ok(Json(
+            Ok(ok_json(
                 audio_devices
                     .iter()
                     .map(|d| DeviceFormatInfoItem {
@@ -88,7 +88,7 @@ async fn list_v4l2_device() -> ApiJsonResult<Vec<String>> {
         while let Some(device) = devices.fetch_next().await? {
             device_names.push(device.display().to_string());
         }
-        Ok(Json(device_names))
+        Ok(ok_json(device_names))
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -114,7 +114,7 @@ async fn list_x11grab_device() -> ApiJsonResult<Vec<String>> {
         if list.is_empty() {
             list.push(":0".to_string());
         }
-        Ok(Json(list))
+        Ok(ok_json(list))
     }
     #[cfg(not(target_os = "linux"))]
     {

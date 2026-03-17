@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     db::app_db_conn,
-    handler::ApiJsonResult,
+    handler::{ApiJsonResult, ok_empty, ok_json},
 };
 
 pub fn user_router() -> Router {
@@ -54,7 +54,7 @@ async fn login(Json(req): Json<UserLoginRequest>) -> ApiJsonResult<UserLoginResp
         .map_err(|_| anyhow::anyhow!("Invalid username or password"))?;
 
     let token = uuid::Uuid::new_v4().to_string();
-    Ok(Json(UserLoginResponse { token }))
+    Ok(ok_json(UserLoginResponse { token }))
 }
 
 fn parse_user_info(kv: Kv) -> anyhow::Result<UserInfo> {
@@ -62,10 +62,10 @@ fn parse_user_info(kv: Kv) -> anyhow::Result<UserInfo> {
         .map_err(|_| anyhow::anyhow!("Invalid username or password"))
 }
 
-async fn logout() -> Json<String> {
-    Json("success".to_string())
+async fn logout() -> ApiJsonResult<()> {
+    Ok(ok_empty())
 }
 
-async fn user_info() -> Json<String> {
-    Json("success".to_string())
+async fn user_info() -> ApiJsonResult<String> {
+    Ok(ok_json("success".to_string()))
 }

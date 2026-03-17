@@ -4,15 +4,29 @@ use axum::{
     routing::{delete, get, post, put},
 };
 use chrono::Utc;
+use harsh::Harsh;
 use nvr_db::device::DeviceInfo;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     db::app_db_conn,
-    handler::ApiJsonResult,
+    handler::{ApiJsonResult, ok_json},
     init::device::{build_flv_url, ensure_device_pipe},
     manager,
 };
+
+fn device_id_from_name(name: &str) -> String {
+    let digest = md5::compute(name.trim().as_bytes());
+    let source = u64::from_be_bytes([
+        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+    ]);
+    Harsh::builder()
+        .salt("lite-nvr-device")
+        .length(12)
+        .build()
+        .expect("hashids config should be valid")
+        .encode(&[source])
+}
 
 pub fn device_router() -> Router {
     Router::new()
@@ -46,7 +60,7 @@ async fn index() -> &'static str {
 async fn list_devices() -> ApiJsonResult<Vec<DeviceListItem>> {
     let conn = app_db_conn()?;
     let devices = nvr_db::device::list(&conn).await?;
-    Ok(Json(
+    Ok(ok_json(
         devices
             .into_iter()
             .map(|device| DeviceListItem {
@@ -60,11 +74,10 @@ async fn list_devices() -> ApiJsonResult<Vec<DeviceListItem>> {
 async fn add_device(Json(payload): Json<DevicePayload>) -> ApiJsonResult<DeviceInfo> {
     let conn = app_db_conn()?;
     let now = Utc::now();
+    let name = payload.name.trim().to_string();
     let device = DeviceInfo {
-        id: payload
-            .id
-            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()),
-        name: payload.name.trim().to_string(),
+        id: payload.id.unwrap_or_else(|| device_id_from_name(&name)),
+        name,
         input_type: payload.input_type.trim().to_string(),
         input_value: payload.input_value.trim().to_string(),
         description: payload.description.unwrap_or_default().trim().to_string(),
@@ -74,7 +87,7 @@ async fn add_device(Json(payload): Json<DevicePayload>) -> ApiJsonResult<DeviceI
     validate_device(&device)?;
     nvr_db::device::upsert(&device, &conn).await?;
     ensure_device_pipe(&device).await?;
-    Ok(Json(device))
+    Ok(ok_json(device))
 }
 
 async fn update_device(
@@ -97,14 +110,14 @@ async fn update_device(
     validate_device(&device)?;
     nvr_db::device::upsert(&device, &conn).await?;
     ensure_device_pipe(&device).await?;
-    Ok(Json(device))
+    Ok(ok_json(device))
 }
 
 async fn remove_device(Path(id): Path<String>) -> ApiJsonResult<String> {
     let conn = app_db_conn()?;
     nvr_db::device::delete(&id, &conn).await?;
     manager::remove_pipe(&id).await?;
-    Ok(Json("success".to_string()))
+    Ok(ok_json("success".to_string()))
 }
 
 fn validate_device(device: &DeviceInfo) -> anyhow::Result<()> {

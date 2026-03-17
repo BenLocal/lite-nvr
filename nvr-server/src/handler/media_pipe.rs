@@ -8,7 +8,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    handler::ApiJsonResult,
+    handler::{ApiJsonResult, ok_json},
     manager,
     media::types::{EncodeConfig, InputConfig, OutputConfig, OutputDest, PipeConfig},
 };
@@ -68,9 +68,9 @@ async fn index() -> &'static str {
     "pipe route!"
 }
 
-async fn list_pipes() -> Json<Vec<String>> {
+async fn list_pipes() -> ApiJsonResult<Vec<String>> {
     let pipes = manager::get_pipe_manager().read().await;
-    Json(pipes.keys().cloned().collect())
+    Ok(ok_json(pipes.keys().cloned().collect()))
 }
 
 async fn add_pipe(Json(config): Json<PipeRequest>) -> ApiJsonResult<String> {
@@ -132,18 +132,18 @@ async fn add_pipe(Json(config): Json<PipeRequest>) -> ApiJsonResult<String> {
         outputs: outputs,
     };
     manager::add_pipe(&config.id, pipe_config).await?;
-    Ok(Json("success".to_string()))
+    Ok(ok_json("success".to_string()))
 }
 
 async fn remove_pipe(Path(id): Path<String>) -> ApiJsonResult<String> {
     manager::remove_pipe(&id).await?;
-    Ok(Json("success".to_string()))
+    Ok(ok_json("success".to_string()))
 }
 
 async fn get_pipe_status(Path(id): Path<String>) -> ApiJsonResult<String> {
     let pipe = manager::get_pipe(&id).await;
     if let Some(pipe) = pipe {
-        return Ok(Json(pipe.is_started().to_string()));
+        return Ok(ok_json(pipe.is_started().to_string()));
     }
-    Ok(Json("not found".to_string()))
+    Ok(ok_json("not found".to_string()))
 }

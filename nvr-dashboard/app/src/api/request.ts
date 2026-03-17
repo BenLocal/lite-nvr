@@ -7,6 +7,12 @@ interface RequestOptions extends Omit<RequestInit, 'method' | 'body'> {
   body?: unknown
 }
 
+interface BaseResponse<T> {
+  code: number
+  message: string
+  data: T | null
+}
+
 const API_BASE = import.meta.env.DEV ? '/api' : ''
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -25,18 +31,16 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     ...rest,
   })
 
-  if (!response.ok) {
-    let message = `Request failed with status ${response.status}`
-    try {
-      const text = await response.text()
-      if (text) {
-        message = text
-      }
-    } catch {
-      // ignore non-text response parse failures
-    }
-    throw new Error(message)
+  let payload: BaseResponse<T>
+  try {
+    payload = (await response.json()) as BaseResponse<T>
+  } catch {
+    throw new Error(`Request failed with status ${response.status}`)
   }
 
-  return response.json() as Promise<T>
+  if (!response.ok || payload.code !== 0) {
+    throw new Error(payload.message || `Request failed with status ${response.status}`)
+  }
+
+  return payload.data as T
 }

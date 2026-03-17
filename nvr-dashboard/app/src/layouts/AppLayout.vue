@@ -20,6 +20,7 @@ const logoUrl = ref(`${baseUrl}logo.svg`)
 const menuItems = ref([
   { label: '首页', route: '/', icon: 'pi pi-fw pi-home' },
   { label: '设备管理', route: '/device', icon: 'pi pi-fw pi-video' },
+  { label: '回放', route: '/playback', icon: 'pi pi-fw pi-history' },
 ])
 
 const userMenuItems = ref([
@@ -163,7 +164,7 @@ function onLogoutRequest() {
             <router-link
               :to="item.route"
               class="layout-menuitem-link"
-              :class="{ 'active-route': $route.path === item.route }"
+              :class="{ 'active-route': $route.path === item.route || $route.path.startsWith(`${item.route}/`) }"
             >
               <span :class="['layout-menuitem-icon', item.icon]" />
               <span class="layout-menuitem-text">{{ item.label }}</span>

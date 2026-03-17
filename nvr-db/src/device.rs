@@ -24,6 +24,42 @@ pub async fn list(conn: &Connection) -> anyhow::Result<Vec<DeviceInfo>> {
     Ok(devices)
 }
 
+pub async fn count(conn: &Connection) -> anyhow::Result<usize> {
+    let mut rows = conn
+        .query("SELECT COUNT(*) FROM kvs WHERE module = ?1", ["device"])
+        .await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(0);
+    };
+    Ok(row.get::<i64>(0)? as usize)
+}
+
+pub async fn list_page(
+    page: usize,
+    page_size: usize,
+    conn: &Connection,
+) -> anyhow::Result<Vec<DeviceInfo>> {
+    let offset = page.saturating_sub(1) * page_size;
+    let mut rows = conn
+        .query(
+            r#"
+            SELECT value
+            FROM kvs
+            WHERE module = ?1 AND value IS NOT NULL
+            ORDER BY json_extract(value, '$.updated_at') DESC
+            LIMIT ?2 OFFSET ?3
+            "#,
+            ("device", page_size as i64, offset as i64),
+        )
+        .await?;
+
+    let mut devices = Vec::new();
+    while let Some(row) = rows.next().await? {
+        devices.push(serde_json::from_str::<DeviceInfo>(&row.get::<String>(0)?)?);
+    }
+    Ok(devices)
+}
+
 pub async fn get(id: &str, conn: &Connection) -> anyhow::Result<Option<DeviceInfo>> {
     let kv = crate::kv::by_module_and_key("device", id, conn).await?;
     match kv.and_then(|item| item.value) {

@@ -26,6 +26,11 @@ const router = createRouter({
           name: 'device',
           component: () => import('../views/DeviceListView.vue'),
         },
+        {
+          path: 'playback',
+          name: 'playback',
+          component: () => import('../views/PlaybackView.vue'),
+        },
       ],
     },
   ],

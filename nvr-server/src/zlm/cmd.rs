@@ -24,6 +24,6 @@ pub(crate) fn blocking_send_cmd(cmd: ZlmCmd) -> anyhow::Result<()> {
         .map(|_| ())
 }
 
-pub(crate) fn handler_zlm_cmd(cmd: ZlmCmd) -> anyhow::Result<()> {
+pub(crate) fn handler_zlm_cmd(_cmd: ZlmCmd) -> anyhow::Result<()> {
     Ok(())
 }
