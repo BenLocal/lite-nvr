@@ -19,7 +19,7 @@ const logoUrl = ref(`${baseUrl}logo.svg`)
 
 const menuItems = ref([
   { label: '首页', route: '/', icon: 'pi pi-fw pi-home' },
-  { label: '设备管理', route: '/devices', icon: 'pi pi-fw pi-video' },
+  { label: '设备管理', route: '/device', icon: 'pi pi-fw pi-video' },
 ])
 
 const userMenuItems = ref([

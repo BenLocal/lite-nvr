@@ -131,7 +131,7 @@ async fn add_pipe(Json(config): Json<PipeRequest>) -> ApiJsonResult<String> {
         input: input,
         outputs: outputs,
     };
-    manager::add_pipe(&config.id, pipe_config, false).await?;
+    manager::add_pipe(&config.id, pipe_config).await?;
     Ok(Json("success".to_string()))
 }
 

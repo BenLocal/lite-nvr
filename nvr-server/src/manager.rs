@@ -14,7 +14,7 @@ pub(crate) fn get_pipe_manager() -> &'static RwLock<HashMap<String, Arc<Pipe>>> 
     &PIPE_MANAGER
 }
 
-pub(crate) async fn add_pipe(
+async fn upsert_pipe(
     id: &str,
     config: PipeConfig,
     update_if_exists: bool,
@@ -36,6 +36,14 @@ pub(crate) async fn add_pipe(
         pipe.start().await;
     });
     Ok(())
+}
+
+pub(crate) async fn add_pipe(id: &str, config: PipeConfig) -> anyhow::Result<()> {
+    upsert_pipe(id, config, false).await
+}
+
+pub(crate) async fn update_pipe(id: &str, config: PipeConfig) -> anyhow::Result<()> {
+    upsert_pipe(id, config, true).await
 }
 
 pub(crate) async fn remove_pipe(id: &str) -> anyhow::Result<()> {

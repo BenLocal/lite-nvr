@@ -21,6 +21,7 @@ axum = "0.8"
 tokio-util = "0.7"
 futures = "0.3"
 bytes = "1.11.1"
+chrono = { version = "0.4", features = ["serde"] }
 ffmpeg-bus = { path = "../ffmpeg-bus" }
 nvr-db = { path = "../nvr-db" }
 nvr-dashboard = { path = "../nvr-dashboard" }

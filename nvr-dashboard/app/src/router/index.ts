@@ -21,8 +21,9 @@ const router = createRouter({
           component: () => import('../views/DashboardView.vue'),
         },
         {
-          path: 'devices',
-          name: 'devices',
+          path: 'device',
+          alias: 'devices',
+          name: 'device',
           component: () => import('../views/DeviceListView.vue'),
         },
       ],

@@ -35,7 +35,7 @@
                 "env": {
                     "LD_LIBRARY_PATH": "${workspaceFolder}/ffmpeg/lib:${workspaceFolder}/zlm/lib",
                     "RUST_BACKTRACE": "1",
-                    "RUST_LOG": "debug"
+                    //"RUST_LOG": "debug"
                 }
             },
             "args": []

@@ -6,6 +6,7 @@ mod api;
 mod config;
 mod db;
 mod handler;
+mod init;
 mod manager;
 mod media;
 #[cfg(feature = "zlm")]
@@ -38,15 +39,22 @@ async fn main() -> ! {
     nvr_db::migrations::ensure_default_admin_user(config.db_url())
         .await
         .unwrap_or_else(|e| {
-        log::error!("Error ensuring default admin user: {}", e);
-        std::process::exit(1);
-    });
+            log::error!("Error ensuring default admin user: {}", e);
+            std::process::exit(1);
+        });
+
+    crate::init::device::init_device_pipes()
+        .await
+        .unwrap_or_else(|e| {
+            log::error!("Error initializing device pipes: {}", e);
+            std::process::exit(1);
+        });
 
     let cancel = CancellationToken::new();
 
     // start api server
     let cancel_clone = cancel.clone();
-    api::start_api_server(cancel_clone);
+    api::start_api_server(cancel_clone, 18080);
 
     #[cfg(feature = "zlm")]
     {
