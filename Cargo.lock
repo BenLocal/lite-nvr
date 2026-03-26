@@ -1779,32 +1779,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nvr-dashboard"
-version = "0.1.0"
-dependencies = [
- "axum",
- "axum-embed",
- "rust-embed",
-]
-
-[[package]]
-name = "nvr-db"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "argon2",
- "chrono",
- "futures",
- "rust-embed",
- "serde",
- "serde_json",
- "tokio",
- "turso",
- "uuid",
-]
-
-[[package]]
-name = "nvr-server"
+name = "nvr"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1828,6 +1803,31 @@ dependencies = [
  "tokio",
  "tokio-linux-video",
  "tokio-util",
+ "turso",
+ "uuid",
+]
+
+[[package]]
+name = "nvr-dashboard"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "axum-embed",
+ "rust-embed",
+]
+
+[[package]]
+name = "nvr-db"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "chrono",
+ "futures",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "tokio",
  "turso",
  "uuid",
 ]

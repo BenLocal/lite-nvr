@@ -1,10 +1,10 @@
 [package]
-name = "nvr-server"
+name = "nvr"
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "nvr-server"
+name = "nvr"
 path = "src/main.rs"
 test = false
 
