@@ -366,6 +366,7 @@ async function copyText(value: string, label: string) {
               :options="inputTypeOptions"
               option-label="label"
               option-value="value"
+              size="small"
               class="field-input"
               placeholder="请选择输入类型"
               :invalid="$form.input_type?.invalid"

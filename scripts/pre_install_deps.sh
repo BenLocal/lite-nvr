@@ -69,6 +69,12 @@ get_zlm_url() {
         linux-arm64)
             echo "${ZLM_BASE_URL}/${ZLM_VERSION}/zlmediakit_master_linux_arm64_latest.tar.gz"
             ;;
+        macos-x64)
+            echo "${ZLM_BASE_URL}/${ZLM_VERSION}/zlmediakit_master_macos_amd64_latest.tar.gz"
+            ;;
+        macos-arm64)
+            echo "${ZLM_BASE_URL}/${ZLM_VERSION}/zlmediakit_master_macos_arm64_latest.tar.gz"
+            ;;
     esac
 }
 
@@ -169,6 +175,43 @@ setup_macos_ffmpeg() {
     echo "Homebrew FFmpeg location: ${ffmpeg_prefix}"
 }
 
+install_zlm() {
+    local root_dir="$1"
+    local platform="$2"
+    local zlm_dir="${root_dir}/zlm"
+    local zlm_url archive_name archive_path
+
+    echo "=== ZLMediaKit Installation ==="
+    echo "ZLM directory: ${zlm_dir}"
+
+    if [[ -d "${zlm_dir}" ]]; then
+        echo "ZLM directory already exists, skipping installation."
+        return 0
+    fi
+
+    zlm_url="$(get_zlm_url "${platform}")"
+    if [[ -z "${zlm_url}" ]]; then
+        echo "Error: Unsupported ZLMediaKit platform: ${platform}" >&2
+        exit 1
+    fi
+
+    archive_name="${zlm_url##*/}"
+    archive_path="${root_dir}/${archive_name}"
+
+    mkdir -p "${zlm_dir}"
+
+    echo "Downloading ZLMediaKit..."
+    download_file "${zlm_url}" "${archive_path}"
+
+    echo "Extracting ZLMediaKit..."
+    extract_archive "${archive_path}" "${zlm_dir}"
+
+    rm -f "${archive_path}"
+
+    echo "=== ZLMediaKit installation complete ==="
+    echo "Installed to: ${zlm_dir}"
+}
+
 # Main function
 main() {
     local root_dir ffmpeg_dir platform ffmpeg_url
@@ -192,6 +235,7 @@ main() {
     # Handle macOS specially
     if [[ "${platform}" == macos-* && -z "${ffmpeg_url}" ]]; then
         setup_macos_ffmpeg "${ffmpeg_dir}"
+        install_zlm "${root_dir}" "${platform}"
         return 0
     fi
 
@@ -235,6 +279,8 @@ main() {
         echo "Libraries found:"
         ls -la "${ffmpeg_dir}/lib/" | head -10
     fi
+
+    install_zlm "${root_dir}" "${platform}"
 }
 
 # Run main function
