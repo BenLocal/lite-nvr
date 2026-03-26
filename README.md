@@ -1,4 +1,4 @@
-# nvr-server
+# nvr
 
 A lightweight Network Video Recorder built with Rust. It provides a media pipeline that ingests video from various sources (RTSP, files, screen capture, test patterns), transcodes via FFmpeg, and pushes to [ZLMediaKit](https://github.com/ZLMediaKit/ZLMediaKit) for RTSP/RTMP/HLS distribution.
 
@@ -15,7 +15,7 @@ A lightweight Network Video Recorder built with Rust. It provides a media pipeli
 
 | Crate             | Description                                                                         |
 | ----------------- | ----------------------------------------------------------------------------------- |
-| **nvr-server**    | Main application — REST API, pipeline management, ZLMediaKit integration            |
+| **nvr**           | Main application — REST API, pipeline management, ZLMediaKit integration            |
 | **ffmpeg-bus**    | Core media bus — input demux, decoder, encoder, muxer, all wired via async channels |
 | **nvr-db**        | Database layer with migrations (SQLite)                                             |
 | **nvr-dashboard** | Web dashboard frontend                                                              |
@@ -40,7 +40,7 @@ On macOS this installs `ffmpeg@7` via Homebrew and creates symlinks into `./ffmp
 ### 2. Build & Run
 
 ```bash
-cargo run --package nvr-server
+cargo run --package nvr
 ```
 
 The API server starts on `http://localhost:8080` by default.

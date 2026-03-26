@@ -4,21 +4,21 @@
 
 This repository is a Rust workspace with four crates listed in `Cargo.toml`:
 
-- `nvr-server/`: main service entrypoint, REST API, pipeline orchestration, and ZLMediaKit integration
+- `nvr/`: main service entrypoint, REST API, pipeline orchestration, and ZLMediaKit integration
 - `ffmpeg-bus/`: FFmpeg-based media pipeline primitives
 - `nvr-db/`: SQLite/Turso access and migrations
 - `nvr-dashboard/`: embedded dashboard service, with the Vue app in `nvr-dashboard/app/`
 
-Rust sources live under each crate's `src/`. Media-related tests are colocated, for example `ffmpeg-bus/src/*_test.rs` and `nvr-server/src/media/pipe_test.rs`. Helper scripts are in `scripts/`. CI workflows and local editor tasks live in `.github/workflows/` and `.vscode/`.
+Rust sources live under each crate's `src/`. Media-related tests are colocated, for example `ffmpeg-bus/src/*_test.rs` and `nvr/src/media/pipe_test.rs`. Helper scripts are in `scripts/`. CI workflows and local editor tasks live in `.github/workflows/` and `.vscode/`.
 
 ## Build, Test, and Development Commands
 
 - `bash scripts/pre_install_deps.sh`: install FFmpeg and ZLMediaKit prerequisites
 - `cargo build --workspace`: build all Rust crates
-- `cargo run --package nvr-server`: start the API server on `:8080`
+- `cargo run --package nvr`: start the API server on `:8080`
 - `cargo check --workspace`: fast compile check across the workspace
 - `cargo test --workspace --lib --tests --no-fail-fast`: run workspace tests without the binary harness
-- `cargo test -p nvr-server`: run service crate tests only
+- `cargo test -p nvr`: run service crate tests only
 - `cd nvr-dashboard/app && npm ci && npm run build`: rebuild embedded frontend assets
 - `cd nvr-dashboard/app && npm run dev`: run the Vite dashboard locally
 
