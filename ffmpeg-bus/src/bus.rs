@@ -9,7 +9,7 @@ use ffmpeg_next::Dictionary;
 
 use crate::{
     decoder::{Decoder, DecoderTask},
-    encoder::{Encoder, EncoderTask, Settings, pixel_format_for_libx264},
+    encoder::{AudioSettings, Encoder, EncoderTask, Settings, pixel_format_for_libx264},
     frame::{RawFrameCmd, VideoFrame, packet_to_raw_video_frame},
     input::{AvInput, AvInputTask},
     output::{AvOutput, AvOutputStream},
@@ -110,16 +110,24 @@ impl Bus {
                         .await?;
                 }
 
+                let include_audio = output.include_audio;
                 let stream_result = match &output.dest {
                     OutputDest::Raw => {
                         Self::create_decoder_raw_output_stream(state, input_stream_index).await
                     }
                     OutputDest::File { path } => {
-                        Self::create_mux_to_file(state, path, input_stream_index).await
+                        Self::create_mux_to_file(state, path, input_stream_index, include_audio)
+                            .await
                     }
                     OutputDest::Net { url, format } => {
-                        Self::create_mux_to_net(state, url, format.as_deref(), input_stream_index)
-                            .await
+                        Self::create_mux_to_net(
+                            state,
+                            url,
+                            format.as_deref(),
+                            input_stream_index,
+                            include_audio,
+                        )
+                        .await
                     }
                     OutputDest::Mux { format } => {
                         if need_encoder {
@@ -175,9 +183,24 @@ impl Bus {
             OutputDest::File { .. } => Ok(false),
             // Mux: need decoder only when encoder is also needed (e.g. WRAPPED_AVFRAME needs unwrap → encode).
             // If input is already the target codec (e.g. H.264 → h264 mux), no decoder needed.
-            OutputDest::Mux { .. } => Ok(input_codec == ffmpeg_next::codec::Id::WRAPPED_AVFRAME
-                || Self::try_encoder(input_stream, output).unwrap_or(false)),
-            OutputDest::Net { .. } => Ok(true),
+            // For audio passthrough (e.g. AAC → adts mux), no decoder needed.
+            OutputDest::Mux { .. } => {
+                if input_stream.is_video() {
+                    Ok(input_codec == ffmpeg_next::codec::Id::WRAPPED_AVFRAME
+                        || Self::try_encoder(input_stream, output).unwrap_or(false))
+                } else {
+                    // Audio: only decode if encoder is needed (transcode case)
+                    Ok(Self::try_encoder(input_stream, output).unwrap_or(false))
+                }
+            }
+            OutputDest::Net { .. } => {
+                // Audio passthrough to net doesn't need decoder
+                if input_stream.is_audio() {
+                    Ok(Self::try_encoder(input_stream, output).unwrap_or(false))
+                } else {
+                    Ok(true)
+                }
+            }
             OutputDest::Encoded => Ok(true),
         }
     }
@@ -189,8 +212,10 @@ impl Bus {
             return Ok(false);
         }
 
-        if input_codec == ffmpeg_next::codec::Id::RAWVIDEO
-            || input_codec == ffmpeg_next::codec::Id::WRAPPED_AVFRAME
+        // Video-specific raw codecs
+        if input_stream.is_video()
+            && (input_codec == ffmpeg_next::codec::Id::RAWVIDEO
+                || input_codec == ffmpeg_next::codec::Id::WRAPPED_AVFRAME)
         {
             return Ok(true);
         }
@@ -199,11 +224,13 @@ impl Bus {
             return Ok(true);
         }
 
-        // Mux format "h264" (or similar) requires encoded packets; use encoder when input is not already that codec
+        // Mux format requires encoded packets; use encoder when input is not already that codec
         if let OutputDest::Mux { format } = &output.dest {
             let need_encode = match format.as_str() {
                 "h264" => input_codec != ffmpeg_next::codec::Id::H264,
                 "hevc" | "h265" => input_codec != ffmpeg_next::codec::Id::HEVC,
+                "aac" | "adts" => input_codec != ffmpeg_next::codec::Id::AAC,
+                "opus" => input_codec != ffmpeg_next::codec::Id::OPUS,
                 _ => false,
             };
             if need_encode {
@@ -219,10 +246,12 @@ impl Bus {
     }
 
     /// Mux to a real file path (seekable). Produces standard MP4 that any player can open.
+    /// When `include_audio` is true, both video and audio streams are muxed into the file.
     async fn create_mux_to_file(
         state: &mut BusState,
         path: &str,
         input_stream_index: usize,
+        include_audio: bool,
     ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
         let mut input_receiver = state
             .input_task
@@ -242,13 +271,27 @@ impl Bus {
         let mut output = AvOutput::new(path, None, None)?;
         output.add_stream(&target_stream)?;
 
+        // Collect additional stream indices to write
+        let mut accepted_indices = vec![target_stream_index];
+
+        if include_audio {
+            if let Some(audio_stream) = state.input_streams.iter().find(|s| s.is_audio()) {
+                output.add_stream(audio_stream)?;
+                accepted_indices.push(audio_stream.index());
+                log::info!(
+                    "mux to file: added audio stream index {} alongside video",
+                    audio_stream.index()
+                );
+            }
+        }
+
         tokio::spawn(async move {
             let mut output = output;
             loop {
                 match input_receiver.recv().await {
                     Ok(RawPacketCmd::Data(packet)) => {
-                        if packet.index() == target_stream_index {
-                            if let Err(e) = output.write_packet(target_stream_index, packet) {
+                        if accepted_indices.contains(&packet.index()) {
+                            if let Err(e) = output.write_packet(packet.index(), packet) {
                                 log::error!(
                                     "mux to file write_packet error: {:#?}\nbacktrace:\n{}",
                                     e,
@@ -283,11 +326,13 @@ impl Bus {
 
     /// Mux to a network URL (e.g. rtmp://, rtsp://). Remux only (input packets).
     /// format: e.g. Some("rtsp"), Some("flv"); None = let FFmpeg guess from URL.
+    /// When `include_audio` is true, both video and audio streams are muxed.
     async fn create_mux_to_net(
         state: &mut BusState,
         url: &str,
         format: Option<&str>,
         input_stream_index: usize,
+        include_audio: bool,
     ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
         let mut input_receiver = state
             .input_task
@@ -326,13 +371,28 @@ impl Bus {
             .add_stream(&target_stream)
             .map_err(|e| anyhow::anyhow!("create_mux_to_net add_stream: {:?}", e))?;
 
+        let mut accepted_indices = vec![target_stream_index];
+
+        if include_audio {
+            if let Some(audio_stream) = state.input_streams.iter().find(|s| s.is_audio()) {
+                output
+                    .add_stream(audio_stream)
+                    .map_err(|e| anyhow::anyhow!("create_mux_to_net add_audio_stream: {:?}", e))?;
+                accepted_indices.push(audio_stream.index());
+                log::info!(
+                    "mux to net: added audio stream index {} alongside video",
+                    audio_stream.index()
+                );
+            }
+        }
+
         tokio::spawn(async move {
             let mut output = output;
             loop {
                 match input_receiver.recv().await {
                     Ok(RawPacketCmd::Data(packet)) => {
-                        if packet.index() == target_stream_index {
-                            if let Err(e) = output.write_packet(target_stream_index, packet) {
+                        if accepted_indices.contains(&packet.index()) {
+                            if let Err(e) = output.write_packet(packet.index(), packet) {
                                 log::error!(
                                     "mux to net write_packet error: {:#?}\nbacktrace:\n{}",
                                     e,
@@ -413,6 +473,8 @@ impl Bus {
         let codec_id = match format {
             "h264" => ffmpeg_next::codec::Id::H264,
             "hevc" | "h265" => ffmpeg_next::codec::Id::HEVC,
+            "aac" | "adts" => ffmpeg_next::codec::Id::AAC,
+            "opus" => ffmpeg_next::codec::Id::OPUS,
             _ => {
                 return Err(anyhow::anyhow!(
                     "unsupported mux format for encoder output: {}",
@@ -616,6 +678,20 @@ impl Bus {
             .to_string()
     }
 
+    /// Build audio encoder settings from EncodeConfig.
+    fn audio_settings_from_config(encode: Option<&EncodeConfig>) -> AudioSettings {
+        match encode {
+            Some(cfg) => AudioSettings {
+                codec: Some(cfg.codec.clone()),
+                sample_rate: cfg.sample_rate,
+                channels: cfg.channels,
+                bitrate: cfg.audio_bitrate,
+                ..AudioSettings::default()
+            },
+            None => AudioSettings::default(),
+        }
+    }
+
     async fn start_encoder_task(
         state: &mut BusState,
         input_stream_index: usize,
@@ -630,6 +706,22 @@ impl Bus {
             return Ok(());
         }
 
+        // Audio encoder path
+        if input_stream.is_audio() {
+            let encoder_task = EncoderTask::new();
+            let encoder_receiver = state
+                .decoder_tasks
+                .get(&input_stream_index)
+                .ok_or(anyhow::anyhow!("decoder task not found for audio stream"))?
+                .subscribe();
+            let audio_settings = Self::audio_settings_from_config(encode);
+            let encoder = Encoder::new_audio(input_stream, audio_settings, None)?;
+            encoder_task.start(encoder, encoder_receiver).await;
+            state.encoder_tasks.insert(input_stream_index, encoder_task);
+            return Ok(());
+        }
+
+        // Video encoder path
         let codec_id = input_stream.parameters().id();
         let encoder_task = EncoderTask::new();
         // Only RAWVIDEO has raw pixel data in packets; use packet->frame conversion.
@@ -897,6 +989,8 @@ pub struct OutputConfig {
     pub dest: OutputDest,
     pub av_type: OutputAvType,
     pub encode: Option<EncodeConfig>,
+    /// When true, include both video and audio streams in File/Net outputs.
+    pub include_audio: bool,
 }
 
 impl OutputConfig {
@@ -906,11 +1000,17 @@ impl OutputConfig {
             dest,
             av_type,
             encode: None,
+            include_audio: false,
         }
     }
 
     pub fn with_encode(mut self, encode: EncodeConfig) -> Self {
         self.encode = Some(encode);
+        self
+    }
+
+    pub fn with_audio(mut self) -> Self {
+        self.include_audio = true;
         self
     }
 }
@@ -933,18 +1033,24 @@ pub enum OutputDest {
 
 #[derive(Clone, Debug)]
 pub struct EncodeConfig {
-    // "h264", "hevc", "rawvideo"
+    // "h264", "hevc", "rawvideo", "aac", "opus"
     pub codec: String,
     // None = keep original
     pub width: Option<u32>,
     // None = keep original
     pub height: Option<u32>,
-    // bps
+    // bps (video bitrate)
     pub bitrate: Option<u64>,
     // "ultrafast", "medium", etc.
     pub preset: Option<String>,
     // "yuv420p", "rgb24", etc.
     pub pixel_format: Option<String>,
+    // Audio: sample rate (e.g. 44100, 48000)
+    pub sample_rate: Option<u32>,
+    // Audio: number of channels (e.g. 2)
+    pub channels: Option<u32>,
+    // Audio: bitrate in bps (e.g. 128000)
+    pub audio_bitrate: Option<u64>,
 }
 
 impl Default for EncodeConfig {
@@ -956,6 +1062,9 @@ impl Default for EncodeConfig {
             bitrate: None,
             preset: None,
             pixel_format: None,
+            sample_rate: None,
+            channels: None,
+            audio_bitrate: None,
         }
     }
 }
@@ -968,6 +1077,9 @@ impl PartialEq for EncodeConfig {
             && self.bitrate == other.bitrate
             && self.preset == other.preset
             && self.pixel_format == other.pixel_format
+            && self.sample_rate == other.sample_rate
+            && self.channels == other.channels
+            && self.audio_bitrate == other.audio_bitrate
     }
 }
 
@@ -981,6 +1093,9 @@ impl std::hash::Hash for EncodeConfig {
         self.bitrate.hash(state);
         self.preset.hash(state);
         self.pixel_format.hash(state);
+        self.sample_rate.hash(state);
+        self.channels.hash(state);
+        self.audio_bitrate.hash(state);
     }
 }
 

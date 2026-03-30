@@ -56,10 +56,15 @@ impl AvStream {
     /// Build an AvStream suitable for mux encoder output: same dimensions/time_base/rate as
     /// `input`, but with `codec_id` (e.g. H264). Used when muxing encoded packets.
     pub fn for_encoder_output(input: &AvStream, codec_id: ffmpeg_next::codec::Id) -> Self {
+        let codec_type = if input.is_audio() {
+            ffmpeg_next::media::Type::Audio
+        } else {
+            ffmpeg_next::media::Type::Video
+        };
         let params = input.parameters().clone();
         unsafe {
             let ptr = params.as_ptr() as *mut ffmpeg_next::ffi::AVCodecParameters;
-            (*ptr).codec_type = ffmpeg_next::media::Type::Video.into();
+            (*ptr).codec_type = codec_type.into();
             (*ptr).codec_id = codec_id.into();
         }
         Self {

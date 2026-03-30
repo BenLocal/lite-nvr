@@ -11,6 +11,27 @@ use crate::{
     stream::AvStream,
 };
 
+#[derive(Debug, Clone)]
+pub struct AudioSettings {
+    pub codec: Option<String>,
+    pub sample_rate: Option<u32>,
+    pub channels: Option<u32>,
+    pub bitrate: Option<u64>,
+    pub sample_format: Option<String>,
+}
+
+impl Default for AudioSettings {
+    fn default() -> Self {
+        Self {
+            codec: Some("aac".to_string()),
+            sample_rate: None,
+            channels: None,
+            bitrate: None,
+            sample_format: None,
+        }
+    }
+}
+
 pub enum EncoderType {
     Video(ffmpeg_next::codec::encoder::Video),
     Audio(ffmpeg_next::codec::encoder::Audio),
@@ -211,6 +232,104 @@ impl Encoder {
         })
     }
 
+    pub fn new_audio(
+        stream: &AvStream,
+        settings: AudioSettings,
+        options: Option<Dictionary>,
+    ) -> anyhow::Result<Self> {
+        let codec_name = settings.codec.as_deref().unwrap_or("aac");
+        let codec = ffmpeg_next::encoder::find_by_name(codec_name)
+            .ok_or_else(|| anyhow::anyhow!("audio encoder not found: {}", codec_name))?;
+
+        let encoder_context = ffmpeg_next::codec::Context::new_with_codec(codec);
+        let mut encoder = encoder_context.encoder().audio()?;
+
+        // Use settings or fall back to input stream parameters
+        let sample_rate = settings.sample_rate.unwrap_or_else(|| {
+            unsafe {
+                let ptr =
+                    stream.parameters().as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
+                (*ptr).sample_rate.max(0) as u32
+            }
+        });
+        let sample_rate = if sample_rate == 0 { 44100 } else { sample_rate };
+        encoder.set_rate(sample_rate as i32);
+
+        // Set channel layout
+        let channels = settings.channels.unwrap_or_else(|| {
+            unsafe {
+                let ptr =
+                    stream.parameters().as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
+                let ch = ffmpeg_next::ffi::AVChannelLayout {
+                    ..(*ptr).ch_layout
+                };
+                ch.nb_channels.max(0) as u32
+            }
+        });
+        let channels = if channels == 0 { 2 } else { channels };
+        unsafe {
+            ffmpeg_next::ffi::av_channel_layout_default(
+                &mut (*encoder.as_mut_ptr()).ch_layout,
+                channels as i32,
+            );
+        }
+
+        // Set sample format
+        if let Some(ref fmt_name) = settings.sample_format {
+            let av_fmt: ffmpeg_next::ffi::AVSampleFormat = unsafe {
+                ffmpeg_next::ffi::av_get_sample_fmt(
+                    std::ffi::CString::new(fmt_name.as_str())
+                        .unwrap()
+                        .as_ptr(),
+                )
+            };
+            let fmt: ffmpeg_next::format::Sample = av_fmt.into();
+            encoder.set_format(fmt);
+        } else {
+            // Use first supported format from codec, or default to FLTP
+            let default_fmt = unsafe {
+                let codec_ptr = codec.as_ptr();
+                let sample_fmts = (*codec_ptr).sample_fmts;
+                if !sample_fmts.is_null() {
+                    (*sample_fmts).into()
+                } else {
+                    ffmpeg_next::format::Sample::F32(ffmpeg_next::format::sample::Type::Planar)
+                }
+            };
+            encoder.set_format(default_fmt);
+        }
+
+        encoder.set_time_base(ffmpeg_next::util::mathematics::rescale::TIME_BASE);
+
+        if let Some(bitrate) = settings.bitrate {
+            encoder.set_bit_rate(bitrate as usize);
+        }
+
+        let encoder = if let Some(opts) = options {
+            encoder.open_with(opts)?
+        } else {
+            encoder.open_with(Dictionary::new())?
+        };
+        let encoder_time_base: Rational = unsafe { (*encoder.0.as_ptr()).time_base.into() };
+
+        log::info!(
+            "audio encoder selected: {} (software), stream_index={}, sample_rate={}, channels={}",
+            codec_name,
+            stream.index(),
+            sample_rate,
+            channels,
+        );
+
+        Ok(Self {
+            stream: stream.clone(),
+            inner: EncoderType::Audio(encoder),
+            encoder_time_base,
+            interleaved: false,
+            frame_index: 0,
+            scaler: None,
+        })
+    }
+
     pub fn send_frame(&mut self, mut frame: RawFrame) -> anyhow::Result<()> {
         let sending_frame = match (&mut frame, &self.inner) {
             (RawFrame::Video(f), EncoderType::Video(e)) => {
@@ -256,13 +375,25 @@ impl Encoder {
     }
 
     pub fn encoder_receive_packet(&mut self) -> anyhow::Result<Option<RawPacket>> {
-        let rate = self.stream.rate();
         let mut pkt = self.inner.encoder_receive_packet(self.encoder_time_base)?;
 
         if let Some(ref mut p) = pkt {
-            if rate.0 > 0 {
-                let duration = 1_000_000i64 * rate.1 as i64 / rate.0 as i64;
-                p.set_duration(duration);
+            match &self.inner {
+                EncoderType::Video(_) => {
+                    let rate = self.stream.rate();
+                    if rate.0 > 0 {
+                        let duration = 1_000_000i64 * rate.1 as i64 / rate.0 as i64;
+                        p.set_duration(duration);
+                    }
+                }
+                EncoderType::Audio(encoder) => {
+                    let frame_size = encoder.frame_size() as i64;
+                    if frame_size > 0 {
+                        let tb = self.encoder_time_base;
+                        let duration = frame_size * tb.1 as i64 / tb.0 as i64;
+                        p.set_duration(duration);
+                    }
+                }
             }
         }
         Ok(pkt)
@@ -318,7 +449,16 @@ impl EncoderTask {
                     _ = cancel_clone.cancelled() => {
                         break;
                     }
-                    Ok(frame) = encoder_receiver.recv() => {
+                    result = encoder_receiver.recv() => {
+                    match result {
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        log::debug!("encoder relay: lagged, lost {} frames", n);
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        break;
+                    }
+                    Ok(frame) => {
                         let is_eof = matches!(&frame, RawFrameCmd::EOF);
                         let ok = if is_eof {
                             tx.send(frame).is_ok()
@@ -341,6 +481,8 @@ impl EncoderTask {
                         if !ok {
                             break;
                         }
+                    }
+                    }
                     }
                 }
             }
@@ -399,12 +541,6 @@ impl EncoderTask {
                 Err(_) => (),
             }
         }
-
-        log::info!(
-            "end of av encode task loop, stream base_time: {:#?}, encoder_time_base: {:#?}",
-            encoder.stream.time_base(),
-            encoder.encoder_time_base
-        );
         let _ = out.send(RawPacketCmd::EOF);
     }
 }
