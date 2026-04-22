@@ -672,154 +672,146 @@ function toErrorMessage(error: unknown, fallback: string) {
 
 <template>
   <div class="content-section playback-page">
-    <Card class="content-card">
-      <template #title>
-        <div class="page-header">
-          <div>
-            <div>回放</div>
-            <div class="page-subtitle">按设备查看已经落库的录制片段，并支持当天时间轴回放。</div>
-          </div>
-          <div class="page-actions">
-            <Tag severity="contrast" :value="`设备 ${totalDevices}`" />
-            <Tag severity="secondary" :value="`片段统计 ${totalSegments}`" />
-            <Button icon="pi pi-refresh" text aria-label="刷新" @click="loadPlayback" />
-          </div>
-        </div>
-      </template>
-      <template #content>
-        <div v-if="!loading && !devices.length" class="empty-message">
-          暂无设备或录制片段数据。
-        </div>
+    <div class="page-header">
+      <div class="header-content">
+        <h1 class="page-title">回放</h1>
+        <p class="page-subtitle">按设备查看录制片段，支持时间轴回放</p>
+      </div>
+      <div class="page-actions">
+        <Tag severity="contrast" :value="`${totalDevices} 设备`" />
+        <Tag severity="secondary" :value="`${totalSegments} 片段`" />
+        <Button icon="pi pi-refresh" text aria-label="刷新" @click="loadPlayback" />
+      </div>
+    </div>
 
-        <Paginator
-          v-if="totalDevices > devicePageSize"
-          :first="(devicePage - 1) * devicePageSize"
-          :rows="devicePageSize"
-          :total-records="totalDevices"
-          :rows-per-page-options="[12, 24, 48]"
-          template="PrevPageLink PageLinks NextPageLink RowsPerPageDropdown"
-          class="device-paginator"
-          @page="onDevicePage"
-        />
+    <div v-if="!loading && !devices.length" class="empty-state">
+      <i class="pi pi-video empty-state-icon" />
+      <p class="empty-state-text">暂无设备或录制片段数据</p>
+    </div>
 
-        <Tabs
-          v-if="devices.length"
-          v-model:value="activeDeviceId"
-          scrollable
-          class="playback-tabs"
-        >
-          <TabList>
-            <Tab v-for="device in devices" :key="device.device_id" :value="device.device_id">
-              <div class="device-tab">
-                <span class="device-tab-title">{{ device.device_name }}</span>
+    <Paginator
+      v-if="totalDevices > devicePageSize"
+      :first="(devicePage - 1) * devicePageSize"
+      :rows="devicePageSize"
+      :total-records="totalDevices"
+      :rows-per-page-options="[12, 24, 48]"
+      template="PrevPageLink PageLinks NextPageLink RowsPerPageDropdown"
+      class="device-paginator"
+      @page="onDevicePage"
+    />
+
+    <Tabs
+      v-if="devices.length"
+      v-model:value="activeDeviceId"
+      scrollable
+      class="playback-tabs"
+    >
+      <TabList>
+        <Tab v-for="device in devices" :key="device.device_id" :value="device.device_id">
+          <div class="device-tab">
+            <span class="device-tab-title">{{ device.device_name }}</span>
+            <Tag
+              :severity="device.segment_count > 0 ? 'info' : 'secondary'"
+              :value="String(device.segment_count)"
+            />
+          </div>
+        </Tab>
+      </TabList>
+      <TabPanels>
+        <TabPanel v-for="device in devices" :key="device.device_id" :value="device.device_id">
+          <Card class="data-card">
+            <template #header>
+              <div class="card-header">
+                <div class="device-info">
+                  <div class="device-name">{{ device.device_name }}</div>
+                  <div class="device-meta">
+                    <span>{{ device.device_id }}</span>
+                    <span>{{ device.input_type }}</span>
+                  </div>
+                </div>
                 <Tag
-                  :severity="device.segment_count > 0 ? 'info' : 'secondary'"
-                  :value="String(device.segment_count)"
+                  :severity="activeDevice?.segment_count ? 'info' : 'secondary'"
+                  :value="`${activeDevice?.segment_count ?? 0} 个片段`"
                 />
               </div>
-            </Tab>
-          </TabList>
-          <TabPanels>
-            <TabPanel v-for="device in devices" :key="device.device_id" :value="device.device_id">
-              <section class="device-section">
-                <div class="device-heading">
-                  <div>
-                    <div class="device-title">{{ device.device_name }}</div>
-                    <div class="device-meta">
-                      <span>{{ device.device_id }}</span>
-                      <span>{{ device.input_type }}</span>
-                    </div>
-                  </div>
-                  <Tag
-                    :severity="activeDevice?.segment_count ? 'info' : 'secondary'"
-                    :value="`${activeDevice?.segment_count ?? 0} 个片段`"
-                  />
-                </div>
+            </template>
+            <template #content>
+              <div class="segment-actions">
+                <Button
+                  icon="pi pi-window-maximize"
+                  label="打开回放"
+                  text
+                  :disabled="!activeSegments.length"
+                  @click="openPlaylistPlayback()"
+                />
+              </div>
 
-                <div class="segment-header">
-                  <div>
-                    <div class="timeline-title">录制片段</div>
-                    <div class="timeline-subtitle">
-                      卡片展示预览图、时长、开始结束时间。点击播放或拖动时间轴会打开全屏回放。
-                    </div>
-                  </div>
-                  <Button
-                    icon="pi pi-window-maximize"
-                    label="打开回放"
-                    text
-                    :disabled="!activeSegments.length"
-                    @click="openPlaylistPlayback()"
-                  />
-                </div>
+              <div v-if="segmentLoading" class="segment-empty">
+                <i class="pi pi-spin pi-spinner" />
+                <span>录制片段加载中...</span>
+              </div>
 
-                <div v-if="segmentLoading" class="segment-empty">录制片段加载中...</div>
+              <div v-else-if="!activeSegments.length" class="segment-empty">
+                <i class="pi pi-video" />
+                <span>当前设备暂无录制片段</span>
+              </div>
 
-                <div v-else-if="!activeSegments.length" class="segment-empty">当前设备暂无录制片段。</div>
-
-                <div v-else class="segment-grid">
-                  <article
-                    v-for="segment in pagedSegments"
-                    :key="segment.id"
-                    class="segment-card"
-                    :class="{ 'segment-card-active': currentSegmentId === segment.id }"
+              <div v-else class="segment-grid">
+                <article
+                  v-for="segment in pagedSegments"
+                  :key="segment.id"
+                  class="segment-card"
+                  :class="{ 'segment-card-active': currentSegmentId === segment.id }"
+                >
+                  <button
+                    type="button"
+                    class="segment-preview"
+                    @click="playSegment(segment, 0, true)"
                   >
-                    <button
-                      type="button"
-                      class="segment-preview"
-                      @click="playSegment(segment, 0, true)"
-                    >
-                      <div class="segment-preview-placeholder">
-                        <i class="pi pi-video segment-preview-placeholder-icon" />
-                        <span class="segment-preview-placeholder-text">{{ formatStartTime(segment.start_time) }}</span>
+                    <div class="segment-preview-placeholder">
+                      <i class="pi pi-video segment-preview-placeholder-icon" />
+                      <span class="segment-preview-placeholder-text">{{ formatStartTime(segment.start_time) }}</span>
+                    </div>
+                    <span class="segment-duration-badge">{{ formatDuration(segment.duration) }}</span>
+                    <span class="segment-preview-overlay">
+                      <i class="pi pi-play-circle" />
+                      <span>播放片段</span>
+                    </span>
+                  </button>
+
+                  <div class="segment-card-body">
+                    <div class="segment-file-name" :title="segment.file_name">{{ segment.file_name }}</div>
+                    <div class="segment-range">{{ formatSegmentRange(segment) }}</div>
+
+                    <div class="segment-metrics">
+                      <div class="segment-metric">
+                        <span class="segment-metric-label">时长</span>
+                        <span>{{ formatDuration(segment.duration) }}</span>
                       </div>
-                      <span class="segment-duration-badge">{{ formatDuration(segment.duration) }}</span>
-                      <span class="segment-preview-overlay">
-                        <i class="pi pi-play-circle" />
-                        <span>播放片段</span>
-                      </span>
-                    </button>
-
-                    <div class="segment-card-body">
-                      <div class="segment-file-name" :title="segment.file_name">{{ segment.file_name }}</div>
-                      <div class="segment-range">{{ formatSegmentRange(segment) }}</div>
-
-                      <div class="segment-metrics">
-                        <div class="segment-metric">
-                          <span class="segment-metric-label">开始</span>
-                          <span>{{ formatStartTime(segment.start_time) }}</span>
-                        </div>
-                        <div class="segment-metric">
-                          <span class="segment-metric-label">结束</span>
-                          <span>{{ formatEndTime(segment) }}</span>
-                        </div>
-                        <div class="segment-metric">
-                          <span class="segment-metric-label">时长</span>
-                          <span>{{ formatDuration(segment.duration) }}</span>
-                        </div>
-                        <div class="segment-metric">
-                          <span class="segment-metric-label">大小</span>
-                          <span>{{ formatFileSize(segment.file_size) }}</span>
-                        </div>
-                      </div>
-
-                      <div class="segment-card-actions">
-                        <Button
-                          icon="pi pi-play"
-                          label="播放"
-                          size="small"
-                          @click="playSegment(segment, 0, true)"
-                        />
-                        <Button
-                          icon="pi pi-info-circle"
-                          label="详情"
-                          text
-                          size="small"
-                          @click="openDetail(segment)"
-                        />
+                      <div class="segment-metric">
+                        <span class="segment-metric-label">大小</span>
+                        <span>{{ formatFileSize(segment.file_size) }}</span>
                       </div>
                     </div>
-                  </article>
-                </div>
+
+                    <div class="segment-card-actions">
+                      <Button
+                        icon="pi pi-play"
+                        label="播放"
+                        size="small"
+                        @click="playSegment(segment, 0, true)"
+                      />
+                      <Button
+                        icon="pi pi-info-circle"
+                        label="详情"
+                        text
+                        size="small"
+                        @click="openDetail(segment)"
+                      />
+                    </div>
+                  </div>
+                </article>
+              </div>
 
                 <Paginator
                   v-if="activeDeviceSegmentsTotal > pageRows"
@@ -831,181 +823,157 @@ function toErrorMessage(error: unknown, fallback: string) {
                   class="segment-paginator"
                   @page="onPage"
                 />
-              </section>
-            </TabPanel>
-          </TabPanels>
-        </Tabs>
+              </template>
+            </Card>
+          </TabPanel>
+        </TabPanels>
+      </Tabs>
 
-        <Dialog
-          v-model:visible="playbackVisible"
-          modal
-          maximizable
-          dismissable-mask
-          header="回放"
-          class="playback-dialog"
-          :style="{ width: '100vw', height: '100vh', maxWidth: '100vw', maxHeight: '100vh' }"
-          :content-style="{ padding: '0', height: 'calc(100vh - 3.5rem)' }"
-          @hide="closePlayback"
-        >
-          <div class="player-shell player-shell-dialog" :class="{ 'player-shell-segment': playbackMode === 'segment' }">
-            <div class="player-panel player-panel-dialog">
-              <video
-                ref="playerRef"
-                class="video-player"
-                controls
-                playsinline
-                preload="metadata"
-                @loadedmetadata="onVideoLoadedMetadata"
-                @timeupdate="onVideoTimeUpdate"
-                @ended="onVideoEnded"
-              />
-              <div v-if="!currentPlayerUrl" class="player-empty">
-                点击下方播放按钮，或拖动当天时间轴开始回放。
+    <Dialog
+      v-model:visible="playbackVisible"
+      modal
+      maximizable
+      dismissable-mask
+      header="回放"
+      class="playback-dialog"
+      :style="{ width: '100vw', height: '100vh', maxWidth: '100vw', maxHeight: '100vh' }"
+      :content-style="{ padding: '0', height: 'calc(100vh - 3.5rem)' }"
+      @hide="closePlayback"
+    >
+      <div class="player-shell player-shell-dialog" :class="{ 'player-shell-segment': playbackMode === 'segment' }">
+        <div class="player-panel player-panel-dialog">
+          <video
+            ref="playerRef"
+            class="video-player"
+            controls
+            playsinline
+            preload="metadata"
+            @loadedmetadata="onVideoLoadedMetadata"
+            @timeupdate="onVideoTimeUpdate"
+            @ended="onVideoEnded"
+          />
+          <div v-if="!currentPlayerUrl" class="player-empty">
+            点击下方播放按钮，或拖动当天时间轴开始回放。
+          </div>
+        </div>
+
+        <div v-if="playbackMode === 'playlist'" class="timeline-card timeline-card-dialog">
+          <div class="timeline-header">
+            <div>
+              <div class="timeline-title">当天时间轴</div>
+              <div class="timeline-subtitle">
+                蓝色表示有录制片段，灰色表示无数据。当前定位：{{ currentTimelineLabel }}。
+                当前模式：{{ playbackMode === 'playlist' ? 'm3u8 连续回放' : 'TS 单片段播放' }}
               </div>
             </div>
-
-            <div v-if="playbackMode === 'playlist'" class="timeline-card timeline-card-dialog">
-              <div class="timeline-header">
-                <div>
-                  <div class="timeline-title">当天时间轴</div>
-                  <div class="timeline-subtitle">
-                    蓝色表示有录制片段，灰色表示无数据。当前定位：{{ currentTimelineLabel }}。
-                    当前模式：{{ playbackMode === 'playlist' ? 'm3u8 连续回放' : 'TS 单片段播放' }}
-                  </div>
-                </div>
-                <div class="timeline-stats">
-                  <Tag severity="info" :value="`${todaySegments.length} 个片段`" />
-                  <Tag severity="contrast" :value="currentSegmentElapsed" />
-                </div>
-              </div>
-
-              <div class="timeline-track-shell">
-                <div class="timeline-scale">
-                  <span v-for="tick in TIMELINE_TICKS" :key="tick">
-                    {{ String(tick).padStart(2, '0') }}:00
-                  </span>
-                </div>
-                <div
-                  ref="timelineTrackRef"
-                  class="timeline-track"
-                  @pointerdown="startTimelineDrag"
-                >
-                  <div class="timeline-track-background" :style="{ background: timelineBackground }" />
-                  <div
-                    class="timeline-marker"
-                    :style="{ left: `${(timelineSecond / DAY_SECONDS) * 100}%` }"
-                  >
-                    <span class="timeline-marker-line" />
-                    <span class="timeline-marker-dot" />
-                  </div>
-                </div>
-              </div>
-
-              <div class="timeline-hint-row">
-                <Tag severity="secondary" value="灰色: 无片段" />
-                <Tag severity="info" value="蓝色: 有片段" />
-                <Button
-                  icon="pi pi-history"
-                  label="使用当天连续回放"
-                  text
-                  size="small"
-                  :disabled="!todaySegments.length"
-                  @click="openPlaylistPlayback()"
-                />
-              </div>
+            <div class="timeline-stats">
+              <Tag severity="info" :value="`${todaySegments.length} 个片段`" />
+              <Tag severity="contrast" :value="currentSegmentElapsed" />
             </div>
+          </div>
 
-            <div v-else class="segment-player-footer">
-              <Tag severity="info" value="单片段播放" />
-              <span class="segment-player-footer-text">
-                当前片段使用浏览器原生进度条和控制条。
+          <div class="timeline-track-shell">
+            <div class="timeline-scale">
+              <span v-for="tick in TIMELINE_TICKS" :key="tick">
+                {{ String(tick).padStart(2, '0') }}:00
               </span>
             </div>
+            <div
+              ref="timelineTrackRef"
+              class="timeline-track"
+              @pointerdown="startTimelineDrag"
+            >
+              <div class="timeline-track-background" :style="{ background: timelineBackground }" />
+              <div
+                class="timeline-marker"
+                :style="{ left: `${(timelineSecond / DAY_SECONDS) * 100}%` }"
+              >
+                <span class="timeline-marker-line" />
+                <span class="timeline-marker-dot" />
+              </div>
+            </div>
           </div>
-        </Dialog>
 
-        <Dialog
-          v-model:visible="detailVisible"
-          modal
-          header="片段详情"
-          :style="{ width: 'min(42rem, calc(100vw - 2rem))' }"
-        >
-          <div v-if="detailSegment" class="detail-grid">
-            <div class="detail-item">
-              <span class="detail-label">文件名</span>
-              <span class="mono-text">{{ detailSegment.file_name }}</span>
-            </div>
-            <div class="detail-item">
-              <span class="detail-label">开始时间</span>
-              <span>{{ formatStartTime(detailSegment.start_time) }}</span>
-            </div>
-            <div class="detail-item">
-              <span class="detail-label">结束时间</span>
-              <span>{{ formatEndTime(detailSegment) }}</span>
-            </div>
-            <div class="detail-item">
-              <span class="detail-label">时长</span>
-              <span>{{ formatDuration(detailSegment.duration) }}</span>
-            </div>
-            <div class="detail-item">
-              <span class="detail-label">文件大小</span>
-              <span>{{ formatFileSize(detailSegment.file_size) }}</span>
-            </div>
-            <div class="detail-item">
-              <span class="detail-label">视频信息</span>
-              <span>{{ formatVideoInfo(detailSegment) }}</span>
-            </div>
-            <div class="detail-item">
-              <span class="detail-label">音频信息</span>
-              <span>{{ formatAudioInfo(detailSegment) }}</span>
-            </div>
-            <div class="detail-item detail-item-full">
-              <span class="detail-label">文件路径</span>
-              <span class="mono-text">{{ detailSegment.file_path }}</span>
-            </div>
-            <div class="detail-item">
-              <span class="detail-label">入库时间</span>
-              <span>{{ formatDateTime(detailSegment.update_time) }}</span>
-            </div>
+          <div class="timeline-hint-row">
+            <Tag severity="secondary" value="灰色: 无片段" />
+            <Tag severity="info" value="蓝色: 有片段" />
+            <Button
+              icon="pi pi-history"
+              label="使用当天连续回放"
+              text
+              size="small"
+              :disabled="!todaySegments.length"
+              @click="openPlaylistPlayback()"
+            />
           </div>
-        </Dialog>
-      </template>
-    </Card>
+        </div>
+
+        <div v-else class="segment-player-footer">
+          <Tag severity="info" value="单片段播放" />
+          <span class="segment-player-footer-text">
+            当前片段使用浏览器原生进度条和控制条。
+          </span>
+        </div>
+      </div>
+    </Dialog>
+
+    <Dialog
+      v-model:visible="detailVisible"
+      modal
+      header="片段详情"
+      :style="{ width: 'min(42rem, calc(100vw - 2rem))' }"
+    >
+      <div v-if="detailSegment" class="detail-grid">
+        <div class="detail-item">
+          <span class="detail-label">文件名</span>
+          <span class="mono-text">{{ detailSegment.file_name }}</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">开始时间</span>
+          <span>{{ formatStartTime(detailSegment.start_time) }}</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">结束时间</span>
+          <span>{{ formatEndTime(detailSegment) }}</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">时长</span>
+          <span>{{ formatDuration(detailSegment.duration) }}</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">文件大小</span>
+          <span>{{ formatFileSize(detailSegment.file_size) }}</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">视频信息</span>
+          <span>{{ formatVideoInfo(detailSegment) }}</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">音频信息</span>
+          <span>{{ formatAudioInfo(detailSegment) }}</span>
+        </div>
+        <div class="detail-item detail-item-full">
+          <span class="detail-label">文件路径</span>
+          <span class="mono-text">{{ detailSegment.file_path }}</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">入库时间</span>
+          <span>{{ formatDateTime(detailSegment.update_time) }}</span>
+        </div>
+      </div>
+    </Dialog>
   </div>
 </template>
 
 <style scoped>
-.playback-page {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
+/* Page-specific styles - matching DashboardView style */
 
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.page-subtitle {
-  margin-top: 0.25rem;
-  font-size: 0.875rem;
-  color: var(--p-text-muted-color);
-}
-
-.page-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
+.data-card {
+  animation: slideUp 0.5s ease-out 0.15s backwards;
 }
 
 .playback-tabs {
-  margin-top: 0.5rem;
-}
-
-.device-paginator {
-  margin-top: 0.75rem;
+  animation: slideUp 0.5s ease-out 0.15s backwards;
 }
 
 .device-tab {
@@ -1022,208 +990,38 @@ function toErrorMessage(error: unknown, fallback: string) {
   white-space: nowrap;
 }
 
-.device-section {
-  border: 1px solid var(--p-content-border-color);
-  border-radius: 0.875rem;
-  padding: 1rem;
-  background: color-mix(in srgb, var(--p-content-background) 92%, transparent);
-}
-
-.device-heading {
+.card-header {
   display: flex;
-  align-items: flex-start;
   justify-content: space-between;
+  align-items: flex-start;
   gap: 1rem;
-  margin-bottom: 0.75rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
 }
 
-.device-title {
-  font-size: 1rem;
-  font-weight: 700;
+.device-info {
+  flex: 1;
+}
+
+.device-name {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  margin-bottom: 0.25rem;
 }
 
 .device-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
-  margin-top: 0.25rem;
-  color: var(--p-text-muted-color);
-  font-size: 0.875rem;
-}
-
-.player-shell {
-  display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(20rem, 0.95fr);
-  gap: 1rem;
-  margin-bottom: 1rem;
-}
-
-.player-shell-dialog {
-  height: 100%;
-  margin-bottom: 0;
-  padding: 1rem;
-  grid-template-columns: 1fr;
-  grid-template-rows: minmax(0, 1fr) auto;
-}
-
-.player-shell-segment {
-  grid-template-rows: minmax(0, 1fr) auto;
-}
-
-.player-panel {
-  position: relative;
-  min-height: 20rem;
-  border-radius: 1rem;
-  overflow: hidden;
-  background:
-    radial-gradient(circle at top left, rgb(37 99 235 / 0.18), transparent 42%),
-    linear-gradient(160deg, rgb(15 23 42), rgb(17 24 39));
-  border: 1px solid rgb(148 163 184 / 0.25);
-}
-
-.player-panel-dialog {
-  min-height: 0;
-  height: 100%;
-}
-
-.video-player {
-  display: block;
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  height: 100%;
-  background: transparent;
-}
-
-.player-empty {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1.5rem;
-  color: rgb(226 232 240);
-  text-align: center;
-}
-
-.timeline-card {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  padding: 1rem;
-  border-radius: 1rem;
-  border: 1px solid var(--p-content-border-color);
-  background:
-    linear-gradient(180deg, rgb(248 250 252), rgb(241 245 249));
-}
-
-.timeline-card-dialog {
-  min-height: 0;
-  height: auto;
-}
-
-.segment-player-footer {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0 0.25rem 0.25rem;
-  color: var(--p-text-muted-color);
-  font-size: 0.875rem;
-}
-
-.segment-player-footer-text {
-  line-height: 1.5;
-}
-
-.timeline-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.timeline-title {
-  font-size: 1rem;
-  font-weight: 700;
-}
-
-.timeline-subtitle {
-  margin-top: 0.25rem;
-  color: var(--p-text-muted-color);
-  font-size: 0.875rem;
-  line-height: 1.5;
-}
-
-.timeline-stats {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.timeline-track-shell {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-}
-
-.timeline-scale {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.5rem;
-  color: var(--p-text-muted-color);
+  color: #64748b;
   font-size: 0.75rem;
 }
 
-.timeline-track {
-  position: relative;
-  height: 2.75rem;
-  cursor: pointer;
-}
-
-.timeline-track-background {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 1.25rem;
-  height: 0.5rem;
-  border-radius: 999px;
-  border: 1px solid rgb(148 163 184 / 0.24);
-  overflow: hidden;
-}
-
-.timeline-marker {
-  position: absolute;
-  top: 0;
-  transform: translateX(-50%);
-  pointer-events: none;
-}
-
-.timeline-marker-line {
-  display: block;
-  width: 2px;
-  height: 2.1rem;
-  margin: 0 auto;
-  background: rgb(31 41 55);
-}
-
-.timeline-marker-dot {
-  display: block;
-  width: 0.75rem;
-  height: 0.75rem;
-  margin: -0.15rem auto 0;
-  border-radius: 999px;
-  background: rgb(31 41 55);
-  box-shadow: 0 0 0 3px rgb(255 255 255 / 0.92);
-}
-
-.timeline-hint-row {
+.segment-actions {
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-
-.segment-header {
-  margin-bottom: 0.75rem;
+  justify-content: flex-end;
+  margin-bottom: 1rem;
 }
 
 .segment-grid {
@@ -1235,14 +1033,21 @@ function toErrorMessage(error: unknown, fallback: string) {
 .segment-card {
   overflow: hidden;
   border-radius: 1rem;
-  border: 1px solid rgb(148 163 184 / 0.2);
-  background: var(--p-content-background);
-  box-shadow: 0 10px 24px rgb(15 23 42 / 0.06);
+  border: 1px solid rgba(148, 163, 184, 0.1);
+  background: rgba(15, 23, 42, 0.4);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  transition: all 0.3s;
+}
+
+.segment-card:hover {
+  border-color: rgba(148, 163, 184, 0.2);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
 }
 
 .segment-card-active {
-  border-color: rgb(37 99 235 / 0.45);
-  box-shadow: 0 14px 32px rgb(37 99 235 / 0.14);
+  border-color: rgba(59, 130, 246, 0.5);
+  box-shadow: 0 8px 24px rgba(59, 130, 246, 0.3);
 }
 
 .segment-preview {
@@ -1253,13 +1058,6 @@ function toErrorMessage(error: unknown, fallback: string) {
   border: 0;
   background: linear-gradient(160deg, rgb(15 23 42), rgb(30 41 59));
   cursor: pointer;
-}
-
-.segment-preview-image {
-  display: block;
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  object-fit: cover;
 }
 
 .segment-preview-placeholder {
@@ -1324,16 +1122,17 @@ function toErrorMessage(error: unknown, fallback: string) {
 }
 
 .segment-file-name {
-  font-size: 0.95rem;
-  font-weight: 700;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #e2e8f0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .segment-range {
-  font-size: 0.875rem;
-  color: var(--p-text-muted-color);
+  font-size: 0.8125rem;
+  color: #64748b;
   line-height: 1.5;
 }
 
@@ -1348,12 +1147,15 @@ function toErrorMessage(error: unknown, fallback: string) {
   flex-direction: column;
   gap: 0.25rem;
   min-width: 0;
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
+  color: #cbd5e1;
 }
 
 .segment-metric-label {
-  color: var(--p-text-muted-color);
-  font-size: 0.75rem;
+  color: #64748b;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 .segment-card-actions {
@@ -1363,8 +1165,179 @@ function toErrorMessage(error: unknown, fallback: string) {
   gap: 0.5rem;
 }
 
-.segment-paginator {
-  margin-top: 1rem;
+/* Player and timeline styles */
+.player-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(20rem, 0.95fr);
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.player-shell-dialog {
+  height: 100%;
+  margin-bottom: 0;
+  padding: 1rem;
+  grid-template-columns: 1fr;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.player-shell-segment {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.player-panel {
+  position: relative;
+  min-height: 20rem;
+  border-radius: 1rem;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top left, rgb(37 99 235 / 0.18), transparent 42%),
+    linear-gradient(160deg, rgb(15 23 42), rgb(17 24 39));
+  border: 1px solid rgb(148 163 184 / 0.25);
+}
+
+.player-panel-dialog {
+  min-height: 0;
+  height: 100%;
+}
+
+.video-player {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  height: 100%;
+  background: transparent;
+}
+
+.player-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  color: rgb(226 232 240);
+  text-align: center;
+}
+
+.timeline-card {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(148, 163, 184, 0.1);
+  background: rgba(15, 23, 42, 0.4);
+  backdrop-filter: blur(12px);
+}
+
+.timeline-card-dialog {
+  min-height: 0;
+  height: auto;
+}
+
+.segment-player-footer {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0 0.25rem 0.25rem;
+  color: #94a3b8;
+  font-size: 0.8125rem;
+}
+
+.segment-player-footer-text {
+  line-height: 1.5;
+}
+
+.timeline-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.timeline-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.timeline-subtitle {
+  margin-top: 0.25rem;
+  color: #94a3b8;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.timeline-stats {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.timeline-track-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.timeline-scale {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: #64748b;
+  font-size: 0.6875rem;
+  font-weight: 500;
+}
+
+.timeline-track {
+  position: relative;
+  height: 2.75rem;
+  cursor: pointer;
+}
+
+.timeline-track-background {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 1.25rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  overflow: hidden;
+}
+
+.timeline-marker {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.timeline-marker-line {
+  display: block;
+  width: 2px;
+  height: 2.1rem;
+  margin: 0 auto;
+  background: #3b82f6;
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.6);
+}
+
+.timeline-marker-dot {
+  display: block;
+  width: 0.75rem;
+  height: 0.75rem;
+  margin: -0.15rem auto 0;
+  border-radius: 999px;
+  background: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3);
+}
+
+.timeline-hint-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
 }
 
 .detail-grid {
@@ -1389,29 +1362,8 @@ function toErrorMessage(error: unknown, fallback: string) {
   color: var(--p-text-muted-color);
 }
 
-.content-table {
-  margin-top: 0.25rem;
-}
-
-.empty-message,
-.segment-empty {
-  padding: 1.5rem;
-  text-align: center;
-  color: var(--p-text-muted-color);
-}
-
-.mono-text {
-  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
-  font-size: 0.8125rem;
-}
-
-.ellipsis-text,
-.info-text {
-  display: inline-block;
-  max-width: 100%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.segment-paginator {
+  margin-top: 1rem;
 }
 
 @media (width <= 1024px) {
@@ -1428,7 +1380,6 @@ function toErrorMessage(error: unknown, fallback: string) {
 @media (width <= 768px) {
   .page-header,
   .page-actions,
-  .device-heading,
   .timeline-header,
   .timeline-stats,
   .segment-player-footer,
@@ -1444,6 +1395,10 @@ function toErrorMessage(error: unknown, fallback: string) {
 
   .segment-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .detail-grid {
+    gap: 0.75rem;
   }
 }
 </style>

@@ -1,18 +1,18 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import Form from '@primevue/forms/form'
-import Button from 'primevue/button'
-import Card from 'primevue/card'
-import Column from 'primevue/column'
-import DataTable from 'primevue/datatable'
-import Dialog from 'primevue/dialog'
-import InputText from 'primevue/inputtext'
-import Message from 'primevue/message'
-import Select from 'primevue/select'
-import Textarea from 'primevue/textarea'
-import { useConfirm } from 'primevue/useconfirm'
-import { useToast } from 'primevue/usetoast'
-import FlvPreviewPlayer from '../components/FlvPreviewPlayer.vue'
+import { onMounted, ref } from "vue";
+import Form from "@primevue/forms/form";
+import Button from "primevue/button";
+import Card from "primevue/card";
+import Column from "primevue/column";
+import DataTable from "primevue/datatable";
+import Dialog from "primevue/dialog";
+import InputText from "primevue/inputtext";
+import Message from "primevue/message";
+import Select from "primevue/select";
+import Textarea from "primevue/textarea";
+import { useConfirm } from "primevue/useconfirm";
+import { useToast } from "primevue/usetoast";
+import FlvPreviewPlayer from "../components/FlvPreviewPlayer.vue";
 import {
   addDevice,
   listDevices,
@@ -20,53 +20,53 @@ import {
   updateDevice,
   type DeviceItem,
   type DevicePayload,
-} from '../api/device'
+} from "../api/device";
 
-const toast = useToast()
-const confirm = useConfirm()
+const toast = useToast();
+const confirm = useConfirm();
 
-const loading = ref(false)
-const saving = ref(false)
-const devices = ref<DeviceItem[]>([])
-const dialogVisible = ref(false)
-const previewVisible = ref(false)
-const editingDevice = ref<DeviceItem | null>(null)
-const previewDevice = ref<DeviceItem | null>(null)
+const loading = ref(false);
+const saving = ref(false);
+const devices = ref<DeviceItem[]>([]);
+const dialogVisible = ref(false);
+const previewVisible = ref(false);
+const editingDevice = ref<DeviceItem | null>(null);
+const previewDevice = ref<DeviceItem | null>(null);
 const inputTypeOptions = [
-  { label: 'RTSP', value: 'rtsp' },
-  { label: 'RTMP', value: 'rtmp' },
-  { label: '文件', value: 'file' },
-  { label: 'V4L2', value: 'v4l2' },
-  { label: 'X11 Grab', value: 'x11grab' },
-  { label: 'Lavfi', value: 'lavfi' },
-]
+  { label: "RTSP", value: "rtsp" },
+  { label: "RTMP", value: "rtmp" },
+  { label: "文件", value: "file" },
+  { label: "V4L2", value: "v4l2" },
+  { label: "X11 Grab", value: "x11grab" },
+  { label: "Lavfi", value: "lavfi" },
+];
 
 const initialValues = {
-  name: '',
-  input_type: 'rtsp',
-  input_value: '',
-  description: '',
-}
+  name: "",
+  input_type: "rtsp",
+  input_value: "",
+  description: "",
+};
 
 onMounted(() => {
-  void loadDevices()
-})
+  void loadDevices();
+});
 
 function resolver({ values }: { values: Record<string, unknown> }) {
-  const name = String(values.name ?? '').trim()
-  const inputType = String(values.input_type ?? '').trim()
-  const inputValue = String(values.input_value ?? '').trim()
-  const description = String(values.description ?? '').trim()
-  const errors: Record<string, { message: string }[]> = {}
+  const name = String(values.name ?? "").trim();
+  const inputType = String(values.input_type ?? "").trim();
+  const inputValue = String(values.input_value ?? "").trim();
+  const description = String(values.description ?? "").trim();
+  const errors: Record<string, { message: string }[]> = {};
 
   if (!name) {
-    errors.name = [{ message: '请输入设备名称' }]
+    errors.name = [{ message: "请输入设备名称" }];
   }
   if (!inputType) {
-    errors.input_type = [{ message: '请输入输入类型' }]
+    errors.input_type = [{ message: "请输入输入类型" }];
   }
   if (!inputValue) {
-    errors.input_value = [{ message: '请输入输入地址或标识' }]
+    errors.input_value = [{ message: "请输入输入地址或标识" }];
   }
 
   return {
@@ -77,169 +77,174 @@ function resolver({ values }: { values: Record<string, unknown> }) {
       description,
     },
     errors,
-  }
+  };
 }
 
 async function loadDevices() {
-  loading.value = true
+  loading.value = true;
   try {
-    devices.value = await listDevices()
+    devices.value = await listDevices();
   } catch (error) {
     toast.add({
-      severity: 'error',
-      summary: '加载失败',
-      detail: toErrorMessage(error, '设备列表加载失败'),
+      severity: "error",
+      summary: "加载失败",
+      detail: toErrorMessage(error, "设备列表加载失败"),
       life: 2500,
-    })
+    });
   } finally {
-    loading.value = false
+    loading.value = false;
   }
 }
 
 function openCreateDialog() {
-  editingDevice.value = null
-  dialogVisible.value = true
+  editingDevice.value = null;
+  dialogVisible.value = true;
 }
 
 function openEditDialog(device: DeviceItem) {
-  editingDevice.value = device
-  dialogVisible.value = true
+  editingDevice.value = device;
+  dialogVisible.value = true;
 }
 
 function openPreview(device: DeviceItem) {
-  previewDevice.value = device
-  previewVisible.value = true
+  previewDevice.value = device;
+  previewVisible.value = true;
 }
 
 function closePreview() {
-  previewVisible.value = false
+  previewVisible.value = false;
 }
 
 async function onSubmit(event: { valid: boolean; values: Record<string, unknown> }) {
   if (!event.valid) {
-    return
+    return;
   }
 
   const payload: DevicePayload = {
-    name: String(event.values.name ?? ''),
-    input_type: String(event.values.input_type ?? ''),
-    input_value: String(event.values.input_value ?? ''),
-    description: String(event.values.description ?? ''),
-  }
+    name: String(event.values.name ?? ""),
+    input_type: String(event.values.input_type ?? ""),
+    input_value: String(event.values.input_value ?? ""),
+    description: String(event.values.description ?? ""),
+  };
 
-  saving.value = true
+  saving.value = true;
   try {
     if (editingDevice.value) {
-      await updateDevice(editingDevice.value.id, payload)
+      await updateDevice(editingDevice.value.id, payload);
       toast.add({
-        severity: 'success',
-        summary: '更新成功',
+        severity: "success",
+        summary: "更新成功",
         detail: `设备 ${payload.name} 已更新`,
         life: 2000,
-      })
+      });
     } else {
-      await addDevice(payload)
+      await addDevice(payload);
       toast.add({
-        severity: 'success',
-        summary: '添加成功',
+        severity: "success",
+        summary: "添加成功",
         detail: `设备 ${payload.name} 已添加`,
         life: 2000,
-      })
+      });
     }
-    dialogVisible.value = false
-    await loadDevices()
+    dialogVisible.value = false;
+    await loadDevices();
   } catch (error) {
     toast.add({
-      severity: 'error',
-      summary: '保存失败',
-      detail: toErrorMessage(error, '设备保存失败'),
+      severity: "error",
+      summary: "保存失败",
+      detail: toErrorMessage(error, "设备保存失败"),
       life: 2500,
-    })
+    });
   } finally {
-    saving.value = false
+    saving.value = false;
   }
 }
 
 function confirmDelete(device: DeviceItem) {
   confirm.require({
-    header: '删除设备',
-    message: `确认删除设备“${device.name}”吗？`,
-    icon: 'pi pi-exclamation-triangle',
-    rejectLabel: '取消',
-    acceptLabel: '删除',
-    acceptClass: 'p-button-danger',
+    header: "删除设备",
+    message: `确认删除设备“${device.name}"吗？`,
+    icon: "pi pi-exclamation-triangle",
+    rejectLabel: "取消",
+    acceptLabel: "删除",
+    acceptClass: "p-button-danger",
     accept: async () => {
       try {
-        await removeDevice(device.id)
+        await removeDevice(device.id);
         toast.add({
-          severity: 'success',
-          summary: '删除成功',
+          severity: "success",
+          summary: "删除成功",
           detail: `设备 ${device.name} 已删除`,
           life: 2000,
-        })
-        await loadDevices()
+        });
+        await loadDevices();
       } catch (error) {
         toast.add({
-          severity: 'error',
-          summary: '删除失败',
-          detail: toErrorMessage(error, '设备删除失败'),
+          severity: "error",
+          summary: "删除失败",
+          detail: toErrorMessage(error, "设备删除失败"),
           life: 2500,
-        })
+        });
       }
     },
-  })
+  });
 }
 
 function toErrorMessage(error: unknown, fallback: string) {
   if (error instanceof Error && error.message) {
-    return error.message
+    return error.message;
   }
-  return fallback
+  return fallback;
 }
 
 function formatTime(value: string) {
-  return new Date(value).toLocaleString('zh-CN', { hour12: false })
+  return new Date(value).toLocaleString("zh-CN", { hour12: false });
 }
 
 function buildFlvUrl(deviceId: string) {
-  return `http://127.0.0.1:8553/live/${encodeURIComponent(deviceId)}.live.flv`
+  return `http://127.0.0.1:8553/live/${encodeURIComponent(deviceId)}.live.flv`;
 }
 
 async function copyText(value: string, label: string) {
   try {
-    await navigator.clipboard.writeText(value)
+    await navigator.clipboard.writeText(value);
     toast.add({
-      severity: 'success',
-      summary: '复制成功',
+      severity: "success",
+      summary: "复制成功",
       detail: `${label}已复制到剪贴板`,
       life: 1800,
-    })
+    });
   } catch (error) {
     toast.add({
-      severity: 'error',
-      summary: '复制失败',
+      severity: "error",
+      summary: "复制失败",
       detail: toErrorMessage(error, `${label}复制失败`),
       life: 2200,
-    })
+    });
   }
 }
 </script>
 
 <template>
   <div class="content-section">
-    <Card class="content-card">
-      <template #title>
-        <div class="page-header">
-          <div>
-            <div>设备管理</div>
-            <div class="page-subtitle">从后台接口读取设备列表，并支持增删改查与实时预览。</div>
-          </div>
-          <div class="page-actions">
-            <Button icon="pi pi-refresh" text aria-label="刷新" @click="loadDevices" />
-            <Button icon="pi pi-plus" label="添加设备" @click="openCreateDialog" />
-          </div>
-        </div>
-      </template>
+    <div class="page-header">
+      <div class="header-content">
+        <h1 class="page-title">设备管理</h1>
+        <p class="page-subtitle">实时监控和管理接入的 NVR 设备</p>
+      </div>
+      <div class="page-actions">
+        <Button icon="pi pi-refresh" text aria-label="刷新" @click="loadDevices" />
+        <Button icon="pi pi-plus" label="添加设备" @click="openCreateDialog" />
+      </div>
+    </div>
+
+    <div v-if="!loading && !devices.length" class="empty-state device-empty-state">
+      <i class="pi pi-video empty-state-icon" />
+      <p class="empty-state-text">暂无设备数据</p>
+      <p class="device-empty-state-hint">点击右上角“添加设备”开始接入</p>
+    </div>
+
+    <Card v-else class="data-card">
       <template #content>
         <DataTable
           :value="devices"
@@ -249,12 +254,16 @@ async function copyText(value: string, label: string) {
           class="content-table"
           responsive-layout="scroll"
         >
-          <Column field="name" header="设备名称" :style="{ width: '12rem', minWidth: '12rem', maxWidth: '12rem' }">
+          <Column
+            field="name"
+            header="设备名称"
+            style="width: 12rem; min-width: 12rem; max-width: 12rem"
+          >
             <template #body="{ data }">
               <span class="single-line-text" :title="data.name">{{ data.name }}</span>
             </template>
           </Column>
-          <Column field="id" header="设备 ID" :style="{ width: '17rem' }">
+          <Column field="id" header="设备 ID" style="width: 17rem">
             <template #body="{ data }">
               <div class="copy-cell copy-cell-id" :title="data.id">
                 <span class="mono-text ellipsis-text">{{ data.id }}</span>
@@ -269,12 +278,16 @@ async function copyText(value: string, label: string) {
               </div>
             </template>
           </Column>
-          <Column field="input_type" header="输入类型" :style="{ width: '8rem', minWidth: '8rem', maxWidth: '8rem' }">
+          <Column
+            field="input_type"
+            header="输入类型"
+            style="width: 8rem; min-width: 8rem; max-width: 8rem"
+          >
             <template #body="{ data }">
               <span class="single-line-text" :title="data.input_type">{{ data.input_type }}</span>
             </template>
           </Column>
-          <Column field="input_value" header="输入地址/标识" :style="{ width: '24rem' }">
+          <Column field="input_value" header="输入地址/标识" style="width: 24rem">
             <template #body="{ data }">
               <div class="copy-cell copy-cell-input" :title="data.input_value">
                 <span class="mono-text ellipsis-text">{{ data.input_value }}</span>
@@ -300,7 +313,7 @@ async function copyText(value: string, label: string) {
             class="action-column"
             frozen
             align-frozen="right"
-            :style="{ width: '9rem', minWidth: '9rem', maxWidth: '9rem' }"
+            style="width: 9rem; min-width: 9rem; max-width: 9rem"
           >
             <template #body="{ data }">
               <div class="row-actions">
@@ -330,9 +343,6 @@ async function copyText(value: string, label: string) {
               </div>
             </template>
           </Column>
-          <template #empty>
-            <div class="empty-message">暂无设备数据，点击右上角“添加设备”开始接入。</div>
-          </template>
         </DataTable>
       </template>
     </Card>
@@ -371,7 +381,12 @@ async function copyText(value: string, label: string) {
               placeholder="请选择输入类型"
               :invalid="$form.input_type?.invalid"
             />
-            <Message v-if="$form.input_type?.invalid" severity="error" size="small" variant="simple">
+            <Message
+              v-if="$form.input_type?.invalid"
+              severity="error"
+              size="small"
+              variant="simple"
+            >
               {{ $form.input_type.error?.message }}
             </Message>
           </div>
@@ -398,7 +413,11 @@ async function copyText(value: string, label: string) {
 
         <div class="dialog-actions">
           <Button type="button" label="取消" text @click="dialogVisible = false" />
-          <Button type="submit" :label="editingDevice ? '保存修改' : '确认添加'" :loading="saving" />
+          <Button
+            type="submit"
+            :label="editingDevice ? '保存修改' : '确认添加'"
+            :loading="saving"
+          />
         </div>
       </Form>
     </Dialog>
@@ -414,53 +433,36 @@ async function copyText(value: string, label: string) {
       <div class="preview-shell">
         <div class="preview-meta">
           <div class="preview-title">{{ previewDevice?.name }}</div>
-          <div class="preview-url">{{ previewDevice?.flv_url || (previewDevice ? buildFlvUrl(previewDevice.id) : '') }}</div>
+          <div class="preview-url">
+            {{ previewDevice?.flv_url || (previewDevice ? buildFlvUrl(previewDevice.id) : "") }}
+          </div>
         </div>
-        <FlvPreviewPlayer :url="previewDevice?.flv_url || (previewDevice ? buildFlvUrl(previewDevice.id) : '')" />
+        <FlvPreviewPlayer
+          :url="previewDevice?.flv_url || (previewDevice ? buildFlvUrl(previewDevice.id) : '')"
+        />
       </div>
     </Dialog>
   </div>
 </template>
 
 <style scoped>
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
+/* Page-specific styles - matching DashboardView style */
+
+.data-card {
+  animation: slideUp 0.5s ease-out 0.1s backwards;
 }
 
-.page-subtitle {
-  margin-top: 0.25rem;
-  font-size: 0.875rem;
-  color: var(--p-text-muted-color);
+:deep(.data-card .p-card-content) {
+  padding: 0;
 }
 
-.page-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
+:deep(.content-table) {
+  background: transparent;
 }
 
-.content-table {
-  margin-top: 0.5rem;
-}
-
-.empty-message {
-  padding: 2rem;
-  text-align: center;
-  color: var(--p-text-muted-color);
-}
-
-.mono-text {
-  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
-  font-size: 0.8125rem;
-}
-
-.single-line-text {
-  display: inline-block;
-  max-width: 100%;
-  white-space: nowrap;
+:deep(.content-table .p-datatable-table-container) {
+  border-radius: 0.75rem;
+  overflow: hidden;
 }
 
 .copy-cell {
@@ -477,14 +479,6 @@ async function copyText(value: string, label: string) {
 
 .copy-cell-input {
   max-width: 22rem;
-}
-
-.ellipsis-text {
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .copy-button {
@@ -511,27 +505,11 @@ async function copyText(value: string, label: string) {
   gap: 1rem;
 }
 
-.field-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.field label {
-  font-size: 0.875rem;
-  font-weight: 600;
-}
-
 .dialog-actions {
   display: flex;
   justify-content: flex-end;
   gap: 0.5rem;
+  margin-top: 0.5rem;
 }
 
 .preview-shell {
@@ -548,25 +526,25 @@ async function copyText(value: string, label: string) {
 }
 
 .preview-title {
-  font-size: 1rem;
-  font-weight: 700;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: #e2e8f0;
 }
 
 .preview-url {
-  font-size: 0.875rem;
-  color: var(--p-text-muted-color);
+  font-size: 0.75rem;
+  color: #64748b;
   word-break: break-all;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
-@media (width <= 768px) {
-  .page-header,
-  .page-actions,
-  .field-grid {
-    display: flex;
-    flex-direction: column;
-  }
 
-  .page-actions {
-    align-items: stretch;
-  }
+.device-empty-state {
+  min-height: 14rem;
+}
+
+.device-empty-state-hint {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: #94a3b8;
 }
 </style>
