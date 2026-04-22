@@ -13,3 +13,5 @@ output_encoded_auto_hw_fallback.h264
 nvr.db
 nvr.db-shm
 nvr.db-wal
+
+zlmediakit*

@@ -31,7 +31,8 @@ cargo test -p ffmpeg-bus
 # Format code
 cargo fmt
 
-# Build frontend (required before cargo build if dashboard changed)
+# Build frontend (automatically built by nvr-dashboard build.rs)
+# Manual build if needed:
 cd nvr-dashboard/app && npm ci && npm run build
 
 # Frontend dev server
@@ -58,7 +59,7 @@ cd nvr-dashboard/app && npm run type-check
 | `nvr` | Main app — REST API (Axum), pipeline lifecycle, ZLMediaKit integration |
 | `ffmpeg-bus` | Media engine — input demux, decoder, encoder, muxer wired via async channels |
 | `nvr-db` | Database layer — SQLite/Turso with embedded SQL migrations, KV store |
-| `nvr-dashboard` | Vue 3 SPA embedded via `rust-embed`, served at `/nvr/` |
+| `nvr-dashboard` | Vue 3 SPA embedded via `rust-embed`, served at `/nvr/`. Frontend is automatically built by `build.rs` when `app/dist` is missing or source files change. |
 
 **Runtime data flow:**
 
@@ -82,7 +83,16 @@ REST API request → Handler → Manager (global RwLock<HashMap>) → Pipe → f
 ## Conventions
 
 - **Rust:** `cargo fmt`, snake_case for modules/files/functions, Rust edition 2024
-- **Tests:** colocated as `*_test.rs` files (e.g. `bus_test.rs`, `pipe_test.rs`)
+- **Tests:** colocated as `*_test.rs` files alongside source files. For example:
+  - `ffmpeg-bus/src/bus.rs` → `ffmpeg-bus/src/bus_test.rs`
+  - `nvr/src/media/pipe.rs` → `nvr/src/media/pipe_test.rs`
+  - Keep test files in the same directory as the code they test, using the `_test.rs` suffix
+  - Import test modules at the end of source files using:
+    ```rust
+    #[cfg(test)]
+    #[path = "module_name_test.rs"]
+    mod module_name_test;
+    ```
 - **Frontend:** TypeScript, Vue Composition API, PascalCase component filenames, PrimeVue UI library
 - **Commits:** Conventional Commits format (e.g. `fix(rust-check): update cargo test command`)
 - **Dashboard build output** (`nvr-dashboard/app/dist/`) is embedded into the Rust binary via `rust-embed`
