@@ -7,6 +7,7 @@ import Aura from '@primeuix/themes/aura'
 import App from './App.vue'
 import router from './router'
 import './styles/content-card.css'
+import './styles/global-dark-theme.css'
 
 const app = createApp(App)
 

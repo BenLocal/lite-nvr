@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import Menu from 'primevue/menu'
 import Button from 'primevue/button'
+import Avatar from 'primevue/avatar'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import { useAuth } from '../composables/useAuth'
@@ -18,9 +19,9 @@ const baseUrl = import.meta.env.BASE_URL
 const logoUrl = ref(`${baseUrl}logo.svg`)
 
 const menuItems = ref([
-  { label: '首页', route: '/', icon: 'pi pi-fw pi-home' },
-  { label: '设备管理', route: '/device', icon: 'pi pi-fw pi-video' },
-  { label: '回放', route: '/playback', icon: 'pi pi-fw pi-history' },
+  { label: '概览', route: '/', icon: 'pi pi-th-large' },
+  { label: '设备', route: '/device', icon: 'pi pi-video' },
+  { label: '回放', route: '/playback', icon: 'pi pi-play-circle' },
 ])
 
 const userMenuItems = ref([
@@ -87,78 +88,50 @@ function onLogoutRequest() {
     <header class="layout-topbar">
       <div class="topbar-left">
         <Button
-            type="button"
-            icon="pi pi-bars"
-            text
-            rounded
-            class="topbar-menu-button"
-            aria-label="切换侧边栏"
-            @click="toggleSidebar"
-          />
+          type="button"
+          icon="pi pi-bars"
+          text
+          class="topbar-menu-button"
+          aria-label="切换侧边栏"
+          @click="toggleSidebar"
+        />
         <router-link to="/" class="topbar-brand">
-          <img
-            v-if="logoUrl"
-            :src="logoUrl"
-            alt="NVR"
-            class="topbar-logo-img"
-            @error="onLogoError"
-          />
-          <span v-else class="topbar-logo" aria-hidden="true"></span>
-          <span class="topbar-title">NVR 控制台</span>
+          <div class="topbar-logo">
+            <i class="pi pi-video" />
+          </div>
+          <span class="topbar-title">NVR Console</span>
         </router-link>
       </div>
 
       <div class="topbar-right">
+        <div class="topbar-status">
+          <span class="status-indicator status-online"></span>
+          <span class="status-text">系统运行中</span>
+        </div>
         <Button
-            type="button"
-            icon="pi pi-sun"
-            text
-            rounded
-            class="topbar-icon-button"
-            aria-label="主题"
-          />
-          <Button
-            type="button"
-            icon="pi pi-comments"
-            text
-            rounded
-            class="topbar-icon-button"
-            aria-label="消息"
-          />
-          <Button
-            type="button"
-            icon="pi pi-calendar"
-            text
-            rounded
-            class="topbar-icon-button"
-            aria-label="日历"
-          />
-          <Button
-            type="button"
-            icon="pi pi-envelope"
-            text
-            rounded
-            class="topbar-icon-button"
-            aria-label="邮件"
-          />
-          <Button
-            type="button"
-            icon="pi pi-user"
-            text
-            rounded
-            class="topbar-icon-button"
-            aria-label="用户菜单"
-            @click="toggleUserMenu"
-          />
+          type="button"
+          icon="pi pi-bell"
+          text
+          severity="secondary"
+          class="topbar-icon-button"
+          aria-label="通知"
+        />
+        <Button
+          type="button"
+          text
+          severity="secondary"
+          class="topbar-user-button"
+          aria-label="用户菜单"
+          @click="toggleUserMenu"
+        >
+          <Avatar icon="pi pi-user" shape="circle" size="small" />
+        </Button>
         <Menu ref="userMenu" :model="userMenuItems" :popup="true" />
       </div>
     </header>
 
     <aside :class="sidebarClass">
       <nav class="layout-menu">
-        <div class="layout-menu-section">
-          <span class="layout-menu-section-title">主导航</span>
-        </div>
         <ul class="layout-menu-list">
           <li v-for="item in menuItems" :key="item.route" class="layout-menuitem">
             <router-link
@@ -166,7 +139,7 @@ function onLogoutRequest() {
               class="layout-menuitem-link"
               :class="{ 'active-route': $route.path === item.route || $route.path.startsWith(`${item.route}/`) }"
             >
-              <span :class="['layout-menuitem-icon', item.icon]" />
+              <i :class="['layout-menuitem-icon', item.icon]" />
               <span class="layout-menuitem-text">{{ item.label }}</span>
             </router-link>
           </li>
@@ -183,138 +156,171 @@ function onLogoutRequest() {
 </template>
 
 <style scoped>
-/* 顶栏、侧栏、内容区统一使用同一间距，与参考图一致 */
 .layout-wrapper {
-  --layout-gap: 1rem;
-  --layout-sidebar-width: 14rem;
-  --layout-topbar-height: 3rem;
+  --layout-sidebar-width: 4rem;
+  --layout-topbar-height: 3.5rem;
+  --layout-gap: 0;
 
   min-height: 100vh;
-  background-color: var(--p-surface-50);
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'SF Pro Display', sans-serif;
 }
 
+/* Topbar */
 .layout-topbar {
   position: fixed;
   left: 0;
   top: 0;
   width: 100%;
   height: var(--layout-topbar-height);
-  padding: 0 var(--layout-gap);
+  padding: 0 1.25rem;
   z-index: 997;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background-color: var(--p-content-background);
-  border-bottom: 1px solid var(--p-content-border-color);
-  transition: left 0.2s;
+  background: rgba(15, 23, 42, 0.8);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 
 .topbar-left {
   display: flex;
   align-items: center;
-  gap: 0.375rem;
+  gap: 1rem;
 }
 
 .topbar-menu-button {
   width: 2rem;
   height: 2rem;
-  min-width: 2rem;
+  color: #94a3b8;
+  transition: all 0.2s;
+}
+
+.topbar-menu-button:hover {
+  color: #e2e8f0;
+  background: rgba(148, 163, 184, 0.1);
 }
 
 .topbar-brand {
   display: flex;
   align-items: center;
-  gap: 0.375rem;
+  gap: 0.75rem;
   text-decoration: none;
-  color: var(--p-text-color);
-  font-weight: 500;
+  color: #e2e8f0;
+  transition: opacity 0.2s;
+}
+
+.topbar-brand:hover {
+  opacity: 0.8;
 }
 
 .topbar-logo {
-  display: inline-block;
-  width: 1.5rem;
-  height: 1.5rem;
-  min-width: 1.5rem;
-  min-height: 1.5rem;
-  border-radius: var(--p-content-border-radius, 4px);
-  background-color: var(--p-primary-color);
-  flex-shrink: 0;
-}
-
-.topbar-logo-img {
-  display: block;
-  width: 1.5rem;
-  height: 1.5rem;
-  min-width: 1.5rem;
-  min-height: 1.5rem;
-  object-fit: contain;
-  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.5rem;
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+  font-size: 1rem;
+  color: white;
 }
 
 .topbar-title {
-  font-size: 1.125rem;
-  margin: 0;
-  color: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0.025em;
+  color: #e2e8f0;
 }
 
 .topbar-right {
   display: flex;
   align-items: center;
-  gap: 0.125rem;
+  gap: 0.5rem;
+}
+
+.topbar-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.75rem;
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+  border-radius: 0.375rem;
+  margin-right: 0.5rem;
+}
+
+.status-indicator {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.status-online {
+  background: #10b981;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.status-text {
+  font-size: 0.75rem;
+  color: #10b981;
+  font-weight: 500;
 }
 
 .topbar-icon-button {
   width: 2rem;
   height: 2rem;
-  min-width: 2rem;
-  color: var(--p-text-color);
+  color: #94a3b8;
+  transition: all 0.2s;
 }
 
 .topbar-icon-button:hover {
-  background-color: var(--p-content-hover-background);
-  color: var(--p-text-color);
+  color: #e2e8f0;
+  background: rgba(148, 163, 184, 0.1);
 }
 
-/* Sidebar - 与 main-container 同一垂直范围：上/下各留 --layout-gap，与内容区对齐 */
+.topbar-user-button {
+  padding: 0.25rem;
+  transition: all 0.2s;
+}
+
+.topbar-user-button:hover {
+  background: rgba(148, 163, 184, 0.1);
+}
+
+/* Sidebar */
 .layout-sidebar {
   position: fixed;
   width: var(--layout-sidebar-width);
-  left: var(--layout-gap);
-  top: calc(var(--layout-topbar-height) + var(--layout-gap));
-  height: calc(100vh - var(--layout-topbar-height) - 2 * var(--layout-gap));
+  left: 0;
+  top: var(--layout-topbar-height);
+  height: calc(100vh - var(--layout-topbar-height));
   z-index: 996;
-  overflow-y: auto;
-  background-color: var(--p-content-background);
-  border-radius: var(--p-content-border-radius, 4px);
-  padding: var(--layout-gap) var(--layout-gap);
-  box-shadow:
-    0 1px 3px rgb(0 0 0 / 4%),
-    0 0 2px rgb(0 0 0 / 6%);
-  border: 1px solid var(--p-content-border-color);
-  transition: transform 0.2s, left 0.2s;
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(12px);
+  border-right: 1px solid rgba(148, 163, 184, 0.1);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
 }
 
 .layout-sidebar-collapsed {
   transform: translateX(-100%);
-  left: 0;
 }
 
 .layout-menu {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.layout-menu-section {
-  margin: 0 0 0.5rem;
-}
-
-.layout-menu-section-title {
-  font-size: 0.75rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  color: var(--p-text-color);
-  letter-spacing: 0.05em;
+  padding: 0.5rem 0;
 }
 
 .layout-menu-list {
@@ -329,95 +335,99 @@ function onLogoutRequest() {
 
 .layout-menuitem-link {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  padding: 0.5rem 0.75rem;
-  color: var(--p-text-color);
+  justify-content: center;
+  gap: 0.25rem;
+  padding: 0.875rem 0.5rem;
+  color: #94a3b8;
   text-decoration: none;
-  border-radius: var(--p-content-border-radius, 4px);
-  transition: background-color 0.2s;
+  transition: all 0.2s;
   cursor: pointer;
-  font-size: 0.875rem;
+  position: relative;
+  border-left: 3px solid transparent;
 }
 
 .layout-menuitem-link:hover {
-  background-color: var(--p-content-hover-background);
+  background: rgba(59, 130, 246, 0.1);
+  color: #60a5fa;
+  border-left-color: rgba(59, 130, 246, 0.3);
 }
 
 .layout-menuitem-link.active-route {
-  font-weight: 700;
-  color: var(--p-primary-color);
-  background-color: var(--p-content-hover-background);
+  color: #3b82f6;
+  background: rgba(59, 130, 246, 0.15);
+  border-left-color: #3b82f6;
+}
+
+.layout-menuitem-link.active-route::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 60%;
+  background: linear-gradient(180deg, transparent, #3b82f6, transparent);
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.6);
 }
 
 .layout-menuitem-icon {
-  margin-right: 0.5rem;
-  font-size: 0.875rem;
+  font-size: 1.25rem;
   flex-shrink: 0;
 }
 
 .layout-menuitem-text {
+  font-size: 0.625rem;
   font-weight: 500;
+  text-align: center;
+  letter-spacing: 0.025em;
+  text-transform: uppercase;
 }
 
-/* Main content - 与 sidebar 同一垂直范围：上/下各留 --layout-gap，与 aside 对齐 */
+/* Main content */
 .layout-main-container {
-  margin-left: calc(var(--layout-gap) + var(--layout-sidebar-width) + var(--layout-gap));
-  margin-top: calc(var(--layout-topbar-height) + var(--layout-gap));
-  margin-bottom: var(--layout-gap);
-  height: calc(100vh - var(--layout-topbar-height) - 2 * var(--layout-gap));
-  padding: 0 var(--layout-gap);
-  display: flex;
-  flex-direction: column;
-  transition: margin-left 0.2s;
+  margin-left: var(--layout-sidebar-width);
+  margin-top: var(--layout-topbar-height);
+  min-height: calc(100vh - var(--layout-topbar-height));
+  padding: 1.5rem;
+  transition: margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .layout-main-container.layout-sidebar-inactive {
   margin-left: 0;
-  padding-left: var(--layout-gap);
 }
 
 .layout-main {
-  flex: 1;
-  padding-bottom: var(--layout-gap);
-  overflow: auto;
-  min-height: 0;
+  max-width: 1400px;
+  margin: 0 auto;
 }
 
-/* 大屏下内容区最大宽度，避免过宽 */
-@media (width >= 1200px) {
-  .layout-main-container {
-    max-width: 1504px;
-  }
-}
-
-@media (width <= 991px) {
-  .layout-wrapper {
-    --layout-gap: 0.75rem;
-  }
-
+/* Responsive */
+@media (width <= 768px) {
   .layout-sidebar {
-    left: 0;
-    top: 0;
-    height: 100vh;
-    border-radius: 0;
-    border-left: none;
-    box-shadow: 2px 0 8px rgb(0 0 0 / 15%);
+    width: 16rem;
+    box-shadow: 2px 0 12px rgba(0, 0, 0, 0.5);
   }
 
-  .layout-sidebar-collapsed {
-    transform: translateX(-100%);
+  .layout-menuitem-link {
+    flex-direction: row;
+    justify-content: flex-start;
+    padding: 0.75rem 1rem;
+    gap: 0.75rem;
+  }
+
+  .layout-menuitem-text {
+    font-size: 0.875rem;
+    text-transform: none;
   }
 
   .layout-main-container {
     margin-left: 0;
-    margin-top: calc(var(--layout-topbar-height) + var(--layout-gap));
-    margin-bottom: var(--layout-gap);
-    height: calc(100vh - var(--layout-topbar-height) - 2 * var(--layout-gap));
-    padding: 0 var(--layout-gap);
   }
 
-  .layout-main-container.layout-sidebar-inactive {
-    padding-left: var(--layout-gap);
+  .topbar-status {
+    display: none;
   }
 }
 </style>
