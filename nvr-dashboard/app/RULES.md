@@ -46,7 +46,8 @@
 
 ## 6. Shared View Style Reuse
 
-- For repeated page patterns (for example content card container, title/subtitle/content spacing), extract shared styles into a common stylesheet under `src/styles`.
+- For repeated page patterns (for example content card container, title/subtitle/content spacing), extract shared styles into `src/styles/global-dark-theme.css`.
+- For PrimeVue component styling, prefer `src/styles/prime-preset.ts` theme tokens over raw `.p-*` CSS overrides.
 - Views should keep only page-specific styles; avoid copying the same card/layout style blocks across multiple view files.
 - Prefer PrimeVue theme CSS variables (for example `var(--p-content-border-color)`) as the single source of truth. Avoid mixing literal fallback colors unless compatibility explicitly requires it.
 
@@ -58,7 +59,7 @@
 
 ## 8. Implementation Templates
 
-- Shared content-card style template (`src/styles/content-card.css`):
+- Shared content-card style template (`src/styles/global-dark-theme.css`):
 
 ```css
 .content-section {

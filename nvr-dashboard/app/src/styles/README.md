@@ -10,7 +10,8 @@ This folder stores shared frontend styles for reusable view patterns.
 
 ## Current Shared Files
 
-- `content-card.css`: shared card container/title/subtitle/content spacing styles used by dashboard-like pages.
+- `global-dark-theme.css`: app layout primitives, shared card classes, empty states, typography helpers, and other cross-view utility styles.
+- `prime-preset.ts`: PrimeVue component theme preset for component-level tokens and shared component styling.
 
 ## Usage
 
@@ -18,7 +19,8 @@ This folder stores shared frontend styles for reusable view patterns.
 
 ```ts
 // src/main.ts
-import './styles/content-card.css'
+import NvrPrimePreset from './styles/prime-preset'
+import './styles/global-dark-theme.css'
 ```
 
 2. In view files, use shared class names and keep only page-specific styles:

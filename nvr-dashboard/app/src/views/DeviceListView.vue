@@ -11,7 +11,6 @@ import Message from "primevue/message";
 import Select from "primevue/select";
 import Textarea from "primevue/textarea";
 import { useConfirm } from "primevue/useconfirm";
-import { useToast } from "primevue/usetoast";
 import FlvPreviewPlayer from "../components/FlvPreviewPlayer.vue";
 import {
   addDevice,
@@ -21,8 +20,9 @@ import {
   type DeviceItem,
   type DevicePayload,
 } from "../api/device";
+import { useAppToast } from "../utils/toast";
 
-const toast = useToast();
+const appToast = useAppToast();
 const confirm = useConfirm();
 
 const loading = ref(false);
@@ -85,12 +85,7 @@ async function loadDevices() {
   try {
     devices.value = await listDevices();
   } catch (error) {
-    toast.add({
-      severity: "error",
-      summary: "加载失败",
-      detail: toErrorMessage(error, "设备列表加载失败"),
-      life: 2500,
-    });
+    appToast.errorFrom("加载失败", error, "设备列表加载失败");
   } finally {
     loading.value = false;
   }
@@ -131,30 +126,15 @@ async function onSubmit(event: { valid: boolean; values: Record<string, unknown>
   try {
     if (editingDevice.value) {
       await updateDevice(editingDevice.value.id, payload);
-      toast.add({
-        severity: "success",
-        summary: "更新成功",
-        detail: `设备 ${payload.name} 已更新`,
-        life: 2000,
-      });
+      appToast.success("更新成功", `设备 ${payload.name} 已更新`);
     } else {
       await addDevice(payload);
-      toast.add({
-        severity: "success",
-        summary: "添加成功",
-        detail: `设备 ${payload.name} 已添加`,
-        life: 2000,
-      });
+      appToast.success("添加成功", `设备 ${payload.name} 已添加`);
     }
     dialogVisible.value = false;
     await loadDevices();
   } catch (error) {
-    toast.add({
-      severity: "error",
-      summary: "保存失败",
-      detail: toErrorMessage(error, "设备保存失败"),
-      life: 2500,
-    });
+    appToast.errorFrom("保存失败", error, "设备保存失败");
   } finally {
     saving.value = false;
   }
@@ -171,30 +151,13 @@ function confirmDelete(device: DeviceItem) {
     accept: async () => {
       try {
         await removeDevice(device.id);
-        toast.add({
-          severity: "success",
-          summary: "删除成功",
-          detail: `设备 ${device.name} 已删除`,
-          life: 2000,
-        });
+        appToast.success("删除成功", `设备 ${device.name} 已删除`);
         await loadDevices();
       } catch (error) {
-        toast.add({
-          severity: "error",
-          summary: "删除失败",
-          detail: toErrorMessage(error, "设备删除失败"),
-          life: 2500,
-        });
+        appToast.errorFrom("删除失败", error, "设备删除失败");
       }
     },
   });
-}
-
-function toErrorMessage(error: unknown, fallback: string) {
-  if (error instanceof Error && error.message) {
-    return error.message;
-  }
-  return fallback;
 }
 
 function formatTime(value: string) {
@@ -208,25 +171,15 @@ function buildFlvUrl(deviceId: string) {
 async function copyText(value: string, label: string) {
   try {
     await navigator.clipboard.writeText(value);
-    toast.add({
-      severity: "success",
-      summary: "复制成功",
-      detail: `${label}已复制到剪贴板`,
-      life: 1800,
-    });
+    appToast.success("复制成功", `${label}已复制到剪贴板`, 1800);
   } catch (error) {
-    toast.add({
-      severity: "error",
-      summary: "复制失败",
-      detail: toErrorMessage(error, `${label}复制失败`),
-      life: 2200,
-    });
+    appToast.errorFrom("复制失败", error, `${label}复制失败`, 2200);
   }
 }
 </script>
 
 <template>
-  <div class="content-section">
+  <div class="content-section device-page">
     <div class="page-header">
       <div class="header-content">
         <h1 class="page-title">设备管理</h1>
@@ -251,6 +204,7 @@ async function copyText(value: string, label: string) {
           :loading="loading"
           striped-rows
           scrollable
+          scroll-height="flex"
           class="content-table"
           responsive-layout="scroll"
         >
@@ -263,7 +217,7 @@ async function copyText(value: string, label: string) {
               <span class="single-line-text" :title="data.name">{{ data.name }}</span>
             </template>
           </Column>
-          <Column field="id" header="设备 ID" style="width: 17rem">
+          <Column field="id" header="设备 ID" style="width: 17rem; min-width: 17rem">
             <template #body="{ data }">
               <div class="copy-cell copy-cell-id" :title="data.id">
                 <span class="mono-text ellipsis-text">{{ data.id }}</span>
@@ -287,7 +241,7 @@ async function copyText(value: string, label: string) {
               <span class="single-line-text" :title="data.input_type">{{ data.input_type }}</span>
             </template>
           </Column>
-          <Column field="input_value" header="输入地址/标识" style="width: 24rem">
+          <Column field="input_value" header="输入地址/标识" style="width: 24rem; min-width: 24rem">
             <template #body="{ data }">
               <div class="copy-cell copy-cell-input" :title="data.input_value">
                 <span class="mono-text ellipsis-text">{{ data.input_value }}</span>
@@ -302,7 +256,7 @@ async function copyText(value: string, label: string) {
               </div>
             </template>
           </Column>
-          <Column field="updated_at" header="更新时间">
+          <Column field="updated_at" header="更新时间" style="width: 12rem; min-width: 12rem">
             <template #body="{ data }">
               {{ formatTime(data.updated_at) }}
             </template>
@@ -351,6 +305,7 @@ async function copyText(value: string, label: string) {
       v-model:visible="dialogVisible"
       modal
       :header="editingDevice ? '编辑设备' : '添加设备'"
+      class="device-dialog"
       :style="{ width: 'min(40rem, calc(100vw - 2rem))' }"
     >
       <Form
@@ -448,21 +403,55 @@ async function copyText(value: string, label: string) {
 <style scoped>
 /* Page-specific styles - matching DashboardView style */
 
+.device-page {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.device-page .page-header {
+  flex: 0 0 auto;
+}
+
 .data-card {
-  animation: slideUp 0.5s ease-out 0.1s backwards;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: slide-up 0.5s ease-out 0.1s backwards;
+}
+
+:deep(.data-card .p-card-body) {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 :deep(.data-card .p-card-content) {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   padding: 0;
 }
 
 :deep(.content-table) {
+  flex: 1 1 auto;
+  min-height: 0;
   background: transparent;
 }
 
 :deep(.content-table .p-datatable-table-container) {
   border-radius: 0.75rem;
-  overflow: hidden;
+}
+
+.device-empty-state {
+  flex: 1 1 auto;
+  min-height: 14rem;
 }
 
 .copy-cell {
@@ -505,11 +494,31 @@ async function copyText(value: string, label: string) {
   gap: 1rem;
 }
 
+:deep(.device-dialog .field) {
+  padding: 0.875rem;
+  background: rgb(15 23 42 / 42%);
+  border: 1px solid rgb(148 163 184 / 10%);
+  border-radius: 0.75rem;
+}
+
+:deep(.device-dialog .field label) {
+  color: #cbd5e1;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+:deep(.device-dialog .p-message) {
+  margin-top: 0.125rem;
+}
+
 .dialog-actions {
   display: flex;
   justify-content: flex-end;
   gap: 0.5rem;
-  margin-top: 0.5rem;
+  margin-top: 0.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgb(148 163 184 / 10%);
 }
 
 .preview-shell {
@@ -535,11 +544,7 @@ async function copyText(value: string, label: string) {
   font-size: 0.75rem;
   color: #64748b;
   word-break: break-all;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-}
-
-.device-empty-state {
-  min-height: 14rem;
+  font-family: SFMono-Regular, Consolas, "Liberation Mono", monospace;
 }
 
 .device-empty-state-hint {

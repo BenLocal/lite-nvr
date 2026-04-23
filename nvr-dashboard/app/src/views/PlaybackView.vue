@@ -10,10 +10,8 @@ import TabList from 'primevue/tablist'
 import TabPanel from 'primevue/tabpanel'
 import TabPanels from 'primevue/tabpanels'
 import Tabs from 'primevue/tabs'
-import { useToast } from 'primevue/usetoast'
 import {
   buildPlaybackPlaylistUrl,
-  buildPlaybackSegmentUrl,
   buildPlaybackSegmentPlaylistUrl,
   listDevicePlaybackSegments,
   listTodayDevicePlaybackSegments,
@@ -21,6 +19,7 @@ import {
   type DevicePlaybackItem,
   type PlaybackSegmentItem,
 } from '../api/playback'
+import { useAppToast } from '../utils/toast'
 
 const DAY_SECONDS = 24 * 60 * 60
 const TIMELINE_TICKS = [0, 6, 12, 18, 24]
@@ -42,7 +41,7 @@ declare global {
   }
 }
 
-const toast = useToast()
+const appToast = useAppToast()
 
 const loading = ref(false)
 const devices = ref<DevicePlaybackItem[]>([])
@@ -174,12 +173,7 @@ async function loadPlayback() {
     activeDeviceId.value = nextActiveId ?? devices.value[0]?.device_id ?? ''
     await ensureDeviceSegments(activeDeviceId.value)
   } catch (error) {
-    toast.add({
-      severity: 'error',
-      summary: '加载失败',
-      detail: toErrorMessage(error, '回放列表加载失败'),
-      life: 2500,
-    })
+    appToast.errorFrom('加载失败', error, '回放列表加载失败')
   } finally {
     loading.value = false
   }
@@ -201,12 +195,7 @@ async function ensureDeviceSegments(deviceId: string) {
     }
     activeDeviceSegmentsTotal.value = response.total
   } catch (error) {
-    toast.add({
-      severity: 'error',
-      summary: '片段加载失败',
-      detail: toErrorMessage(error, '设备片段加载失败'),
-      life: 2500,
-    })
+    appToast.errorFrom('片段加载失败', error, '设备片段加载失败')
   } finally {
     segmentLoading.value = false
   }
@@ -227,12 +216,7 @@ async function ensureTodayDeviceSegments(deviceId: string) {
       timelineSecond.value = firstSegment ? segmentStartInDay(firstSegment) : 0
     }
   } catch (error) {
-    toast.add({
-      severity: 'error',
-      summary: '时间轴加载失败',
-      detail: toErrorMessage(error, '当天时间轴片段加载失败'),
-      life: 2500,
-    })
+    appToast.errorFrom('时间轴加载失败', error, '当天时间轴片段加载失败')
   }
 }
 
@@ -500,12 +484,7 @@ async function openPlaylistPlayback(targetSecond?: number) {
     targetSecond ?? timelineSecond.value ?? (firstSegment ? segmentStartInDay(firstSegment) : 0)
   const resolved = resolveTimelineTarget(baseTarget)
   if (!resolved) {
-    toast.add({
-      severity: 'info',
-      summary: '暂无片段',
-      detail: '当天没有可播放的录制片段',
-      life: 1800,
-    })
+    appToast.info('暂无片段', '当天没有可播放的录制片段', 1800)
     return
   }
 
@@ -662,12 +641,6 @@ function formatDaySecond(second: number) {
   return `${hours}:${minutes}:${seconds}`
 }
 
-function toErrorMessage(error: unknown, fallback: string) {
-  if (error instanceof Error && error.message) {
-    return error.message
-  }
-  return fallback
-}
 </script>
 
 <template>
@@ -921,6 +894,7 @@ function toErrorMessage(error: unknown, fallback: string) {
       v-model:visible="detailVisible"
       modal
       header="片段详情"
+      class="segment-detail-dialog"
       :style="{ width: 'min(42rem, calc(100vw - 2rem))' }"
     >
       <div v-if="detailSegment" class="detail-grid">
@@ -969,11 +943,81 @@ function toErrorMessage(error: unknown, fallback: string) {
 /* Page-specific styles - matching DashboardView style */
 
 .data-card {
-  animation: slideUp 0.5s ease-out 0.15s backwards;
+  animation: slide-up 0.5s ease-out 0.15s backwards;
 }
 
 .playback-tabs {
-  animation: slideUp 0.5s ease-out 0.15s backwards;
+  animation: slide-up 0.5s ease-out 0.15s backwards;
+}
+
+:deep(.playback-tabs.p-tabs) {
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 8% 0%, rgb(59 130 246 / 12%), transparent 28rem),
+    rgb(15 23 42 / 40%);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgb(148 163 184 / 10%);
+  border-radius: 0.875rem;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 20%);
+}
+
+:deep(.playback-tabs .p-tablist) {
+  background: linear-gradient(180deg, rgb(30 41 59 / 52%), rgb(15 23 42 / 36%));
+  border-color: rgb(148 163 184 / 10%);
+}
+
+:deep(.playback-tabs .p-tablist-content),
+:deep(.playback-tabs .p-tablist-tab-list) {
+  background: transparent;
+}
+
+:deep(.playback-tabs .p-tab) {
+  color: #94a3b8;
+  background: transparent;
+  border-color: transparent;
+  transition:
+    color 0.16s ease,
+    background 0.16s ease,
+    border-color 0.16s ease;
+}
+
+:deep(.playback-tabs .p-tab:hover) {
+  color: #dbeafe;
+  background: rgb(59 130 246 / 10%);
+}
+
+:deep(.playback-tabs .p-tab.p-tab-active) {
+  color: #60a5fa;
+  background: rgb(59 130 246 / 14%);
+  border-color: #3b82f6;
+}
+
+:deep(.playback-tabs .p-tablist-active-bar) {
+  background: #3b82f6;
+  box-shadow: 0 0 12px rgb(59 130 246 / 50%);
+}
+
+:deep(.playback-tabs .p-tablist-prev-button),
+:deep(.playback-tabs .p-tablist-next-button) {
+  color: #94a3b8;
+  background: rgb(15 23 42 / 72%);
+  border: 1px solid rgb(148 163 184 / 10%);
+}
+
+:deep(.playback-tabs .p-tablist-prev-button:hover),
+:deep(.playback-tabs .p-tablist-next-button:hover) {
+  color: #e2e8f0;
+  background: rgb(148 163 184 / 12%);
+}
+
+:deep(.playback-tabs .p-tabpanels) {
+  padding: 1rem;
+  color: #e2e8f0;
+  background: transparent;
+}
+
+:deep(.playback-tabs .p-tabpanel) {
+  background: transparent;
 }
 
 .device-tab {
@@ -996,7 +1040,7 @@ function toErrorMessage(error: unknown, fallback: string) {
   align-items: flex-start;
   gap: 1rem;
   padding-bottom: 1rem;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  border-bottom: 1px solid rgb(148 163 184 / 10%);
 }
 
 .device-info {
@@ -1033,21 +1077,21 @@ function toErrorMessage(error: unknown, fallback: string) {
 .segment-card {
   overflow: hidden;
   border-radius: 1rem;
-  border: 1px solid rgba(148, 163, 184, 0.1);
-  background: rgba(15, 23, 42, 0.4);
+  border: 1px solid rgb(148 163 184 / 10%);
+  background: rgb(15 23 42 / 40%);
   backdrop-filter: blur(12px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 20%);
   transition: all 0.3s;
 }
 
 .segment-card:hover {
-  border-color: rgba(148, 163, 184, 0.2);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  border-color: rgb(148 163 184 / 20%);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 30%);
 }
 
 .segment-card-active {
-  border-color: rgba(59, 130, 246, 0.5);
-  box-shadow: 0 8px 24px rgba(59, 130, 246, 0.3);
+  border-color: rgb(59 130 246 / 50%);
+  box-shadow: 0 8px 24px rgb(59 130 246 / 30%);
 }
 
 .segment-preview {
@@ -1070,7 +1114,7 @@ function toErrorMessage(error: unknown, fallback: string) {
   gap: 0.75rem;
   color: rgb(226 232 240);
   background:
-    radial-gradient(circle at top left, rgb(59 130 246 / 0.28), transparent 38%),
+    radial-gradient(circle at top left, rgb(59 130 246 / 28%), transparent 38%),
     linear-gradient(160deg, rgb(15 23 42), rgb(30 41 59));
 }
 
@@ -1093,7 +1137,7 @@ function toErrorMessage(error: unknown, fallback: string) {
   justify-content: center;
   gap: 0.5rem;
   color: #fff;
-  background: linear-gradient(180deg, transparent, rgb(15 23 42 / 0.55));
+  background: linear-gradient(180deg, transparent, rgb(15 23 42 / 55%));
   opacity: 0;
   transition: opacity 0.18s ease;
 }
@@ -1108,7 +1152,7 @@ function toErrorMessage(error: unknown, fallback: string) {
   right: 0.75rem;
   padding: 0.25rem 0.5rem;
   border-radius: 999px;
-  background: rgb(15 23 42 / 0.78);
+  background: rgb(15 23 42 / 78%);
   color: #fff;
   font-size: 0.75rem;
   font-weight: 600;
@@ -1185,20 +1229,72 @@ function toErrorMessage(error: unknown, fallback: string) {
   grid-template-rows: minmax(0, 1fr) auto;
 }
 
+:deep(.playback-dialog) {
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 10% 0%, rgb(59 130 246 / 16%), transparent 34rem),
+    linear-gradient(145deg, rgb(2 6 23 / 99%), rgb(15 23 42 / 98%));
+  border: 1px solid rgb(96 165 250 / 20%);
+  box-shadow: 0 30px 90px rgb(2 6 23 / 72%);
+}
+
+:deep(.playback-dialog .p-dialog-header) {
+  height: 3.5rem;
+  padding: 0 1.25rem;
+  background: linear-gradient(180deg, rgb(15 23 42 / 92%), rgb(15 23 42 / 76%));
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgb(148 163 184 / 12%);
+  color: #e2e8f0;
+}
+
+:deep(.playback-dialog .p-dialog-title) {
+  color: #e2e8f0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+:deep(.playback-dialog .p-dialog-header-actions) {
+  gap: 0.25rem;
+}
+
+:deep(.playback-dialog .p-dialog-header-icon) {
+  width: 2rem;
+  height: 2rem;
+  color: #94a3b8;
+  border-radius: 0.55rem;
+}
+
+:deep(.playback-dialog .p-dialog-header-icon:hover) {
+  color: #e2e8f0;
+  background: rgb(148 163 184 / 12%);
+}
+
+:deep(.playback-dialog .p-dialog-content) {
+  background:
+    linear-gradient(180deg, rgb(15 23 42 / 42%), rgb(2 6 23 / 46%)),
+    rgb(2 6 23);
+  color: #cbd5e1;
+}
+
 .player-panel {
   position: relative;
   min-height: 20rem;
   border-radius: 1rem;
   overflow: hidden;
   background:
-    radial-gradient(circle at top left, rgb(37 99 235 / 0.18), transparent 42%),
+    radial-gradient(circle at top left, rgb(37 99 235 / 18%), transparent 42%),
     linear-gradient(160deg, rgb(15 23 42), rgb(17 24 39));
-  border: 1px solid rgb(148 163 184 / 0.25);
+  border: 1px solid rgb(148 163 184 / 25%);
 }
 
 .player-panel-dialog {
   min-height: 0;
   height: 100%;
+  border-color: rgb(96 165 250 / 20%);
+  box-shadow:
+    0 18px 54px rgb(2 6 23 / 58%),
+    inset 0 1px 0 rgb(226 232 240 / 5%);
 }
 
 .video-player {
@@ -1226,14 +1322,21 @@ function toErrorMessage(error: unknown, fallback: string) {
   gap: 1rem;
   padding: 1rem;
   border-radius: 1rem;
-  border: 1px solid rgba(148, 163, 184, 0.1);
-  background: rgba(15, 23, 42, 0.4);
+  border: 1px solid rgb(148 163 184 / 10%);
+  background: rgb(15 23 42 / 40%);
   backdrop-filter: blur(12px);
 }
 
 .timeline-card-dialog {
   min-height: 0;
   height: auto;
+  background:
+    radial-gradient(circle at 0% 0%, rgb(59 130 246 / 12%), transparent 22rem),
+    rgb(15 23 42 / 64%);
+  border-color: rgb(148 163 184 / 14%);
+  box-shadow:
+    0 14px 40px rgb(2 6 23 / 36%),
+    inset 0 1px 0 rgb(226 232 240 / 5%);
 }
 
 .segment-player-footer {
@@ -1303,7 +1406,7 @@ function toErrorMessage(error: unknown, fallback: string) {
   top: 1.25rem;
   height: 0.5rem;
   border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
+  border: 1px solid rgb(148 163 184 / 20%);
   overflow: hidden;
 }
 
@@ -1320,7 +1423,7 @@ function toErrorMessage(error: unknown, fallback: string) {
   height: 2.1rem;
   margin: 0 auto;
   background: #3b82f6;
-  box-shadow: 0 0 8px rgba(59, 130, 246, 0.6);
+  box-shadow: 0 0 8px rgb(59 130 246 / 60%);
 }
 
 .timeline-marker-dot {
@@ -1330,7 +1433,7 @@ function toErrorMessage(error: unknown, fallback: string) {
   margin: -0.15rem auto 0;
   border-radius: 999px;
   background: #3b82f6;
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3);
+  box-shadow: 0 0 0 3px rgb(59 130 246 / 30%);
 }
 
 .timeline-hint-row {
@@ -1346,11 +1449,58 @@ function toErrorMessage(error: unknown, fallback: string) {
   gap: 1rem;
 }
 
+:deep(.segment-detail-dialog) {
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 12% 0%, rgb(59 130 246 / 14%), transparent 28rem),
+    linear-gradient(145deg, rgb(15 23 42 / 98%), rgb(30 41 59 / 94%));
+  border: 1px solid rgb(96 165 250 / 20%);
+  border-radius: 1rem;
+  box-shadow:
+    0 28px 80px rgb(2 6 23 / 68%),
+    inset 0 1px 0 rgb(226 232 240 / 8%);
+}
+
+:deep(.segment-detail-dialog .p-dialog-header) {
+  padding: 1.25rem 1.35rem 1rem;
+  background: linear-gradient(180deg, rgb(30 41 59 / 62%), rgb(15 23 42 / 0%));
+  border-bottom: 1px solid rgb(148 163 184 / 12%);
+}
+
+:deep(.segment-detail-dialog .p-dialog-title) {
+  color: #e2e8f0;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+:deep(.segment-detail-dialog .p-dialog-content) {
+  padding: 1.35rem;
+  background: transparent;
+  color: #cbd5e1;
+}
+
+:deep(.segment-detail-dialog .p-dialog-header-close) {
+  width: 2rem;
+  height: 2rem;
+  color: #94a3b8;
+  border-radius: 0.55rem;
+}
+
+:deep(.segment-detail-dialog .p-dialog-header-close:hover) {
+  color: #e2e8f0;
+  background: rgb(148 163 184 / 12%);
+}
+
 .detail-item {
   display: flex;
   flex-direction: column;
   gap: 0.375rem;
   min-width: 0;
+  padding: 0.875rem;
+  color: #cbd5e1;
+  background: rgb(15 23 42 / 42%);
+  border: 1px solid rgb(148 163 184 / 10%);
+  border-radius: 0.75rem;
 }
 
 .detail-item-full {

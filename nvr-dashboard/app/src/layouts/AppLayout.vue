@@ -5,19 +5,16 @@ import Menu from 'primevue/menu'
 import Button from 'primevue/button'
 import Avatar from 'primevue/avatar'
 import { useConfirm } from 'primevue/useconfirm'
-import { useToast } from 'primevue/usetoast'
 import { useAuth } from '../composables/useAuth'
+import { useAppToast } from '../utils/toast'
 
 const router = useRouter()
 const { logout } = useAuth()
 const confirm = useConfirm()
-const toast = useToast()
+const appToast = useAppToast()
 
 const sidebarCollapsed = ref(false)
 const userMenu = ref<InstanceType<typeof Menu> | null>(null)
-const baseUrl = import.meta.env.BASE_URL
-const logoUrl = ref(`${baseUrl}logo.svg`)
-
 const menuItems = ref([
   { label: '概览', route: '/', icon: 'pi pi-th-large' },
   { label: '设备', route: '/device', icon: 'pi pi-video' },
@@ -50,10 +47,6 @@ function toggleUserMenu(event: Event) {
   userMenu.value?.toggle(event)
 }
 
-function onLogoError() {
-  logoUrl.value = ''
-}
-
 function onLogoutRequest() {
   confirm.require({
     header: '退出登录',
@@ -64,20 +57,10 @@ function onLogoutRequest() {
     accept: async () => {
       logout()
       await router.push('/login')
-      toast.add({
-        severity: 'warn',
-        summary: '已退出',
-        detail: '你已安全退出登录',
-        life: 2000,
-      })
+      appToast.warn('已退出', '你已安全退出登录')
     },
     reject: () => {
-      toast.add({
-        severity: 'info',
-        summary: '已取消',
-        detail: '已取消退出操作',
-        life: 1500,
-      })
+      appToast.info('已取消', '已取消退出操作')
     },
   })
 }
@@ -161,9 +144,12 @@ function onLogoutRequest() {
   --layout-topbar-height: 3.5rem;
   --layout-gap: 0;
 
-  min-height: 100vh;
+  position: fixed;
+  inset: 0;
+  height: 100vh;
+  overflow: hidden;
   background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'SF Pro Display', sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, Inter, 'SF Pro Display', sans-serif;
 }
 
 /* Topbar */
@@ -178,10 +164,10 @@ function onLogoutRequest() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: rgba(15, 23, 42, 0.8);
+  background: rgb(15 23 42 / 80%);
   backdrop-filter: blur(12px);
-  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  border-bottom: 1px solid rgb(148 163 184 / 10%);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 30%);
 }
 
 .topbar-left {
@@ -199,7 +185,7 @@ function onLogoutRequest() {
 
 .topbar-menu-button:hover {
   color: #e2e8f0;
-  background: rgba(148, 163, 184, 0.1);
+  background: rgb(148 163 184 / 10%);
 }
 
 .topbar-brand {
@@ -223,7 +209,7 @@ function onLogoutRequest() {
   height: 2rem;
   border-radius: 0.5rem;
   background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+  box-shadow: 0 2px 8px rgb(59 130 246 / 30%);
   font-size: 1rem;
   color: white;
 }
@@ -246,8 +232,8 @@ function onLogoutRequest() {
   align-items: center;
   gap: 0.5rem;
   padding: 0.375rem 0.75rem;
-  background: rgba(16, 185, 129, 0.1);
-  border: 1px solid rgba(16, 185, 129, 0.2);
+  background: rgb(16 185 129 / 10%);
+  border: 1px solid rgb(16 185 129 / 20%);
   border-radius: 0.375rem;
   margin-right: 0.5rem;
 }
@@ -261,13 +247,14 @@ function onLogoutRequest() {
 
 .status-online {
   background: #10b981;
-  box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+  box-shadow: 0 0 8px rgb(16 185 129 / 60%);
 }
 
 @keyframes pulse {
   0%, 100% {
     opacity: 1;
   }
+
   50% {
     opacity: 0.5;
   }
@@ -288,7 +275,7 @@ function onLogoutRequest() {
 
 .topbar-icon-button:hover {
   color: #e2e8f0;
-  background: rgba(148, 163, 184, 0.1);
+  background: rgb(148 163 184 / 10%);
 }
 
 .topbar-user-button {
@@ -297,7 +284,7 @@ function onLogoutRequest() {
 }
 
 .topbar-user-button:hover {
-  background: rgba(148, 163, 184, 0.1);
+  background: rgb(148 163 184 / 10%);
 }
 
 /* Sidebar */
@@ -308,9 +295,9 @@ function onLogoutRequest() {
   top: var(--layout-topbar-height);
   height: calc(100vh - var(--layout-topbar-height));
   z-index: 996;
-  background: rgba(15, 23, 42, 0.6);
+  background: rgb(15 23 42 / 60%);
   backdrop-filter: blur(12px);
-  border-right: 1px solid rgba(148, 163, 184, 0.1);
+  border-right: 1px solid rgb(148 163 184 / 10%);
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   overflow: hidden;
 }
@@ -349,14 +336,14 @@ function onLogoutRequest() {
 }
 
 .layout-menuitem-link:hover {
-  background: rgba(59, 130, 246, 0.1);
+  background: rgb(59 130 246 / 10%);
   color: #60a5fa;
-  border-left-color: rgba(59, 130, 246, 0.3);
+  border-left-color: rgb(59 130 246 / 30%);
 }
 
 .layout-menuitem-link.active-route {
   color: #3b82f6;
-  background: rgba(59, 130, 246, 0.15);
+  background: rgb(59 130 246 / 15%);
   border-left-color: #3b82f6;
 }
 
@@ -369,7 +356,7 @@ function onLogoutRequest() {
   width: 3px;
   height: 60%;
   background: linear-gradient(180deg, transparent, #3b82f6, transparent);
-  box-shadow: 0 0 8px rgba(59, 130, 246, 0.6);
+  box-shadow: 0 0 8px rgb(59 130 246 / 60%);
 }
 
 .layout-menuitem-icon {
@@ -389,7 +376,8 @@ function onLogoutRequest() {
 .layout-main-container {
   margin-left: var(--layout-sidebar-width);
   margin-top: var(--layout-topbar-height);
-  min-height: calc(100vh - var(--layout-topbar-height));
+  height: calc(100vh - var(--layout-topbar-height));
+  overflow: hidden;
   padding: 1.5rem;
   transition: margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
@@ -400,14 +388,21 @@ function onLogoutRequest() {
 
 .layout-main {
   max-width: 1400px;
+  height: 100%;
   margin: 0 auto;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+:global(body.p-overflow-hidden) .layout-main {
+  overflow: hidden;
 }
 
 /* Responsive */
 @media (width <= 768px) {
   .layout-sidebar {
     width: 16rem;
-    box-shadow: 2px 0 12px rgba(0, 0, 0, 0.5);
+    box-shadow: 2px 0 12px rgb(0 0 0 / 50%);
   }
 
   .layout-menuitem-link {

@@ -3,13 +3,13 @@
 import { useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import { useConfirm } from 'primevue/useconfirm'
-import { useToast } from 'primevue/usetoast'
 import { useAuth } from '../composables/useAuth'
+import { useAppToast } from '../utils/toast'
 
 const router = useRouter()
 const { logout } = useAuth()
 const confirm = useConfirm()
-const toast = useToast()
+const appToast = useAppToast()
 
 function onLogout() {
   confirm.require({
@@ -21,20 +21,10 @@ function onLogout() {
     accept: async () => {
       logout()
       await router.push('/login')
-      toast.add({
-        severity: 'warn',
-        summary: '已退出',
-        detail: '你已安全退出登录',
-        life: 2000,
-      })
+      appToast.warn('已退出', '你已安全退出登录')
     },
     reject: () => {
-      toast.add({
-        severity: 'info',
-        summary: '已取消',
-        detail: '已取消退出操作',
-        life: 1500,
-      })
+      appToast.info('已取消', '已取消退出操作')
     },
   })
 }

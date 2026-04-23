@@ -3,17 +3,16 @@ import { createApp } from 'vue'
 import PrimeVue from 'primevue/config'
 import ConfirmationService from 'primevue/confirmationservice'
 import ToastService from 'primevue/toastservice'
-import Aura from '@primeuix/themes/aura'
 import App from './App.vue'
 import router from './router'
-import './styles/content-card.css'
+import NvrPrimePreset from './styles/prime-preset'
 import './styles/global-dark-theme.css'
 
 const app = createApp(App)
 
 // 全局控件小一号：通过 Pass Through 为各组件根节点添加 small 的 class
 app.use(PrimeVue, {
-  theme: { preset: Aura },
+  theme: { preset: NvrPrimePreset },
   ptOptions: { mergeSections: true, mergeProps: true },
   pt: {
     Button: { root: { class: 'p-button-sm' } },

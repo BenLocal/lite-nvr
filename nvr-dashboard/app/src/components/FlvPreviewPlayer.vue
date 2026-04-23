@@ -430,7 +430,7 @@ function formatAudioCodec(codec: string) {
 
 .preview-info-value {
   margin-top: 0.35rem;
-  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  font-family: SFMono-Regular, Consolas, 'Liberation Mono', monospace;
   font-size: 0.9rem;
   font-weight: 600;
   color: rgb(255 255 255 / 92%);

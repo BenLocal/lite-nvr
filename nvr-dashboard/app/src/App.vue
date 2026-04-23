@@ -5,7 +5,7 @@ import Toast from 'primevue/toast'
 
 <template>
   <ConfirmDialog />
-  <Toast position="top-right" />
+  <Toast position="bottom-right" />
   <RouterView />
 </template>
 
@@ -17,7 +17,7 @@ import Toast from 'primevue/toast'
 body {
   margin: 0;
   padding: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'SF Pro Display', sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, Inter, 'SF Pro Display', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -51,15 +51,15 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(15, 23, 42, 0.4);
+  background: rgb(15 23 42 / 40%);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.3);
+  background: rgb(148 163 184 / 30%);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.5);
+  background: rgb(148 163 184 / 50%);
 }
 </style>

@@ -129,14 +129,15 @@ const recentDevices = ref([
 
 <style scoped>
 .dashboard {
-  animation: fadeIn 0.4s ease-out;
+  animation: fade-in 0.4s ease-out;
 }
 
-@keyframes fadeIn {
+@keyframes fade-in {
   from {
     opacity: 0;
     transform: translateY(10px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -149,7 +150,7 @@ const recentDevices = ref([
   align-items: flex-start;
   margin-bottom: 1.5rem;
   padding-bottom: 1rem;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  border-bottom: 1px solid rgb(148 163 184 / 10%);
 }
 
 .header-content {
@@ -160,7 +161,7 @@ const recentDevices = ref([
   font-size: 1.25rem;
   font-weight: 600;
   color: #e2e8f0;
-  margin: 0 0 0.25rem 0;
+  margin: 0 0 0.25rem;
   letter-spacing: -0.025em;
 }
 
@@ -175,8 +176,8 @@ const recentDevices = ref([
   color: #64748b;
   font-variant-numeric: tabular-nums;
   padding: 0.375rem 0.75rem;
-  background: rgba(148, 163, 184, 0.05);
-  border: 1px solid rgba(148, 163, 184, 0.1);
+  background: rgb(148 163 184 / 5%);
+  border: 1px solid rgb(148 163 184 / 10%);
   border-radius: 0.375rem;
 }
 
@@ -192,12 +193,12 @@ const recentDevices = ref([
   align-items: center;
   gap: 1rem;
   padding: 1.25rem;
-  background: rgba(15, 23, 42, 0.4);
+  background: rgb(15 23 42 / 40%);
   backdrop-filter: blur(12px);
-  border: 1px solid rgba(148, 163, 184, 0.1);
+  border: 1px solid rgb(148 163 184 / 10%);
   border-radius: 0.75rem;
   transition: all 0.3s;
-  animation: slideUp 0.5s ease-out backwards;
+  animation: slide-up 0.5s ease-out backwards;
 }
 
 .stat-card:nth-child(1) { animation-delay: 0.05s; }
@@ -205,11 +206,12 @@ const recentDevices = ref([
 .stat-card:nth-child(3) { animation-delay: 0.15s; }
 .stat-card:nth-child(4) { animation-delay: 0.2s; }
 
-@keyframes slideUp {
+@keyframes slide-up {
   from {
     opacity: 0;
     transform: translateY(20px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -218,8 +220,8 @@ const recentDevices = ref([
 
 .stat-card:hover {
   transform: translateY(-2px);
-  border-color: rgba(148, 163, 184, 0.2);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  border-color: rgb(148 163 184 / 20%);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 30%);
 }
 
 .stat-icon {
@@ -267,7 +269,7 @@ const recentDevices = ref([
 }
 
 .data-card {
-  animation: slideUp 0.5s ease-out 0.25s backwards;
+  animation: slide-up 0.5s ease-out 0.25s backwards;
 }
 
 /* Card header styles */
@@ -276,7 +278,7 @@ const recentDevices = ref([
   justify-content: space-between;
   align-items: center;
   padding-bottom: 1rem;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  border-bottom: 1px solid rgb(148 163 184 / 10%);
 }
 
 .card-header-left {
@@ -322,15 +324,15 @@ const recentDevices = ref([
   justify-content: space-between;
   align-items: center;
   padding: 0.875rem;
-  background: rgba(30, 41, 59, 0.4);
-  border: 1px solid rgba(148, 163, 184, 0.08);
+  background: rgb(30 41 59 / 40%);
+  border: 1px solid rgb(148 163 184 / 8%);
   border-radius: 0.5rem;
   transition: all 0.2s;
 }
 
 .device-item:hover {
-  background: rgba(30, 41, 59, 0.6);
-  border-color: rgba(148, 163, 184, 0.15);
+  background: rgb(30 41 59 / 60%);
+  border-color: rgb(148 163 184 / 15%);
 }
 
 .device-info {
@@ -348,16 +350,16 @@ const recentDevices = ref([
   width: 2rem;
   height: 2rem;
   border-radius: 0.5rem;
-  background: rgba(148, 163, 184, 0.1);
+  background: rgb(148 163 184 / 10%);
   flex-shrink: 0;
 }
 
 .device-status.online {
-  background: rgba(16, 185, 129, 0.15);
+  background: rgb(16 185 129 / 15%);
 }
 
 .device-status.offline {
-  background: rgba(239, 68, 68, 0.15);
+  background: rgb(239 68 68 / 15%);
 }
 
 .status-dot {
@@ -369,7 +371,7 @@ const recentDevices = ref([
 
 .device-status.online .status-dot {
   background: #10b981;
-  box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+  box-shadow: 0 0 8px rgb(16 185 129 / 60%);
   animation: pulse 2s ease-in-out infinite;
 }
 
@@ -431,15 +433,15 @@ const recentDevices = ref([
   display: flex;
   gap: 1rem;
   padding: 0.875rem;
-  background: rgba(30, 41, 59, 0.4);
-  border: 1px solid rgba(148, 163, 184, 0.08);
+  background: rgb(30 41 59 / 40%);
+  border: 1px solid rgb(148 163 184 / 8%);
   border-radius: 0.5rem;
   transition: all 0.2s;
 }
 
 .activity-item:hover {
-  background: rgba(30, 41, 59, 0.6);
-  border-color: rgba(148, 163, 184, 0.15);
+  background: rgb(30 41 59 / 60%);
+  border-color: rgb(148 163 184 / 15%);
 }
 
 .activity-time {

@@ -161,13 +161,13 @@ async function onSubmit(event: { valid: boolean; values: Record<string, unknown>
 
 .login-left {
   flex: 1;
-  background: linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(37, 99, 235, 0.05) 100%);
+  background: linear-gradient(135deg, rgb(59 130 246 / 10%) 0%, rgb(37 99 235 / 5%) 100%);
   backdrop-filter: blur(20px);
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 3rem;
-  border-right: 1px solid rgba(148, 163, 184, 0.1);
+  border-right: 1px solid rgb(148 163 184 / 10%);
   position: relative;
   overflow: hidden;
 }
@@ -179,7 +179,7 @@ async function onSubmit(event: { valid: boolean; values: Record<string, unknown>
   left: -50%;
   width: 200%;
   height: 200%;
-  background: radial-gradient(circle, rgba(59, 130, 246, 0.1) 0%, transparent 70%);
+  background: radial-gradient(circle, rgb(59 130 246 / 10%) 0%, transparent 70%);
   animation: rotate 20s linear infinite;
 }
 
@@ -187,6 +187,7 @@ async function onSubmit(event: { valid: boolean; values: Record<string, unknown>
   from {
     transform: rotate(0deg);
   }
+
   to {
     transform: rotate(360deg);
   }
@@ -213,7 +214,7 @@ async function onSubmit(event: { valid: boolean; values: Record<string, unknown>
   height: 3rem;
   background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
   border-radius: 0.75rem;
-  box-shadow: 0 8px 24px rgba(59, 130, 246, 0.4);
+  box-shadow: 0 8px 24px rgb(59 130 246 / 40%);
 }
 
 .brand-text {
@@ -221,9 +222,8 @@ async function onSubmit(event: { valid: boolean; values: Record<string, unknown>
   font-weight: 700;
   letter-spacing: -0.02em;
   background: linear-gradient(135deg, #e2e8f0 0%, #94a3b8 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
   background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 .login-tagline {
@@ -245,11 +245,11 @@ async function onSubmit(event: { valid: boolean; values: Record<string, unknown>
   width: 100%;
   max-width: 22rem;
   padding: 2.5rem;
-  background: rgba(15, 23, 42, 0.6);
+  background: rgb(15 23 42 / 60%);
   backdrop-filter: blur(12px);
-  border: 1px solid rgba(148, 163, 184, 0.1);
+  border: 1px solid rgb(148 163 184 / 10%);
   border-radius: 1rem;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 8px 32px rgb(0 0 0 / 30%);
 }
 
 .login-title {
@@ -274,8 +274,8 @@ async function onSubmit(event: { valid: boolean; values: Record<string, unknown>
 
 .login-error {
   margin-bottom: 0.25rem;
-  background: rgba(239, 68, 68, 0.1);
-  border-color: rgba(239, 68, 68, 0.3);
+  background: rgb(239 68 68 / 10%);
+  border-color: rgb(239 68 68 / 30%);
   color: #fca5a5;
 }
 
@@ -328,13 +328,13 @@ async function onSubmit(event: { valid: boolean; values: Record<string, unknown>
   margin-top: 0.5rem;
   background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
   border: none;
-  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+  box-shadow: 0 4px 12px rgb(59 130 246 / 30%);
   transition: all 0.3s;
 }
 
 .login-button:hover {
   transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(59, 130, 246, 0.4);
+  box-shadow: 0 6px 20px rgb(59 130 246 / 40%);
 }
 
 @media (width <= 768px) {
@@ -346,7 +346,7 @@ async function onSubmit(event: { valid: boolean; values: Record<string, unknown>
     min-height: 16rem;
     padding: 2rem 1.5rem;
     border-right: none;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+    border-bottom: 1px solid rgb(148 163 184 / 10%);
   }
 
   .brand-text {

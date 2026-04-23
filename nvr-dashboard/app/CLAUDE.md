@@ -45,7 +45,7 @@ src/
 ├── layouts/      # Layout components (AppLayout with auth guard)
 ├── views/        # Page components (LoginView, DashboardView, etc.)
 ├── router/       # Vue Router configuration with auth guards
-├── styles/       # Shared stylesheets (content-card.css)
+├── styles/       # Shared stylesheets and PrimeVue theme preset
 └── main.ts       # App entry point, PrimeVue setup
 ```
 
@@ -148,7 +148,7 @@ When adding or modifying any page in `nvr-dashboard/app`, keep the UI aligned wi
 
 **Layout primitives to reuse first:**
 - Reuse `.content-section`, `.page-header`, `.header-content`, `.page-title`, `.page-subtitle`, `.page-actions` from `src/styles/global-dark-theme.css`
-- Reuse `.data-card` and `.content-card` from `src/styles/content-card.css`
+- Reuse `.data-card` and `.content-card` from `src/styles/global-dark-theme.css`
 - Reuse `.empty-state`, `.empty-state-icon`, `.empty-state-text`
 - Reuse typography helpers like `.mono-text`, `.single-line-text`, `.ellipsis-text`
 
@@ -191,7 +191,7 @@ When adding or modifying any page in `nvr-dashboard/app`, keep the UI aligned wi
 - If the same style block appears in 2 or more views, move it to `src/styles/`
 - Before writing new page-local styles, check:
   - `src/styles/global-dark-theme.css`
-  - `src/styles/content-card.css`
+  - `src/styles/prime-preset.ts`
   - `src/styles/README.md`
 - View-local styles should contain only page-specific structure or one-off visual behavior
 
@@ -199,7 +199,7 @@ When adding or modifying any page in `nvr-dashboard/app`, keep the UI aligned wi
 - New pages and modified pages should look like they belong to the same product as `DashboardView.vue`, `DeviceListView.vue`, and `PlaybackView.vue`
 - If a new UI element breaks the existing theme, adjust the new code to the theme instead of creating a separate style island
 
-**Content card template** (`src/styles/content-card.css`):
+**Content card template** (`src/styles/global-dark-theme.css`):
 ```css
 .content-card {
   margin-bottom: 1rem;
@@ -223,6 +223,16 @@ Frontend CI should run:
 3. `npm run type-check`
 
 Path-filter CI to frontend scope to avoid unrelated pipeline noise.
+
+## Pre-Commit Checks
+
+Before committing any changes under `nvr-dashboard/app`, run:
+
+```bash
+npm run lint
+```
+
+Do not commit frontend changes while ESLint or Stylelint errors remain. If style errors are mostly mechanical, run `npm run lint:style:fix` first, then re-run `npm run lint`.
 
 ## Node Version
 
