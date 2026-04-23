@@ -16,10 +16,17 @@
                     "device"
                 ],
                 "env": {
+                    "DYLD_LIBRARY_PATH": "${workspaceFolder}/ffmpeg/lib:${workspaceFolder}/zlm/lib",
                     "LD_LIBRARY_PATH": "${workspaceFolder}/ffmpeg/lib:${workspaceFolder}/zlm/lib",
                     "RUST_BACKTRACE": "1",
                     "RUST_LOG": "debug"
                 }
+            },
+            "env": {
+                "DYLD_LIBRARY_PATH": "${workspaceFolder}/ffmpeg/lib:${workspaceFolder}/zlm/lib",
+                "LD_LIBRARY_PATH": "${workspaceFolder}/ffmpeg/lib:${workspaceFolder}/zlm/lib",
+                "RUST_BACKTRACE": "1",
+                "RUST_LOG": "debug"
             }
         },
         {
@@ -33,10 +40,15 @@
                     "--bin=nvr"
                 ],
                 "env": {
+                    "DYLD_LIBRARY_PATH": "${workspaceFolder}/ffmpeg/lib:${workspaceFolder}/zlm/lib",
                     "LD_LIBRARY_PATH": "${workspaceFolder}/ffmpeg/lib:${workspaceFolder}/zlm/lib",
                     //"RUST_BACKTRACE": "1",
                     //"RUST_LOG": "debug"
                 }
+            },
+            "env": {
+                "DYLD_LIBRARY_PATH": "${workspaceFolder}/ffmpeg/lib:${workspaceFolder}/zlm/lib",
+                "LD_LIBRARY_PATH": "${workspaceFolder}/ffmpeg/lib:${workspaceFolder}/zlm/lib"
             },
             "args": []
         },
@@ -51,10 +63,17 @@
                     "--bin=nvr"
                 ],
                 "env": {
+                    "DYLD_LIBRARY_PATH": "${workspaceFolder}/ffmpeg/lib:${workspaceFolder}/zlm/lib",
                     "LD_LIBRARY_PATH": "${workspaceFolder}/ffmpeg/lib:${workspaceFolder}/zlm/lib",
                     "RUST_BACKTRACE": "1",
                     "RUST_LOG": "debug"
                 }
+            },
+            "env": {
+                "DYLD_LIBRARY_PATH": "${workspaceFolder}/ffmpeg/lib:${workspaceFolder}/zlm/lib",
+                "LD_LIBRARY_PATH": "${workspaceFolder}/ffmpeg/lib:${workspaceFolder}/zlm/lib",
+                "RUST_BACKTRACE": "1",
+                "RUST_LOG": "debug"
             }
         }
     ]

@@ -22,11 +22,25 @@ rustflags = [
 
 # macOS x86_64
 [target.x86_64-apple-darwin]
-rustflags = ["-C", "link-arg=-Wl,-rpath,@executable_path/../ffmpeg/lib"]
+rustflags = [
+    "-C",
+    "link-arg=-Wl,-rpath,@executable_path/../ffmpeg/lib",
+    "-C",
+    "link-arg=-Wl,-rpath,@executable_path/../../ffmpeg/lib",
+    "-C",
+    "link-arg=-Wl,-rpath,@executable_path/../../zlm/lib",
+]
 
 # macOS aarch64 (Apple Silicon)
 [target.aarch64-apple-darwin]
-rustflags = ["-C", "link-arg=-Wl,-rpath,@executable_path/../ffmpeg/lib"]
+rustflags = [
+    "-C",
+    "link-arg=-Wl,-rpath,@executable_path/../ffmpeg/lib",
+    "-C",
+    "link-arg=-Wl,-rpath,@executable_path/../../ffmpeg/lib",
+    "-C",
+    "link-arg=-Wl,-rpath,@executable_path/../../zlm/lib",
+]
 
 # Windows x86_64 MSVC
 [target.x86_64-pc-windows-msvc]
