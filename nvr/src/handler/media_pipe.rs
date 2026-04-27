@@ -69,8 +69,7 @@ async fn index() -> &'static str {
 }
 
 async fn list_pipes() -> ApiJsonResult<Vec<String>> {
-    let pipes = manager::get_pipe_manager().read().await;
-    Ok(ok_json(pipes.keys().cloned().collect()))
+    Ok(ok_json(manager::list_pipe_ids().await))
 }
 
 async fn add_pipe(Json(config): Json<PipeRequest>) -> ApiJsonResult<String> {
