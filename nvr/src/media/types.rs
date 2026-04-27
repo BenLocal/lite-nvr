@@ -87,6 +87,10 @@ pub struct OutputConfig {
     pub dest: OutputDest,
     /// None = direct remux (no re-encoding), Some = use specified encoding
     pub encode: Option<EncodeConfig>,
+    /// Stream type: Video or Audio
+    pub av_type: OutputAvType,
+    /// Include audio stream in File/Net mux outputs
+    pub include_audio: bool,
 }
 
 impl OutputConfig {
@@ -96,6 +100,8 @@ impl OutputConfig {
             id: Some(id),
             dest,
             encode,
+            av_type: OutputAvType::Video,
+            include_audio: false,
         }
     }
 
@@ -105,7 +111,19 @@ impl OutputConfig {
             id: Some(id.to_string()),
             dest,
             encode,
+            av_type: OutputAvType::Video,
+            include_audio: false,
         }
+    }
+
+    pub fn with_av_type(mut self, av_type: OutputAvType) -> Self {
+        self.av_type = av_type;
+        self
+    }
+
+    pub fn with_audio(mut self) -> Self {
+        self.include_audio = true;
+        self
     }
 }
 
@@ -201,7 +219,7 @@ impl Into<Option<FbOutputConfig>> for OutputConfig {
 }
 
 fn to_fb_output(config: &OutputConfig) -> Option<FbOutputConfig> {
-    let av_type = OutputAvType::Video; // pipe only uses video for now
+    let av_type = config.av_type;
     let dest = match &config.dest {
         OutputDest::Network { url, format } => FbOutputDest::Net {
             url: url.clone(),
@@ -222,6 +240,9 @@ fn to_fb_output(config: &OutputConfig) -> Option<FbOutputConfig> {
     if let Some(ref e) = config.encode {
         fb = fb.with_encode(to_fb_encode_config(e));
     }
+    if config.include_audio {
+        fb = fb.with_audio();
+    }
     Some(fb)
 }
 
@@ -233,5 +254,8 @@ fn to_fb_encode_config(e: &EncodeConfig) -> ffmpeg_bus::bus::EncodeConfig {
         bitrate: e.bitrate,
         preset: e.preset.clone(),
         pixel_format: e.pixel_format.clone(),
+        sample_rate: None,
+        channels: None,
+        audio_bitrate: None,
     }
 }

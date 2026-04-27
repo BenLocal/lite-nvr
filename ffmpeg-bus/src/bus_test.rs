@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use futures::StreamExt;
 use tokio::io::AsyncWriteExt as _;
 
-use crate::bus::{Bus, InputConfig, OutputAvType, OutputConfig, OutputDest};
-use crate::encoder::{Encoder, Settings};
+use crate::bus::{Bus, EncodeConfig, InputConfig, OutputAvType, OutputConfig, OutputDest};
+use crate::encoder::{AudioSettings, Encoder, Settings};
 use crate::input::AvInput;
 use crate::metadata::probe;
 
@@ -351,6 +351,154 @@ async fn test_device_rawvideo_lavfi() -> anyhow::Result<()> {
 
     // Verify: 2s @ 10fps -> ~20 frames
     verify_output_h264(file_name, 2, 10).await?;
+
+    Ok(())
+}
+
+/// Audio encoder init test: validates Encoder::new_audio() from test.mp4 audio stream.
+#[test]
+fn test_audio_encoder_init() -> anyhow::Result<()> {
+    crate::init()?;
+    let input_path = test_mp4_path();
+    if !input_path.exists() {
+        log::warn!("skip: {} not found", input_path.display());
+        return Ok(());
+    }
+
+    let input = AvInput::new(input_path.to_string_lossy().as_ref(), None, None)?;
+    let audio_stream = input
+        .streams()
+        .values()
+        .find(|s| s.is_audio())
+        .ok_or_else(|| anyhow::anyhow!("no audio stream in test.mp4"))?
+        .clone();
+
+    let settings = AudioSettings {
+        codec: Some("aac".to_string()),
+        ..AudioSettings::default()
+    };
+    let _encoder = Encoder::new_audio(&audio_stream, settings, None)?;
+    Ok(())
+}
+
+/// Test audio encode: decode audio from test.mp4 → re-encode to AAC, muxed to ADTS file.
+#[tokio::test]
+async fn test_audio_encode_aac() -> anyhow::Result<()> {
+    crate::init()?;
+
+    let output_path = "output_encode.aac";
+    if Path::new(output_path).exists() {
+        std::fs::remove_file(output_path).unwrap();
+    }
+
+    let input_path = test_mp4_path();
+    if !input_path.exists() {
+        log::warn!("skip: {} not found", input_path.display());
+        return Ok(());
+    }
+
+    let bus = Bus::new("audio_encode_test");
+    let input_config = InputConfig::File {
+        path: input_path.to_string_lossy().into_owned(),
+    };
+    bus.add_input(input_config, None).await?;
+
+    // Force re-encode by requesting Mux output with encode config for audio
+    let output_config = OutputConfig::new(
+        "audio_encoded_mux".to_string(),
+        OutputAvType::Audio,
+        OutputDest::Mux {
+            format: "adts".to_string(),
+        },
+    )
+    .with_encode(EncodeConfig {
+        codec: "aac".to_string(),
+        ..EncodeConfig::default()
+    });
+    let (_, mut stream) = bus.add_output(output_config).await?;
+
+    let mut file = tokio::fs::File::create(output_path).await?;
+    let mut packet_count = 0u32;
+    while let Some(frame) = stream.next().await {
+        if let Some(frame) = frame {
+            file.write_all(&frame.data).await?;
+            packet_count += 1;
+        }
+    }
+    file.sync_all().await?;
+
+    // Verify the output is a valid AAC file
+    assert!(
+        packet_count > 0,
+        "expected encoded audio packets, got {}",
+        packet_count
+    );
+    let size = std::fs::metadata(output_path)?.len();
+    assert!(size > 0, "output AAC file should not be empty");
+
+    // Clean up
+    if Path::new(output_path).exists() {
+        std::fs::remove_file(output_path).unwrap();
+    }
+
+    Ok(())
+}
+
+/// Test muxing both video and audio into a single MP4 file.
+#[tokio::test]
+async fn test_mux_mp4_video_and_audio() -> anyhow::Result<()> {
+    crate::init()?;
+
+    let output_path = "output_va.mp4";
+    if Path::new(output_path).exists() {
+        std::fs::remove_file(output_path).unwrap();
+    }
+
+    let input_path = test_mp4_path();
+    if !input_path.exists() {
+        log::warn!("skip: {} not found", input_path.display());
+        return Ok(());
+    }
+
+    let bus = Bus::new("va_mux_test");
+    let input_config = InputConfig::File {
+        path: input_path.to_string_lossy().into_owned(),
+    };
+    bus.add_input(input_config, None).await?;
+
+    // Mux to MP4 with both video and audio
+    let output_config = OutputConfig::new(
+        "mux_va_mp4".to_string(),
+        OutputAvType::Video,
+        OutputDest::File {
+            path: output_path.to_string(),
+        },
+    )
+    .with_audio();
+    let _stream = bus.add_output(output_config).await?;
+
+    // Wait for mux to finish
+    tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+
+    // Verify the output has both video and audio streams
+    let info = probe(output_path)
+        .map_err(|e| anyhow::anyhow!("output_va.mp4 should be a valid container: {}", e))?;
+
+    let has_video = info.streams.iter().any(|s| s.codec_type == "video");
+    let has_audio = info.streams.iter().any(|s| s.codec_type == "audio");
+
+    assert!(has_video, "output should have a video stream");
+    assert!(has_audio, "output should have an audio stream");
+    assert!(
+        info.format.nb_streams >= 2,
+        "output should have at least 2 streams, got {}",
+        info.format.nb_streams
+    );
+
+    // Clean up
+    if Path::new(output_path).exists() {
+        std::fs::remove_file(output_path).unwrap();
+    }
 
     Ok(())
 }
