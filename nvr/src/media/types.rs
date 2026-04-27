@@ -69,8 +69,10 @@ pub enum OutputDest {
     /// Network streaming (RTSP/RTMP/HLS...)
     Network { url: String, format: String },
     /// Raw frame data sink，only for decoded frame
+    #[allow(dead_code)]
     RawFrame { sink: Arc<RawSinkSource> },
     /// Encoded packet sink，only for encoded packet
+    #[allow(dead_code)]
     RawPacket { sink: Arc<RawSinkSource> },
     /// ZLMediaKit Media: push raw (demuxed) packets to ZLM
     #[cfg(feature = "zlm")]
@@ -116,11 +118,13 @@ impl OutputConfig {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_av_type(mut self, av_type: OutputAvType) -> Self {
         self.av_type = av_type;
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_audio(mut self) -> Self {
         self.include_audio = true;
         self
@@ -229,7 +233,12 @@ fn to_fb_output(config: &OutputConfig) -> Option<FbOutputConfig> {
         OutputDest::RawPacket { .. } => FbOutputDest::Encoded,
         #[cfg(feature = "zlm")]
         OutputDest::Zlm(_) => FbOutputDest::Mux {
-            format: "h264".to_string(),
+            // "h264" / "adts" are FFmpeg muxer names (not codec names — "aac"
+            // is the codec, "adts" is the raw-AAC muxer).
+            format: match av_type {
+                OutputAvType::Audio => "adts".to_string(),
+                OutputAvType::Video => "h264".to_string(),
+            },
         },
     };
     let id = config

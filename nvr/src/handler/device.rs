@@ -44,6 +44,8 @@ struct DevicePayload {
     input_type: String,
     input_value: String,
     description: Option<String>,
+    #[serde(default)]
+    include_audio: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,6 +83,7 @@ async fn add_device(Json(payload): Json<DevicePayload>) -> ApiJsonResult<DeviceI
         input_type: payload.input_type.trim().to_string(),
         input_value: payload.input_value.trim().to_string(),
         description: payload.description.unwrap_or_default().trim().to_string(),
+        include_audio: payload.include_audio,
         created_at: now,
         updated_at: now,
     };
@@ -104,6 +107,7 @@ async fn update_device(
         input_type: payload.input_type.trim().to_string(),
         input_value: payload.input_value.trim().to_string(),
         description: payload.description.unwrap_or_default().trim().to_string(),
+        include_audio: payload.include_audio,
         created_at: existing.created_at,
         updated_at: Utc::now(),
     };

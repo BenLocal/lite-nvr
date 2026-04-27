@@ -9,6 +9,8 @@ pub struct DeviceInfo {
     pub input_type: String,
     pub input_value: String,
     pub description: String,
+    #[serde(default)]
+    pub include_audio: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

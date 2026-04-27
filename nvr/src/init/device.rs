@@ -9,6 +9,8 @@ use crate::{
     manager,
     media::types::{InputConfig, OutputConfig, OutputDest, PipeConfig},
 };
+#[cfg(feature = "zlm")]
+use ffmpeg_bus::bus::OutputAvType;
 
 pub(crate) fn init_device_pipes(
     zlm_ready: oneshot::Receiver<()>,
@@ -69,28 +71,35 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
     };
 
     #[cfg(feature = "zlm")]
-    let output = OutputConfig::new(
-        OutputDest::Zlm(Arc::new(rszlm::media::Media::new_with_default_vhost(
+    let outputs = {
+        let media = Arc::new(rszlm::media::Media::new_with_default_vhost(
             "live",
             device.id.as_str(),
             0.0,
             true,
             false,
-        ))),
-        None,
-    );
+        ));
+        let mut outs = vec![OutputConfig::new(
+            OutputDest::Zlm(Arc::clone(&media)),
+            None,
+        )];
+        if device.include_audio {
+            outs.push(
+                OutputConfig::new(OutputDest::Zlm(media), None)
+                    .with_av_type(OutputAvType::Audio),
+            );
+        }
+        outs
+    };
 
     #[cfg(not(feature = "zlm"))]
-    let output = {
+    let outputs: Vec<OutputConfig> = {
         return Err(anyhow::anyhow!(
             "zlm feature is disabled, device auto-pipeline is unavailable"
         ));
     };
 
-    let config = PipeConfig {
-        input,
-        outputs: vec![output],
-    };
+    let config = PipeConfig { input, outputs };
     manager::update_pipe(&device.id, config).await
 }
 

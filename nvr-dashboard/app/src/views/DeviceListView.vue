@@ -10,6 +10,7 @@ import InputText from "primevue/inputtext";
 import Message from "primevue/message";
 import Select from "primevue/select";
 import Textarea from "primevue/textarea";
+import ToggleSwitch from "primevue/toggleswitch";
 import { useConfirm } from "primevue/useconfirm";
 import FlvPreviewPlayer from "../components/FlvPreviewPlayer.vue";
 import {
@@ -46,6 +47,7 @@ const initialValues = {
   input_type: "rtsp",
   input_value: "",
   description: "",
+  include_audio: false,
 };
 
 onMounted(() => {
@@ -75,6 +77,7 @@ function resolver({ values }: { values: Record<string, unknown> }) {
       input_type: inputType,
       input_value: inputValue,
       description,
+      include_audio: Boolean(values.include_audio),
     },
     errors,
   };
@@ -120,6 +123,7 @@ async function onSubmit(event: { valid: boolean; values: Record<string, unknown>
     input_type: String(event.values.input_type ?? ""),
     input_value: String(event.values.input_value ?? ""),
     description: String(event.values.description ?? ""),
+    include_audio: Boolean(event.values.include_audio),
   };
 
   saving.value = true;
@@ -361,6 +365,12 @@ async function copyText(value: string, label: string) {
           </Message>
         </div>
 
+        <div class="field field-inline">
+          <label for="include_audio">包含音频</label>
+          <ToggleSwitch id="include_audio" name="include_audio" />
+          <span class="field-hint">开启后推流会包含音频轨（需输入源带音频）</span>
+        </div>
+
         <div class="field">
           <label for="description">备注</label>
           <Textarea id="description" name="description" class="field-input" rows="3" />
@@ -492,6 +502,23 @@ async function copyText(value: string, label: string) {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+}
+
+:deep(.device-dialog .field-inline) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+:deep(.device-dialog .field-inline label) {
+  margin-right: 0.25rem;
+}
+
+.field-hint {
+  flex: 1 1 100%;
+  font-size: 0.75rem;
+  color: #94a3b8;
 }
 
 :deep(.device-dialog .field) {

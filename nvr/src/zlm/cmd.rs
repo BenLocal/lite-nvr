@@ -12,6 +12,7 @@ pub(crate) fn init_zlm_cmd_sender() -> anyhow::Result<tokio::sync::mpsc::Receive
     Ok(rx)
 }
 
+#[allow(dead_code)]
 pub(crate) fn blocking_send_cmd(cmd: ZlmCmd) -> anyhow::Result<()> {
     ZLM_CMD_SENDER
         .get()
