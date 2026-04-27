@@ -144,6 +144,9 @@ impl Bus {
                     OutputDest::Encoded => {
                         Self::create_encoded_output_stream(state, input_stream_index).await
                     }
+                    OutputDest::Demuxed => {
+                        Self::create_demuxed_output_stream(state, input_stream_index).await
+                    }
                 };
 
                 match stream_result {
@@ -202,6 +205,8 @@ impl Bus {
                 }
             }
             OutputDest::Encoded => Ok(true),
+            // Pure passthrough: no decoder, no encoder.
+            OutputDest::Demuxed => Ok(false),
         }
     }
 
@@ -209,6 +214,9 @@ impl Bus {
         let input_codec = input_stream.parameters().id();
 
         if let OutputDest::Raw = output.dest {
+            return Ok(false);
+        }
+        if let OutputDest::Demuxed = output.dest {
             return Ok(false);
         }
 
@@ -576,6 +584,60 @@ impl Bus {
         Ok((
             target_stream.clone(),
             Box::pin(reader.map(|pkg| Some(VideoFrame::from(pkg)))),
+        ))
+    }
+
+    /// Subscribe to demuxed input packets and emit each packet for the
+    /// requested stream as a `VideoFrame`. No decoder, no encoder, no muxer —
+    /// the packet bytes are exactly what came out of the input demuxer
+    /// (raw codec frames, no container framing). Suitable for codec-aware
+    /// downstream consumers like ZLMediaKit.
+    async fn create_demuxed_output_stream(
+        state: &mut BusState,
+        input_stream_index: usize,
+    ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
+        let mut input_receiver = state
+            .input_task
+            .as_ref()
+            .ok_or(anyhow::anyhow!("input task not found"))?
+            .subscribe();
+
+        let target_stream = state
+            .input_streams
+            .iter()
+            .find(|s| s.index() == input_stream_index)
+            .ok_or(anyhow::anyhow!("no matching stream in input"))?
+            .clone();
+        let target_stream_index = target_stream.index();
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<Option<VideoFrame>>(256);
+        tokio::spawn(async move {
+            loop {
+                match input_receiver.recv().await {
+                    Ok(RawPacketCmd::Data(packet)) => {
+                        if packet.index() == target_stream_index {
+                            if tx.send(Some(VideoFrame::from(packet))).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Ok(RawPacketCmd::EOF) => {
+                        let _ = tx.send(None).await;
+                        break;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        log::warn!("demuxed input_receiver lagged, dropped {} messages", n);
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            log::info!("demuxed stream finished");
+        });
+
+        Ok((
+            target_stream,
+            Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)),
         ))
     }
 
@@ -1029,6 +1091,12 @@ pub enum OutputDest {
     Mux { format: String },
     /// Stream of encoded packets (e.g. for RawPacket sink). Requires encoder.
     Encoded,
+    /// Pass demuxed input packets through unmodified — no decoder, no encoder,
+    /// no muxer. Each emitted item is exactly one frame as it left the input
+    /// demuxer (e.g. raw H.264 NALU bytes for video, raw AAC frame for audio,
+    /// without any container framing). Use this when the consumer (e.g.
+    /// ZLMediaKit) already knows how to packetise raw codec frames.
+    Demuxed,
 }
 
 #[derive(Clone, Debug)]
