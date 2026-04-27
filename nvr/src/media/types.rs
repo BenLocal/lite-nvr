@@ -231,15 +231,13 @@ fn to_fb_output(config: &OutputConfig) -> Option<FbOutputConfig> {
         },
         OutputDest::RawFrame { .. } => FbOutputDest::Raw,
         OutputDest::RawPacket { .. } => FbOutputDest::Encoded,
+        // ZLM consumes raw codec frames directly (no container framing).
+        // `Demuxed` gives one demuxed input packet per emitted item with no
+        // re-encoding or muxing, so video gets clean Annex B / AVCC NALs and
+        // audio gets one raw AAC frame per packet — exactly what
+        // `mk_frame_create` expects.
         #[cfg(feature = "zlm")]
-        OutputDest::Zlm(_) => FbOutputDest::Mux {
-            // "h264" / "adts" are FFmpeg muxer names (not codec names — "aac"
-            // is the codec, "adts" is the raw-AAC muxer).
-            format: match av_type {
-                OutputAvType::Audio => "adts".to_string(),
-                OutputAvType::Video => "h264".to_string(),
-            },
-        },
+        OutputDest::Zlm(_) => FbOutputDest::Demuxed,
     };
     let id = config
         .id

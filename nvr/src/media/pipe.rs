@@ -292,22 +292,11 @@ async fn forward_raw_packet_stream_to_zlm(
     let default_width = av.width();
     let default_height = av.height();
     let default_fps = av.fps();
-    let sample_rate = av.sample_rate();
-    let channels = av.channels();
+    let audio_sample_rate = av.sample_rate();
+    let audio_channels = av.channels();
     let mut track_initialized = false;
     let mut needs_conversion = false;
     let mut conversion_checked = false;
-
-    // ADTS-framed AAC may arrive with multiple frames concatenated in one chunk
-    // (the ADTS muxer's avio buffer batches small writes). ZLM expects a single
-    // AAC frame per `mk_frame`, so we walk the chunk and emit one ZlmFrame per
-    // ADTS frame. Partial frames at chunk boundaries are buffered.
-    let mut adts_leftover: Vec<u8> = Vec::new();
-    let pts_step_ms_per_aac_frame: u64 = if sample_rate > 0 {
-        ((1024u64 * 1000) + sample_rate as u64 / 2) / sample_rate as u64 // ≈21ms@48k, ≈23ms@44.1k
-    } else {
-        21
-    };
 
     while let Some(opt) = stream.next().await {
         let Some(frame) = opt else { continue };
@@ -344,8 +333,8 @@ async fn forward_raw_packet_stream_to_zlm(
                         )
                     }
                     OutputAvType::Audio => {
-                        let sr = sample_rate.max(1) as i32;
-                        let ch = channels.max(1) as i32;
+                        let sr = audio_sample_rate.max(1) as i32;
+                        let ch = audio_channels.max(1) as i32;
                         log::info!("ZLM: audio track init (sr={}, ch={})", sr, ch);
                         Track::new(
                             CodecId::AAC,
@@ -388,47 +377,9 @@ async fn forward_raw_packet_stream_to_zlm(
         let pts_ms = frame.pts_ms(time_base);
         let dts_ms = frame.dts_ms(time_base);
 
-        if matches!(av_type, OutputAvType::Audio) {
-            // Combine any leftover from prior chunk with this chunk, split
-            // ADTS frames, and push each as a separate ZlmFrame.
-            let combined: Vec<u8> = if adts_leftover.is_empty() {
-                frame.data.to_vec()
-            } else {
-                let mut v = std::mem::take(&mut adts_leftover);
-                v.extend_from_slice(frame.data.as_ref());
-                v
-            };
-            let mut offset = 0usize;
-            let mut sub_idx = 0u64;
-            while offset + 7 <= combined.len() {
-                let Some(len) = parse_adts_frame_len(&combined[offset..]) else {
-                    // Lost sync — drop one byte and resync.
-                    offset += 1;
-                    continue;
-                };
-                if len < 7 || offset + len > combined.len() {
-                    break;
-                }
-                let frame_bytes = &combined[offset..offset + len];
-                let base_pts = pts_ms.max(0.0) as u64;
-                let pts = base_pts.saturating_add(pts_step_ms_per_aac_frame * sub_idx);
-                let zlm_frame = ZlmFrame::new(CodecId::AAC, pts, pts, frame_bytes);
-                if !media.input_frame(&zlm_frame) {
-                    log::warn!(
-                        "ZLM: input_frame failed (audio, pts_ms={}, len={})",
-                        pts,
-                        frame_bytes.len()
-                    );
-                }
-                offset += len;
-                sub_idx += 1;
-            }
-            if offset < combined.len() {
-                adts_leftover.extend_from_slice(&combined[offset..]);
-            }
-            continue;
-        }
-
+        // With `OutputDest::Demuxed`, each frame is exactly one raw codec
+        // frame — for audio that's one AAC frame (no ADTS header), for video
+        // that's a NALU group already in Annex B (or AVCC, converted below).
         let data: std::borrow::Cow<'_, [u8]> =
             if matches!(av_type, OutputAvType::Video) && needs_conversion {
                 std::borrow::Cow::Owned(convert_avcc_to_annexb(frame.data.as_ref()).to_vec())
@@ -450,22 +401,6 @@ async fn forward_raw_packet_stream_to_zlm(
     }
 
     log::info!("ZLM: {:?} stream ended", av_type);
-}
-
-/// Parse the frame length (header + payload) from an ADTS frame. Returns
-/// `None` if the bytes don't start with a valid ADTS sync word (0xFFF).
-#[cfg(feature = "zlm")]
-fn parse_adts_frame_len(buf: &[u8]) -> Option<usize> {
-    if buf.len() < 7 {
-        return None;
-    }
-    if buf[0] != 0xFF || (buf[1] & 0xF0) != 0xF0 {
-        return None;
-    }
-    let len = ((buf[3] as usize & 0x03) << 11)
-        | ((buf[4] as usize) << 3)
-        | (((buf[5] as usize) >> 5) & 0x07);
-    Some(len)
 }
 
 /// Get destination name for logging (used by tests).
