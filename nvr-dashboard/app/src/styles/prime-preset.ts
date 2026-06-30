@@ -24,6 +24,25 @@ const controlRoot = {
 }
 
 const NvrPrimePreset = definePreset(Aura, {
+  semantic: {
+    // The dashboard accent is blue (#3b82f6 = blue.500), not Aura's default
+    // emerald. Without this, PrimeVue renders green primary accents (e.g. the
+    // login button) until the custom blue CSS settles — a green flash on the
+    // first, uncached load. Mapping primary to the blue palette removes it.
+    primary: {
+      50: '{blue.50}',
+      100: '{blue.100}',
+      200: '{blue.200}',
+      300: '{blue.300}',
+      400: '{blue.400}',
+      500: '{blue.500}',
+      600: '{blue.600}',
+      700: '{blue.700}',
+      800: '{blue.800}',
+      900: '{blue.900}',
+      950: '{blue.950}',
+    },
+  },
   components: {
     datatable: {
       root: {

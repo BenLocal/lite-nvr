@@ -50,10 +50,12 @@ async fn serve_embedded(uri: Uri) -> Response {
 fn file_response(path: &str, file: EmbeddedFile) -> Response {
     let content_type = HeaderValue::from_str(file.metadata.mimetype())
         .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
-    // index.html must always be revalidated so a new build's chunk hashes are
-    // picked up without a manual hard refresh; hashed assets are immutable.
+    // index.html is never cached: it pins the hashed chunk URLs, so a stale copy
+    // makes the browser load an old build (e.g. a previous LoginView with the
+    // green `var(--p-primary-color)` background). `no-store` forces a fresh fetch
+    // every load. Hashed assets are content-addressed, so they stay immutable.
     let cache_control = if path == "index.html" {
-        HeaderValue::from_static("no-cache")
+        HeaderValue::from_static("no-store, no-cache, must-revalidate")
     } else {
         HeaderValue::from_static("public, max-age=31536000, immutable")
     };
