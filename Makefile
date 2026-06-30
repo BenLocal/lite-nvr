@@ -108,4 +108,4 @@ clean:
 	cargo clean
 
 clean-frontend:
-	rm -rf $(DASHBOARD_DIR)/node_modules $(DASHBOARD_DIR)/dist
+	rm -rf $(DASHBOARD_DIR)/dist
