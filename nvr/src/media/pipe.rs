@@ -1,5 +1,6 @@
 use std::{
     backtrace::Backtrace,
+    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -73,9 +74,20 @@ impl Pipe {
         let bus = FbBus::new("pipe");
         let cancel = self.cancel.clone();
 
+        // RTSP over UDP (FFmpeg's default) drops packets on lossy/jittery links,
+        // which corrupts the H264 stream ("RTP: missed packets" -> decode errors).
+        // Force TCP transport with a socket timeout for RTSP inputs.
+        let input_options = match &self.config.input {
+            InputConfig::Network { url } if url.starts_with("rtsp://") => Some(HashMap::from([
+                ("rtsp_transport".to_string(), "tcp".to_string()),
+                ("stimeout".to_string(), "5000000".to_string()),
+            ])),
+            _ => None,
+        };
+
         // Map and add input
         let fb_input = self.config.input.clone().into();
-        if let Err(e) = bus.add_input(fb_input, None).await {
+        if let Err(e) = bus.add_input(fb_input, input_options).await {
             log::error!(
                 "Pipe: add_input failed: {:#}\nbacktrace:\n{}",
                 e,
