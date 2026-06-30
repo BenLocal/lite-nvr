@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Button from 'primevue/button'
 import Card from 'primevue/card'
+import Checkbox from 'primevue/checkbox'
 import Dialog from 'primevue/dialog'
 import Paginator from 'primevue/paginator'
 import Tag from 'primevue/tag'
@@ -10,9 +11,13 @@ import TabList from 'primevue/tablist'
 import TabPanel from 'primevue/tabpanel'
 import TabPanels from 'primevue/tabpanels'
 import Tabs from 'primevue/tabs'
+import { useConfirm } from 'primevue/useconfirm'
 import {
   buildPlaybackPlaylistUrl,
   buildPlaybackSegmentPlaylistUrl,
+  deleteAllDeviceSegments,
+  deletePlaybackSegment,
+  deletePlaybackSegments,
   listDevicePlaybackSegments,
   listTodayDevicePlaybackSegments,
   listPlayback,
@@ -45,6 +50,8 @@ declare global {
 }
 
 const appToast = useAppToast()
+const confirm = useConfirm()
+const selectedSegmentIds = ref<string[]>([])
 
 const loading = ref(false)
 const devices = ref<DevicePlaybackItem[]>([])
@@ -221,6 +228,95 @@ async function ensureTodayDeviceSegments(deviceId: string) {
   } catch (error) {
     appToast.errorFrom('时间轴加载失败', error, '当天时间轴片段加载失败')
   }
+}
+
+async function refreshAfterDelete(deletedIds: string[], stopActivePlayer = false) {
+  // If a segment that is currently loaded was deleted, tear the player down so
+  // it does not keep playing a now-missing file.
+  if (stopActivePlayer || deletedIds.includes(currentSegmentId.value)) {
+    stopPlayer()
+    playbackVisible.value = false
+    resetPlayback(true)
+  }
+  selectedSegmentIds.value = []
+  const deviceId = activeDeviceId.value
+  if (deviceId) {
+    // Force the cached "today" timeline to reload.
+    const todayMap = { ...todayDeviceSegmentsMap.value }
+    delete todayMap[deviceId]
+    todayDeviceSegmentsMap.value = todayMap
+    await ensureDeviceSegments(deviceId)
+    await ensureTodayDeviceSegments(deviceId)
+  }
+  await loadPlayback()
+}
+
+function confirmDeleteSegment(segment: PlaybackSegmentItem) {
+  confirm.require({
+    header: '删除片段',
+    message: `确认删除片段“${segment.file_name}"吗？此操作不可恢复。`,
+    icon: 'pi pi-exclamation-triangle',
+    rejectLabel: '取消',
+    acceptLabel: '删除',
+    acceptClass: 'p-button-danger',
+    accept: async () => {
+      try {
+        await deletePlaybackSegment(segment.id)
+        appToast.success('删除成功', '录制片段已删除')
+        await refreshAfterDelete([segment.id])
+      } catch (error) {
+        appToast.errorFrom('删除失败', error, '录制片段删除失败')
+      }
+    },
+  })
+}
+
+function confirmDeleteSelectedSegments() {
+  const ids = [...selectedSegmentIds.value]
+  if (!ids.length) {
+    return
+  }
+  confirm.require({
+    header: '批量删除片段',
+    message: `确认删除选中的 ${ids.length} 个录制片段吗？此操作不可恢复。`,
+    icon: 'pi pi-exclamation-triangle',
+    rejectLabel: '取消',
+    acceptLabel: '删除',
+    acceptClass: 'p-button-danger',
+    accept: async () => {
+      try {
+        const result = await deletePlaybackSegments(ids)
+        appToast.success('删除成功', `已删除 ${result.deleted} 个录制片段`)
+        await refreshAfterDelete(ids)
+      } catch (error) {
+        appToast.errorFrom('删除失败', error, '批量删除录制片段失败')
+      }
+    },
+  })
+}
+
+function confirmDeleteAllSegments() {
+  const device = activeDevice.value
+  if (!device) {
+    return
+  }
+  confirm.require({
+    header: '删除全部片段',
+    message: `确认删除设备“${device.device_name}"的全部录制片段吗？此操作不可恢复。`,
+    icon: 'pi pi-exclamation-triangle',
+    rejectLabel: '取消',
+    acceptLabel: '全部删除',
+    acceptClass: 'p-button-danger',
+    accept: async () => {
+      try {
+        const result = await deleteAllDeviceSegments(device.device_id)
+        appToast.success('删除成功', `已删除 ${result.deleted} 个录制片段`)
+        await refreshAfterDelete([], true)
+      } catch (error) {
+        appToast.errorFrom('删除失败', error, '删除全部录制片段失败')
+      }
+    },
+  })
 }
 
 function formatStartTime(value: number) {
@@ -738,6 +834,23 @@ function formatDaySecond(second: number) {
                   :disabled="!activeSegments.length"
                   @click="openPlaylistPlayback()"
                 />
+                <span class="segment-actions-spacer" />
+                <Button
+                  v-if="selectedSegmentIds.length"
+                  :label="`删除选中 (${selectedSegmentIds.length})`"
+                  icon="pi pi-trash"
+                  text
+                  severity="danger"
+                  @click="confirmDeleteSelectedSegments"
+                />
+                <Button
+                  label="全部删除"
+                  icon="pi pi-trash"
+                  text
+                  severity="danger"
+                  :disabled="!activeSegments.length"
+                  @click="confirmDeleteAllSegments"
+                />
               </div>
 
               <div v-if="segmentLoading" class="segment-empty">
@@ -755,8 +868,18 @@ function formatDaySecond(second: number) {
                   v-for="segment in pagedSegments"
                   :key="segment.id"
                   class="segment-card"
-                  :class="{ 'segment-card-active': currentSegmentId === segment.id }"
+                  :class="{
+                    'segment-card-active': currentSegmentId === segment.id,
+                    'segment-card-selected': selectedSegmentIds.includes(segment.id),
+                  }"
                 >
+                  <label class="segment-select" @click.stop>
+                    <Checkbox
+                      v-model="selectedSegmentIds"
+                      :value="segment.id"
+                      :input-id="`seg-sel-${segment.id}`"
+                    />
+                  </label>
                   <button
                     type="button"
                     class="segment-preview"
@@ -801,6 +924,14 @@ function formatDaySecond(second: number) {
                         text
                         size="small"
                         @click="openDetail(segment)"
+                      />
+                      <Button
+                        icon="pi pi-trash"
+                        label="删除"
+                        text
+                        size="small"
+                        severity="danger"
+                        @click="confirmDeleteSegment(segment)"
                       />
                     </div>
                   </div>
@@ -1086,8 +1217,13 @@ function formatDaySecond(second: number) {
 
 .segment-actions {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  gap: 0.25rem;
   margin-bottom: 1rem;
+}
+
+.segment-actions-spacer {
+  flex: 1 1 auto;
 }
 
 .segment-grid {
@@ -1097,6 +1233,7 @@ function formatDaySecond(second: number) {
 }
 
 .segment-card {
+  position: relative;
   overflow: hidden;
   border-radius: 1rem;
   border: 1px solid rgb(148 163 184 / 10%);
@@ -1114,6 +1251,24 @@ function formatDaySecond(second: number) {
 .segment-card-active {
   border-color: rgb(59 130 246 / 50%);
   box-shadow: 0 8px 24px rgb(59 130 246 / 30%);
+}
+
+.segment-card-selected {
+  border-color: rgb(59 130 246 / 45%);
+  box-shadow: 0 8px 24px rgb(59 130 246 / 22%);
+}
+
+.segment-select {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 2;
+  display: inline-flex;
+  padding: 0.15rem;
+  border-radius: 0.4rem;
+  background: rgb(2 6 23 / 55%);
+  backdrop-filter: blur(4px);
+  cursor: pointer;
 }
 
 .segment-preview {

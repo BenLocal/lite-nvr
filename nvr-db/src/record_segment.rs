@@ -273,6 +273,18 @@ pub async fn get(id: &str, conn: &Connection) -> anyhow::Result<Option<RecordSeg
     Ok(Some(record_from_row(&row)?))
 }
 
+pub async fn delete(id: &str, conn: &Connection) -> anyhow::Result<()> {
+    conn.execute("DELETE FROM record_segments WHERE id = ?1", [id])
+        .await?;
+    Ok(())
+}
+
+pub async fn delete_by_stream(stream: &str, conn: &Connection) -> anyhow::Result<()> {
+    conn.execute("DELETE FROM record_segments WHERE stream = ?1", [stream])
+        .await?;
+    Ok(())
+}
+
 fn sql_text(value: &str) -> String {
     value.replace('\'', "''")
 }

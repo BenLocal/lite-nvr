@@ -72,6 +72,30 @@ export function listTodayDevicePlaybackSegments(deviceId: string) {
   return request<PlaybackSegmentItem[]>(`/playback/device/${encodeURIComponent(deviceId)}/today`)
 }
 
+export interface DeleteSegmentsResult {
+  deleted: number
+}
+
+export function deletePlaybackSegment(id: string) {
+  return request<DeleteSegmentsResult>(`/playback/segment/${encodeURIComponent(id)}/delete`, {
+    method: 'POST',
+  })
+}
+
+export function deletePlaybackSegments(ids: string[]) {
+  return request<DeleteSegmentsResult>('/playback/segments/delete', {
+    method: 'POST',
+    body: { ids },
+  })
+}
+
+export function deleteAllDeviceSegments(deviceId: string) {
+  return request<DeleteSegmentsResult>(
+    `/playback/device/${encodeURIComponent(deviceId)}/segments/delete`,
+    { method: 'POST' },
+  )
+}
+
 export function buildPlaybackSegmentUrl(id: string) {
   return `/api/playback/segment/${encodeURIComponent(id)}`
 }

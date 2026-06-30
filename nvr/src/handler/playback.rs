@@ -1,10 +1,10 @@
 use axum::{
-    Router,
+    Json, Router,
     body::Body,
     extract::{Path, Query},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::Response,
-    routing::get,
+    routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 
@@ -49,10 +49,16 @@ pub fn playback_router() -> Router {
         .route("/list", get(list_playback))
         .route("/device/list", get(list_playback))
         .route("/device/{device_id}/segments", get(list_device_segments))
+        .route(
+            "/device/{device_id}/segments/delete",
+            post(delete_device_segments),
+        )
         .route("/device/{device_id}/today", get(list_today_device_segments))
         .route("/playlist/{device_id}", get(playback_playlist))
         .route("/segment-playlist/{id}", get(segment_playlist))
+        .route("/segments/delete", post(delete_segments))
         .route("/segment/{id}", get(play_segment))
+        .route("/segment/{id}/delete", post(delete_segment))
 }
 
 #[derive(Debug, Serialize)]
@@ -203,11 +209,7 @@ async fn play_segment(headers: HeaderMap, Path(id): Path<String>) -> ApiResult<R
         .await?
         .ok_or_else(|| anyhow::anyhow!("record segment not found"))?;
     if !segment_file_exists(&segment.file_path).await {
-        return Err(anyhow::anyhow!(
-            "record segment file not found: {}",
-            segment.file_path
-        )
-        .into());
+        return Err(anyhow::anyhow!("record segment file not found: {}", segment.file_path).into());
     }
     let content = tokio::fs::read(&segment.file_path).await?;
     let content_len = content.len();
@@ -271,16 +273,74 @@ async fn play_segment(headers: HeaderMap, Path(id): Path<String>) -> ApiResult<R
     Ok(response)
 }
 
+#[derive(Debug, Serialize)]
+struct DeleteSegmentsResult {
+    deleted: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteSegmentsRequest {
+    ids: Vec<String>,
+}
+
+/// Best-effort removal of a segment's file; a missing file is not an error.
+async fn remove_segment_file(path: &str) {
+    if path.is_empty() {
+        return;
+    }
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => log::warn!("Failed to delete segment file {}: {:#}", path, err),
+    }
+}
+
+async fn delete_segment(Path(id): Path<String>) -> ApiJsonResult<DeleteSegmentsResult> {
+    let conn = app_db_conn()?;
+    let deleted = if let Some(segment) = nvr_db::record_segment::get(&id, &conn).await? {
+        remove_segment_file(&segment.file_path).await;
+        nvr_db::record_segment::delete(&id, &conn).await?;
+        1
+    } else {
+        0
+    };
+    Ok(ok_json(DeleteSegmentsResult { deleted }))
+}
+
+async fn delete_segments(
+    Json(req): Json<DeleteSegmentsRequest>,
+) -> ApiJsonResult<DeleteSegmentsResult> {
+    let conn = app_db_conn()?;
+    let mut deleted = 0;
+    for id in req.ids {
+        if let Some(segment) = nvr_db::record_segment::get(&id, &conn).await? {
+            remove_segment_file(&segment.file_path).await;
+            nvr_db::record_segment::delete(&id, &conn).await?;
+            deleted += 1;
+        }
+    }
+    Ok(ok_json(DeleteSegmentsResult { deleted }))
+}
+
+async fn delete_device_segments(
+    Path(device_id): Path<String>,
+) -> ApiJsonResult<DeleteSegmentsResult> {
+    let conn = app_db_conn()?;
+    let records = nvr_db::record_segment::list_by_stream(&device_id, &conn).await?;
+    let deleted = records.len();
+    for record in &records {
+        remove_segment_file(&record.file_path).await;
+    }
+    nvr_db::record_segment::delete_by_stream(&device_id, &conn).await?;
+    Ok(ok_json(DeleteSegmentsResult { deleted }))
+}
+
 fn parse_range_header(range: &str, content_len: usize) -> Result<(usize, usize), ()> {
     if content_len == 0 {
         return Err(());
     }
-    let bytes = range
-        .strip_prefix("bytes=")
-        .ok_or(())?;
-    let (start, end) = bytes
-        .split_once('-')
-        .ok_or(())?;
+    let bytes = range.strip_prefix("bytes=").ok_or(())?;
+    let (start, end) = bytes.split_once('-').ok_or(())?;
 
     let (start, end) = match (start.trim(), end.trim()) {
         ("", "") => return Err(()),
@@ -355,7 +415,8 @@ fn build_even_byterange_segments(
         .ceil()
         .max(1.0) as usize;
     let aligned_total = content_len - (content_len % packet_size);
-    let approx_aligned = ((aligned_total / segment_count.max(1)) / packet_size).max(1) * packet_size;
+    let approx_aligned =
+        ((aligned_total / segment_count.max(1)) / packet_size).max(1) * packet_size;
 
     let mut segments = Vec::new();
     let mut offset = 0usize;
@@ -464,11 +525,7 @@ async fn segment_playlist(Path(id): Path<String>) -> ApiResult<Response> {
         .await?
         .ok_or_else(|| anyhow::anyhow!("record segment not found"))?;
     if !segment_file_exists(&segment.file_path).await {
-        return Err(anyhow::anyhow!(
-            "record segment file not found: {}",
-            segment.file_path
-        )
-        .into());
+        return Err(anyhow::anyhow!("record segment file not found: {}", segment.file_path).into());
     }
 
     let content = tokio::fs::read(&segment.file_path).await?;

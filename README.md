@@ -164,8 +164,8 @@ the database and automatically starts a pipeline that publishes to ZLMediaKit.
 | ------ | ------------------------- | ----------------- |
 | GET    | `/api/device/list`        | List devices (with FLV URLs) |
 | POST   | `/api/device/add`         | Add a device      |
-| PUT    | `/api/device/update/{id}` | Update a device   |
-| DELETE | `/api/device/remove/{id}` | Remove a device   |
+| POST   | `/api/device/update/{id}` | Update a device   |
+| POST   | `/api/device/remove/{id}` | Remove a device   |
 
 ```bash
 curl -X POST http://localhost:18080/api/device/add \
@@ -192,6 +192,12 @@ Recorded HLS segments are persisted and exposed for playback.
 | GET    | `/api/playback/device/{device_id}/today`   | List today's segments        |
 | GET    | `/api/playback/playlist/{device_id}`       | Build a playback playlist    |
 | GET    | `/api/playback/segment/{id}`               | Play a single segment        |
+| POST   | `/api/playback/segment/{id}/delete`        | Delete one segment           |
+| POST   | `/api/playback/segments/delete`            | Delete segments (`{ "ids": [...] }`) |
+| POST   | `/api/playback/device/{device_id}/segments/delete` | Delete all of a device's segments |
+
+> The REST API uses only **GET** and **POST** — mutations (update/remove/delete)
+> go through POST with a verb in the path.
 
 ### System — `/api/system`
 
