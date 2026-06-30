@@ -208,11 +208,14 @@ async fn play_segment(headers: HeaderMap, Path(id): Path<String>) -> ApiResult<R
     let segment = nvr_db::record_segment::get(&id, &conn)
         .await?
         .ok_or_else(|| anyhow::anyhow!("record segment not found"))?;
-    if !segment_file_exists(&segment.file_path).await {
-        return Err(anyhow::anyhow!("record segment file not found: {}", segment.file_path).into());
-    }
-    let content = tokio::fs::read(&segment.file_path).await?;
-    let content_len = content.len();
+    let content_len = match tokio::fs::metadata(&segment.file_path).await {
+        Ok(meta) => meta.len() as usize,
+        Err(_) => {
+            return Err(
+                anyhow::anyhow!("record segment file not found: {}", segment.file_path).into(),
+            );
+        }
+    };
     let range = headers
         .get(header::RANGE)
         .and_then(|value| value.to_str().ok())
@@ -234,14 +237,21 @@ async fn play_segment(headers: HeaderMap, Path(id): Path<String>) -> ApiResult<R
                 return Ok(response);
             }
         };
+        // Read only the requested range via seek instead of the whole file:
+        // hls.js issues many byte-range requests per segment, and re-reading the
+        // entire TS file for each was the main cause of slow playback startup.
+        let len = end - start + 1;
+        let chunk = read_file_range(&segment.file_path, start as u64, len).await?;
         (
             StatusCode::PARTIAL_CONTENT,
-            content[start..=end].to_vec(),
+            chunk,
             Some(format!("bytes {}-{}/{}", start, end, content_len)),
-            end - start + 1,
+            len,
         )
     } else {
-        (StatusCode::OK, content, None, content_len)
+        let content = tokio::fs::read(&segment.file_path).await?;
+        let len = content.len();
+        (StatusCode::OK, content, None, len)
     };
 
     let mut response = Response::new(Body::from(body));
@@ -335,6 +345,17 @@ async fn delete_device_segments(
     Ok(ok_json(DeleteSegmentsResult { deleted }))
 }
 
+/// Read `len` bytes starting at `start` from `path` without loading the rest of
+/// the file into memory.
+async fn read_file_range(path: &str, start: u64, len: usize) -> anyhow::Result<Vec<u8>> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    let mut file = tokio::fs::File::open(path).await?;
+    file.seek(std::io::SeekFrom::Start(start)).await?;
+    let mut buf = vec![0u8; len];
+    file.read_exact(&mut buf).await?;
+    Ok(buf)
+}
+
 fn parse_range_header(range: &str, content_len: usize) -> Result<(usize, usize), ()> {
     if content_len == 0 {
         return Err(());
@@ -381,31 +402,6 @@ fn detect_ts_packet_size(content: &[u8]) -> Option<usize> {
     })
 }
 
-fn parse_pcr_seconds(packet: &[u8]) -> Option<f64> {
-    if packet.len() < 12 || packet.first().copied()? != 0x47 {
-        return None;
-    }
-    let adaptation_control = (packet[3] >> 4) & 0x03;
-    if adaptation_control != 0b10 && adaptation_control != 0b11 {
-        return None;
-    }
-    let adaptation_len = packet[4] as usize;
-    if adaptation_len < 7 || 5 + adaptation_len > packet.len() {
-        return None;
-    }
-    if packet[5] & 0x10 == 0 {
-        return None;
-    }
-
-    let pcr_base = ((packet[6] as u64) << 25)
-        | ((packet[7] as u64) << 17)
-        | ((packet[8] as u64) << 9)
-        | ((packet[9] as u64) << 1)
-        | ((packet[10] as u64) >> 7);
-    let pcr_ext = (((packet[10] & 0x01) as u64) << 8) | packet[11] as u64;
-    Some(((pcr_base * 300) + pcr_ext) as f64 / 27_000_000.0)
-}
-
 fn build_even_byterange_segments(
     content_len: usize,
     packet_size: usize,
@@ -446,90 +442,24 @@ fn build_even_byterange_segments(
     segments
 }
 
-fn build_ts_byterange_segments(content: &[u8], total_duration: f32) -> Vec<ByteRangeSegment> {
-    let Some(packet_size) = detect_ts_packet_size(content) else {
-        return vec![ByteRangeSegment {
-            offset: 0,
-            length: content.len(),
-            duration: total_duration.max(0.1),
-        }];
-    };
-
-    let aligned_len = content.len() - (content.len() % packet_size);
-    let mut pcr_points = Vec::<(usize, f64)>::new();
-    let mut offset = 0usize;
-    while offset + packet_size <= aligned_len {
-        if let Some(seconds) = parse_pcr_seconds(&content[offset..offset + packet_size]) {
-            pcr_points.push((offset, seconds));
-        }
-        offset += packet_size;
-    }
-
-    if pcr_points.len() < 2 {
-        return build_even_byterange_segments(content.len(), packet_size, total_duration);
-    }
-
-    let first_pcr = pcr_points[0].1;
-    let last_pcr = pcr_points[pcr_points.len() - 1].1;
-    let usable_duration = if last_pcr > first_pcr {
-        (last_pcr - first_pcr) as f32
-    } else {
-        total_duration
-    }
-    .max(0.1);
-
-    let mut boundaries = vec![0usize];
-    let mut next_target = PLAYBACK_BYTERANGE_SEGMENT_SECONDS;
-    for (packet_offset, seconds) in pcr_points.iter().copied() {
-        let relative = seconds - first_pcr;
-        if relative + 0.001 >= next_target {
-            if packet_offset > *boundaries.last().unwrap_or(&0) {
-                boundaries.push(packet_offset);
-            }
-            next_target += PLAYBACK_BYTERANGE_SEGMENT_SECONDS;
-        }
-    }
-    if *boundaries.last().unwrap_or(&0) != aligned_len {
-        boundaries.push(aligned_len);
-    }
-
-    let mut segments = Vec::new();
-    for window in boundaries.windows(2) {
-        let start = window[0];
-        let end = window[1];
-        if end <= start {
-            continue;
-        }
-        let duration = if usable_duration > 0.0 {
-            (((end - start) as f64 / aligned_len.max(1) as f64) * usable_duration as f64) as f32
-        } else {
-            PLAYBACK_BYTERANGE_SEGMENT_SECONDS as f32
-        };
-        segments.push(ByteRangeSegment {
-            offset: start,
-            length: end - start,
-            duration: duration.max(0.1),
-        });
-    }
-
-    if segments.is_empty() {
-        return build_even_byterange_segments(content.len(), packet_size, total_duration);
-    }
-
-    segments
-}
-
 async fn segment_playlist(Path(id): Path<String>) -> ApiResult<Response> {
     let conn = app_db_conn()?;
     let segment = nvr_db::record_segment::get(&id, &conn)
         .await?
         .ok_or_else(|| anyhow::anyhow!("record segment not found"))?;
-    if !segment_file_exists(&segment.file_path).await {
-        return Err(anyhow::anyhow!("record segment file not found: {}", segment.file_path).into());
-    }
-
-    let content = tokio::fs::read(&segment.file_path).await?;
-    let sub_segments = build_ts_byterange_segments(&content, segment.duration);
+    let content_len = match tokio::fs::metadata(&segment.file_path).await {
+        Ok(meta) => meta.len() as usize,
+        Err(_) => {
+            return Err(
+                anyhow::anyhow!("record segment file not found: {}", segment.file_path).into(),
+            );
+        }
+    };
+    // Detect the TS packet size from a small head read and split by size, instead
+    // of reading and PCR-scanning the whole file (which slowed playback opening).
+    let head = read_file_range(&segment.file_path, 0, content_len.min(4096)).await?;
+    let packet_size = detect_ts_packet_size(&head).unwrap_or(188);
+    let sub_segments = build_even_byterange_segments(content_len, packet_size, segment.duration);
 
     let target_duration = sub_segments
         .iter()
