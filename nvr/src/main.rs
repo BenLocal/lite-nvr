@@ -11,6 +11,8 @@ mod handler;
 mod init;
 mod manager;
 #[cfg(feature = "zlm")]
+mod xiaomi;
+#[cfg(feature = "zlm")]
 mod zlm;
 
 fn init_logging() {

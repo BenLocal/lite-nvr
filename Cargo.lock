@@ -2152,6 +2152,7 @@ dependencies = [
  "tokio-util",
  "turso",
  "uuid",
+ "xiaomi",
 ]
 
 [[package]]
