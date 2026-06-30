@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -94,8 +94,10 @@ impl Transport {
 pub struct Conn {
     transport: Transport,
     is_tcp: bool,
-    seq_ch0: u16,
-    seq_ch3: u16,
+    seq_ch0: AtomicU16,
+    seq_ch3: AtomicU16,
+    /// Serializes UDP command write+ack so concurrent writers don't race.
+    cmd_mu: Mutex<()>,
     cmd_rx: Receiver<Vec<u8>>,
     packet_rx: Receiver<Vec<u8>>,
     /// Set just before a UDP command write; the worker fires it on msgDrwAck.
@@ -131,8 +133,9 @@ pub fn dial(host: &str, transport: &str) -> Result<Conn> {
     Ok(Conn {
         transport: conn,
         is_tcp,
-        seq_ch0: 0,
-        seq_ch3: 0,
+        seq_ch0: AtomicU16::new(0),
+        seq_ch3: AtomicU16::new(0),
+        cmd_mu: Mutex::new(()),
         cmd_rx,
         packet_rx,
         cmd_ack,
@@ -347,9 +350,10 @@ impl Conn {
     }
 
     /// Write a command on channel 0. For UDP, retransmits until ACK (5x, 1s).
-    pub fn write_command(&mut self, cmd: u32, data: &[u8]) -> Result<()> {
-        let req = marshal_cmd(0, self.seq_ch0, cmd, data);
-        self.seq_ch0 = self.seq_ch0.wrapping_add(1);
+    pub fn write_command(&self, cmd: u32, data: &[u8]) -> Result<()> {
+        let _guard = self.cmd_mu.lock().unwrap();
+        let seq = self.seq_ch0.fetch_add(1, Ordering::Relaxed);
+        let req = marshal_cmd(0, seq, cmd, data);
 
         if self.is_tcp {
             return self.transport.write(&req).map_err(Into::into);
@@ -387,7 +391,7 @@ impl Conn {
     }
 
     /// Write a media packet on channel 3 (used by the backchannel).
-    pub fn write_packet(&mut self, hdr: &[u8], payload: &[u8]) -> Result<()> {
+    pub fn write_packet(&self, hdr: &[u8], payload: &[u8]) -> Result<()> {
         const OFFSET: usize = 12;
         let n = (HDR_SIZE + payload.len()) as u32;
         let mut req = vec![0u8; n as usize + OFFSET];
@@ -396,8 +400,8 @@ impl Conn {
         req[2..4].copy_from_slice(&((n + 8) as u16).to_be_bytes());
         req[4] = MAGIC_DRW;
         req[5] = 3; // channel
-        req[6..8].copy_from_slice(&self.seq_ch3.to_be_bytes());
-        self.seq_ch3 = self.seq_ch3.wrapping_add(1);
+        let seq = self.seq_ch3.fetch_add(1, Ordering::Relaxed);
+        req[6..8].copy_from_slice(&seq.to_be_bytes());
         req[8..12].copy_from_slice(&n.to_be_bytes());
         let hlen = hdr.len().min(HDR_SIZE);
         req[OFFSET..OFFSET + hlen].copy_from_slice(&hdr[..hlen]);
