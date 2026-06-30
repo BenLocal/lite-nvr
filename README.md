@@ -40,7 +40,7 @@ streaming. It ships with a REST API server and a Vue 3 web dashboard.
 
 - **Rust** (edition 2024)
 - **FFmpeg 7.x** shared libraries (headers + libs)
-- **ZLMediaKit** (optional, enabled by default via the `zlm` feature)
+- **ZLMediaKit** (RTSP/RTMP/HLS distribution; always compiled in)
 
 ### 1. Install dependencies
 

@@ -25,9 +25,9 @@ ffmpeg-bus = { path = "../ffmpeg-bus" }
 nvr-db = { path = "../nvr-db" }
 nvr-dashboard = { path = "../nvr-dashboard" }
 media-pipe-core = { path = "../crates/media-pipe-core" }
-media-pipe-zlm = { path = "../crates/media-pipe-zlm", optional = true }
+media-pipe-zlm = { path = "../crates/media-pipe-zlm" }
 xiaomi = { path = "../crates/xiaomi" }
-rszlm = { workspace = true, optional = true }
+rszlm = { workspace = true }
 uuid = { workspace = true }
 turso = { workspace = true }
 argon2 = { workspace = true }
@@ -39,7 +39,5 @@ md5 = { workspace = true }
 tokio-linux-video = { workspace = true }
 
 [features]
-default = ["zlm"]
-zlm = ["dep:rszlm", "dep:media-pipe-zlm"]
 # Set by build.rs when compiling for Linux; satisfies check-cfg
 linux = []

@@ -49,7 +49,6 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
     // Xiaomi cameras bypass ffmpeg entirely: a native worker pushes the
     // decoded H264 straight into a ZLM Media. `input_value` carries the
     // XiaomiConfig as JSON.
-    #[cfg(feature = "zlm")]
     if device.input_type == "xiaomi" {
         let cfg: crate::xiaomi::XiaomiConfig = serde_json::from_str(&device.input_value)
             .map_err(|e| anyhow::anyhow!("invalid xiaomi device config: {e}"))?;
@@ -82,27 +81,17 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
         }
     };
 
-    #[cfg(feature = "zlm")]
-    let outputs = {
-        // hls_enabled drives recording: ZLM only produces the HLS segments that
-        // get archived (on_record_ts) when this is on. Live view uses FLV, which
-        // is independent, so disabling HLS just turns recording off.
-        let media = Arc::new(rszlm::media::Media::new_with_default_vhost(
-            "live",
-            device.id.as_str(),
-            0.0,
-            device.record,
-            false,
-        ));
-        media_pipe_zlm::zlm_outputs(media, device.include_audio)
-    };
-
-    #[cfg(not(feature = "zlm"))]
-    let outputs: Vec<media_pipe_core::OutputConfig> = {
-        return Err(anyhow::anyhow!(
-            "zlm feature is disabled, device auto-pipeline is unavailable"
-        ));
-    };
+    // hls_enabled drives recording: ZLM only produces the HLS segments that
+    // get archived (on_record_ts) when this is on. Live view uses FLV, which
+    // is independent, so disabling HLS just turns recording off.
+    let media = Arc::new(rszlm::media::Media::new_with_default_vhost(
+        "live",
+        device.id.as_str(),
+        0.0,
+        device.record,
+        false,
+    ));
+    let outputs = media_pipe_zlm::zlm_outputs(media, device.include_audio);
 
     let config = PipeConfig { input, outputs };
     manager::update_pipe(&device.id, config).await

@@ -1,4 +1,3 @@
-#[cfg(feature = "zlm")]
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
@@ -10,9 +9,7 @@ mod db;
 mod handler;
 mod init;
 mod manager;
-#[cfg(feature = "zlm")]
 mod xiaomi;
-#[cfg(feature = "zlm")]
 mod zlm;
 
 fn init_logging() {
@@ -49,16 +46,9 @@ async fn main() -> ! {
     let cancel = CancellationToken::new();
 
     let (ready_tx, ready_rx) = oneshot::channel();
-    #[cfg(feature = "zlm")]
-    {
-        // start zlm server
-        let cancel_clone = cancel.clone();
-        zlm::server::start_zlm_server(cancel_clone, ready_tx).unwrap();
-    }
-    #[cfg(not(feature = "zlm"))]
-    {
-        ready_tx.send(()).unwrap();
-    }
+    // start zlm server
+    let cancel_clone = cancel.clone();
+    zlm::server::start_zlm_server(cancel_clone, ready_tx).unwrap();
 
     // init device pipes
     let cancel_clone = cancel.clone();

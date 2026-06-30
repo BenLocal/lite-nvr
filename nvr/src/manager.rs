@@ -5,7 +5,6 @@ use std::{
 
 use media_pipe_core::{Pipe, PipeConfig};
 use tokio::{sync::RwLock, task::JoinHandle};
-#[cfg(feature = "zlm")]
 use tokio_util::sync::CancellationToken;
 
 /// One managed background source per device id: either an ffmpeg-driven `Pipe`
@@ -17,7 +16,6 @@ enum Entry {
         pipe: Arc<Pipe>,
         handle: JoinHandle<()>,
     },
-    #[cfg(feature = "zlm")]
     Worker {
         cancel: CancellationToken,
         handle: std::thread::JoinHandle<()>,
@@ -29,7 +27,6 @@ impl Entry {
     fn stop(&self) {
         match self {
             Entry::Pipe { pipe, .. } => pipe.cancel(),
-            #[cfg(feature = "zlm")]
             Entry::Worker { cancel, .. } => cancel.cancel(),
         }
     }
@@ -45,7 +42,6 @@ impl Entry {
                     }
                 }
             }
-            #[cfg(feature = "zlm")]
             Entry::Worker { handle, .. } => {
                 // The worker can be blocked in a socket read, so join it on a
                 // blocking thread with a bound — a stalled camera must not hang
@@ -67,7 +63,6 @@ impl Entry {
     fn is_started(&self) -> bool {
         match self {
             Entry::Pipe { pipe, .. } => pipe.is_started(),
-            #[cfg(feature = "zlm")]
             Entry::Worker { .. } => true,
         }
     }
@@ -133,7 +128,6 @@ pub(crate) async fn update_pipe(id: &str, config: PipeConfig) -> anyhow::Result<
 
 /// Start (or replace) a native Xiaomi worker that pushes the camera stream into
 /// `media`. Registered alongside pipes so the device lifecycle is uniform.
-#[cfg(feature = "zlm")]
 pub(crate) async fn upsert_xiaomi(
     id: &str,
     media: Arc<rszlm::media::Media>,
