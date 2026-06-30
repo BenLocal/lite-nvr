@@ -25,13 +25,16 @@ const DAY_SECONDS = 24 * 60 * 60
 const TIMELINE_TICKS = [0, 6, 12, 18, 24]
 
 type PlaybackMode = 'segment' | 'playlist'
+type HlsErrorData = { fatal?: boolean; type?: string; details?: string }
 type HlsPlayer = {
   loadSource: (url: string) => void
   attachMedia: (element: HTMLVideoElement) => void
+  on: (event: string, callback: (event: string, data: HlsErrorData) => void) => void
   destroy: () => void
 }
 type HlsJs = {
   isSupported: () => boolean
+  Events: { ERROR: string }
   new (): HlsPlayer
 }
 
@@ -370,12 +373,30 @@ async function attachPlayerSource() {
       throw new Error('当前浏览器不支持 HLS 播放')
     }
     const hls = new Hls()
+    hls.on(Hls.Events.ERROR, (_event, data) => {
+      if (data.fatal) {
+        onPlaybackError()
+      }
+    })
     hls.loadSource(currentPlayerUrl.value)
     hls.attachMedia(player)
     hlsPlayerRef.value = hls
     return
   }
+}
 
+function onPlaybackError() {
+  // A missing/deleted segment (backend returns 500) or otherwise unplayable
+  // source must not look like normal, ongoing playback — surface it and reset
+  // the player. The guard makes this idempotent and ignores the teardown that
+  // setting `currentPlayerUrl` to empty triggers.
+  if (!currentPlayerUrl.value) {
+    return
+  }
+  currentPlayerUrl.value = ''
+  currentSegmentId.value = ''
+  stopPlayer()
+  appToast.error('回放失败', '该片段不存在或无法播放')
 }
 
 function startTimelineDrag(event: PointerEvent) {
@@ -824,6 +845,7 @@ function formatDaySecond(second: number) {
             @loadedmetadata="onVideoLoadedMetadata"
             @timeupdate="onVideoTimeUpdate"
             @ended="onVideoEnded"
+            @error="onPlaybackError"
           />
           <div v-if="!currentPlayerUrl" class="player-empty">
             点击下方播放按钮，或拖动当天时间轴开始回放。
