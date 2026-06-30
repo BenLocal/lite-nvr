@@ -1,19 +1,22 @@
 # lite-nvr
 
-轻量级网络视频录像机（NVR），基于 Rust 构建。支持从多种来源（RTSP、文件、屏幕捕获、测试图案、V4L2 设备）采集视频，通过 FFmpeg 转码，并推送到 [ZLMediaKit](https://github.com/ZLMediaKit/ZLMediaKit) 进行 RTSP/RTMP/HLS 分发。
+A lightweight Network Video Recorder (NVR) built with Rust. It ingests video
+from RTSP/RTMP, local files, screen capture, test patterns, and V4L2 devices,
+transcodes via FFmpeg, and distributes through
+[ZLMediaKit](https://github.com/ZLMediaKit/ZLMediaKit) for RTSP/RTMP/HLS
+streaming. It ships with a REST API server and a Vue 3 web dashboard.
 
-A lightweight Network Video Recorder built with Rust. Ingests video from RTSP, files, screen capture, test patterns, and V4L2 devices, transcodes via FFmpeg, and distributes through ZLMediaKit for RTSP/RTMP/HLS streaming.
+## Features
 
-## 特性 Features
+- 🎥 Multiple input sources: RTSP/RTMP network streams, local files, screen capture, V4L2 devices, and test patterns
+- 🔄 Real-time FFmpeg transcoding (H.264 / libx264)
+- 📡 Stream distribution through ZLMediaKit (RTSP / RTMP / HLS)
+- 🗂️ HLS-based recording with per-segment playback
+- 🌐 RESTful API and a Vue 3 web dashboard
+- 💾 SQLite persistence (WAL mode)
+- ⚡ Async pipeline architecture (Tokio + async channels)
 
-- 🎥 多种输入源：RTSP/RTMP 网络流、本地文件、屏幕捕获、V4L2 设备、测试图案
-- 🔄 基于 FFmpeg 的实时转码（H.264/libx264）
-- 📡 通过 ZLMediaKit 分发流媒体（RTSP/RTMP/HLS）
-- 🌐 RESTful API 和 Vue 3 Web 控制台
-- 💾 SQLite 数据库持久化
-- ⚡ 异步管道架构（Tokio + async channels）
-
-## 架构 Architecture
+## Architecture
 
 ```
 ┌──────────┐    ┌───────────┐    ┌─────────┐    ┌─────────────┐
@@ -22,55 +25,65 @@ A lightweight Network Video Recorder built with Rust. Ingests video from RTSP, f
 └──────────┘    └───────────┘    └─────────┘    └─────────────┘
 ```
 
-### 工作空间结构 Workspace Crates
+### Workspace crates
 
-| Crate             | 描述 Description                                                                 |
-| ----------------- | -------------------------------------------------------------------------------- |
-| **nvr**           | 主应用 — REST API、管道管理、ZLMediaKit 集成<br>Main app — REST API, pipeline management, ZLMediaKit integration |
-| **ffmpeg-bus**    | 媒体引擎 — 输入解复用、解码器、编码器、复用器，通过异步通道连接<br>Media engine — input demux, decoder, encoder, muxer via async channels |
-| **nvr-db**        | 数据库层 — SQLite/Turso，内嵌 SQL 迁移，KV 存储<br>Database layer — SQLite/Turso with embedded migrations, KV store |
-| **nvr-dashboard** | Web 控制台 — Vue 3 SPA，通过 rust-embed 嵌入<br>Web dashboard — Vue 3 SPA embedded via rust-embed |
+| Crate             | Description                                                                |
+| ----------------- | -------------------------------------------------------------------------- |
+| **nvr**           | Main app — REST API (Axum), pipeline lifecycle, ZLMediaKit integration     |
+| **ffmpeg-bus**    | Media engine — input demux, decoder, encoder, muxer wired via async channels |
+| **nvr-db**        | Database layer — SQLite/Turso with embedded SQL migrations and a KV store  |
+| **nvr-dashboard** | Web dashboard — Vue 3 SPA embedded via `rust-embed`, served at `/nvr/`     |
 
-## 快速开始 Quick Start
+## Quick Start
 
-### 前置要求 Prerequisites
+### Prerequisites
 
 - **Rust** (edition 2024)
-- **FFmpeg 7.x** 共享库（头文件 + 库文件）
-- **ZLMediaKit**（可选，默认通过 `zlm` feature 启用）
+- **FFmpeg 7.x** shared libraries (headers + libs)
+- **ZLMediaKit** (optional, enabled by default via the `zlm` feature)
 
-### 1. 安装依赖 Install Dependencies
+### 1. Install dependencies
 
 ```bash
-# 自动下载适合您平台的 FFmpeg 和 ZLMediaKit
 # Auto-download FFmpeg & ZLMediaKit for your platform
 bash scripts/pre_install_deps.sh
 ```
 
-在 macOS 上，此脚本通过 Homebrew 安装 `ffmpeg@7` 并在 `./ffmpeg/` 创建符号链接。
+On macOS this script installs `ffmpeg@7` via Homebrew and creates symlinks under
+`./ffmpeg/`.
 
-### 2. 构建和运行 Build & Run
+### 2. Build & run
 
 ```bash
-# 构建所有 crates
 # Build all crates
 cargo build --workspace
 
-# 运行主应用（API 服务器在 :8080）
-# Run main app (API server on :8080)
+# Run the main app (API server on :18080)
 cargo run --package nvr
 ```
 
-API 服务器默认启动在 `http://localhost:8080`。
+The API server listens on `http://localhost:18080` by default, with all routes
+mounted under the `/api` prefix.
 
-Web 控制台访问：`http://localhost:8080/nvr/`
+The web dashboard is available at `http://localhost:18080/nvr/`.
 
-### 3. 创建管道 Create a Pipeline
+ZLMediaKit serves streaming on its own ports:
+
+| Protocol | Port |
+| -------- | ---- |
+| HTTP / HLS | `8553` |
+| RTSP     | `8554` |
+| RTMP     | `8555` |
+
+> A `Makefile` is provided that exports `FFMPEG_DIR`, `ZLM_DIR`, and
+> `LD_LIBRARY_PATH` for you. Run `make help` to list targets (`make run`,
+> `make build`, `make test`, `make watch`, …).
+
+### 3. Create a pipeline
 
 ```bash
-# RTSP 输入 → ZLMediaKit 输出
 # RTSP input → ZLMediaKit output
-curl -X POST http://localhost:8080/pipe/add \
+curl -X POST http://localhost:18080/api/pipe/add \
   -H "Content-Type: application/json" \
   -d '{
     "id": "cam1",
@@ -82,123 +95,179 @@ curl -X POST http://localhost:8080/pipe/add \
   }'
 ```
 
-播放流：
+Play the stream:
 
 ```bash
-# 通过 ffplay 播放
+# Via RTSP (ZLMediaKit)
 ffplay rtsp://127.0.0.1:8554/live/cam1
 
-# 或通过 HLS (需要等待几秒生成切片)
-# Or via HLS (wait a few seconds for segments)
-ffplay http://127.0.0.1:8080/live/cam1/hls.m3u8
+# Or via HLS (wait a few seconds for the first segments)
+ffplay http://127.0.0.1:8553/live/cam1/hls.m3u8
 ```
 
 ## REST API
 
-### 管道管理 Pipeline Management
+All endpoints are mounted under `/api`.
 
-| 方法 Method | 端点 Endpoint       | 描述 Description           |
-| ----------- | ------------------- | -------------------------- |
-| GET         | `/pipe/list`        | 列出活动管道 List active pipelines |
-| POST        | `/pipe/add`         | 创建新管道 Create a new pipeline |
-| GET         | `/pipe/remove/{id}` | 移除管道 Remove a pipeline     |
-| GET         | `/pipe/status/{id}` | 获取管道状态 Get pipeline status |
+### Pipelines — `/api/pipe`
 
-### 输入类型 Input Types
+The pipeline API manages ephemeral, in-memory media pipelines.
 
-| 类型 Type           | `t` 字段 | `i` 字段示例 Example                      |
-| ------------------- | -------- | ----------------------------------------- |
-| 网络流 Network      | `net`    | `rtsp://host:554/path`                    |
-| 文件 File           | `file`   | `/path/to/video.mp4`                      |
-| 屏幕捕获 Screen     | `x11grab`| `:99`                                     |
-| 测试图案 Test       | `lavfi`  | `testsrc=size=1920x1080:rate=10,realtime` |
-| V4L2 设备 Device    | `v4l2`   | `/dev/video0`                             |
+| Method | Endpoint                | Description           |
+| ------ | ----------------------- | --------------------- |
+| GET    | `/api/pipe/list`        | List active pipeline IDs |
+| POST   | `/api/pipe/add`         | Create a new pipeline |
+| GET    | `/api/pipe/remove/{id}` | Remove a pipeline     |
+| GET    | `/api/pipe/status/{id}` | Get pipeline status   |
 
-### 输出类型 Output Types
+#### Input types
 
-| 类型 Type       | `t` 字段 | 配置 Config                                        |
-| --------------- | -------- | -------------------------------------------------- |
-| ZLMediaKit      | `zlm`    | `{ "app": "live", "stream": "cam1" }`              |
-| 网络流 Network  | (default)| `{ "net": { "url": "rtsp://...", "format": "rtsp" } }` |
-| 文件 File       | `file`   | `{ "file": { "path": "/path/to/output.mp4" } }`    |
-| Sink (测试)     | `sink`   | `{}`                                               |
+The `input` object takes a type tag `t` and an input value `i`:
 
-### 编码选项 Encode Options (可选)
+| Type          | `t`       | Example `i`                               |
+| ------------- | --------- | ----------------------------------------- |
+| Network       | `net`     | `rtsp://host:554/path`                    |
+| File          | `file`    | `/path/to/video.mp4`                      |
+| Screen (X11)  | `x11grab` | `:99`                                     |
+| Test pattern  | `lavfi`   | `testsrc=size=1920x1080:rate=10,realtime` |
+| V4L2 device   | `v4l2`    | `/dev/video0`                             |
+
+#### Output types
+
+Each entry in `outputs` takes a type tag `t`:
+
+| Type        | `t`        | Config                                                  |
+| ----------- | ---------- | ------------------------------------------------------- |
+| ZLMediaKit  | `zlm`      | `{ "app": "live", "stream": "cam1" }`                   |
+| Network     | *(default)*| `{ "net": { "url": "rtsp://…", "format": "rtsp" } }`    |
+
+#### Encode options (optional, per output)
 
 ```json
 {
   "encode": {
     "preset": "ultrafast",
-    "bitrate": 2000000,
-    "width": 1920,
-    "height": 1080
+    "bitrate": 2000000
   }
 }
 ```
 
-预设 Presets: `ultrafast`, `superfast`, `veryfast`, `fast`, `medium`（越慢质量越好）
+- `preset` — x264 preset: `ultrafast` (default, fastest), `superfast`, `veryfast`, `fast`, `medium`, … (slower = better quality)
+- `bitrate` — target bitrate in bps
 
-## 开发 Development
+### Devices — `/api/device`
 
-### 测试 Testing
+Devices are persisted, dashboard-managed sources. Adding a device stores it in
+the database and automatically starts a pipeline that publishes to ZLMediaKit.
+
+| Method | Endpoint                  | Description       |
+| ------ | ------------------------- | ----------------- |
+| GET    | `/api/device/list`        | List devices (with FLV URLs) |
+| POST   | `/api/device/add`         | Add a device      |
+| PUT    | `/api/device/update/{id}` | Update a device   |
+| DELETE | `/api/device/remove/{id}` | Remove a device   |
 
 ```bash
-# 运行所有测试
-# Run all tests
+curl -X POST http://localhost:18080/api/device/add \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Front Door",
+    "input_type": "net",
+    "input_value": "rtsp://192.168.1.100:554/stream",
+    "include_audio": true
+  }'
+```
+
+`include_audio` toggles whether the device audio track is forwarded to its ZLM
+live stream.
+
+### Playback — `/api/playback`
+
+Recorded HLS segments are persisted and exposed for playback.
+
+| Method | Endpoint                                   | Description                  |
+| ------ | ------------------------------------------ | ---------------------------- |
+| GET    | `/api/playback/device/list`                | List devices with recordings |
+| GET    | `/api/playback/device/{device_id}/segments`| List recorded segments       |
+| GET    | `/api/playback/device/{device_id}/today`   | List today's segments        |
+| GET    | `/api/playback/playlist/{device_id}`       | Build a playback playlist    |
+| GET    | `/api/playback/segment/{id}`               | Play a single segment        |
+
+### System — `/api/system`
+
+| Method | Endpoint                          | Description                  |
+| ------ | --------------------------------- | ---------------------------- |
+| GET    | `/api/system/list/device/formats` | List supported device formats |
+| GET    | `/api/system/list/v4l2/devices`   | List available V4L2 devices  |
+| GET    | `/api/system/list/x11grab/devices`| List available X11 displays  |
+
+### User — `/api/user`
+
+| Method | Endpoint           | Description     |
+| ------ | ------------------ | --------------- |
+| POST   | `/api/user/login`  | Log in          |
+| POST   | `/api/user/logout` | Log out         |
+| GET    | `/api/user/info`   | Current user info |
+
+## Development
+
+### Testing
+
+```bash
+# Run all tests (no binary harness)
 cargo test --workspace --lib --tests --no-fail-fast
 
-# 运行单个 crate 的测试
 # Run tests for a single crate
 cargo test -p nvr
 cargo test -p ffmpeg-bus
 
-# 代码格式化
 # Format code
 cargo fmt
 
-# 快速编译检查
 # Fast compile check
 cargo check --workspace
 ```
 
-### 前端开发 Frontend Development
+Tests are colocated as `*_test.rs` files alongside the source they cover (e.g.
+`ffmpeg-bus/src/bus.rs` → `ffmpeg-bus/src/bus_test.rs`).
+
+### Frontend development
 
 ```bash
 cd nvr-dashboard/app
 
-# 安装依赖
 # Install dependencies
 npm ci
 
-# 开发服务器（热重载）
 # Dev server with hot reload
 npm run dev
 
-# 构建生产版本（嵌入到 Rust 二进制）
-# Build for production (embedded into Rust binary)
+# Build for production (embedded into the Rust binary)
 npm run build
 
-# 类型检查和 lint
 # Type check and lint
 npm run type-check
 npm run lint
 ```
 
-## 环境变量 Environment Variables
+The dashboard is automatically built by `build.rs` when `app/dist` is missing or
+the source files change, so a manual build is usually unnecessary.
 
-| 变量 Variable | 描述 Description                                                 |
-| ------------- | ---------------------------------------------------------------- |
-| `RUST_LOG`    | 日志级别过滤器 Log level filter (e.g. `info`, `debug`, `ffmpeg_bus=debug`) |
-| `FFMPEG_DIR`  | FFmpeg 安装路径 Path to FFmpeg installation (default: `./ffmpeg`) |
-| `ZLM_DIR`     | ZLMediaKit 安装路径 Path to ZLMediaKit installation (default: `./zlm`) |
-| `LD_LIBRARY_PATH` | 运行时库路径，需包含 `ffmpeg/lib` 和 `zlm/lib`<br>Runtime library path, must include `ffmpeg/lib` and `zlm/lib` |
+## Environment Variables
 
-## 配置 Configuration
+| Variable          | Description                                                            |
+| ----------------- | --------------------------------------------------------------------- |
+| `RUST_LOG`        | Log level filter (e.g. `info`, `debug`, `ffmpeg_bus=debug`)           |
+| `FFMPEG_DIR`      | Path to the FFmpeg installation (default: `./ffmpeg`)                 |
+| `ZLM_DIR`         | Path to the ZLMediaKit installation (default: `./zlm`)               |
+| `LD_LIBRARY_PATH` | Runtime library path; must include `ffmpeg/lib` and `zlm/lib`        |
 
-运行时配置存储在 SQLite 数据库的 `kvs` 表中。可通过 REST API 的 `/system/config` 端点管理。
+## Configuration
 
-Runtime configuration is stored in the `kvs` table of the SQLite database. Manage via the `/system/config` REST API endpoint.
+Runtime configuration is stored in the `kvs` table of the SQLite database (WAL
+mode). Schema migrations live in `nvr-db/migrations/` and are embedded into the
+binary.
 
-## 许可证 License
+## License
 
 MIT
