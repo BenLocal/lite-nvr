@@ -79,14 +79,10 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
             true,
             false,
         ));
-        let mut outs = vec![OutputConfig::new(
-            OutputDest::Zlm(Arc::clone(&media)),
-            None,
-        )];
+        let mut outs = vec![OutputConfig::new(OutputDest::Zlm(Arc::clone(&media)), None)];
         if device.include_audio {
             outs.push(
-                OutputConfig::new(OutputDest::Zlm(media), None)
-                    .with_av_type(OutputAvType::Audio),
+                OutputConfig::new(OutputDest::Zlm(media), None).with_av_type(OutputAvType::Audio),
             );
         }
         outs

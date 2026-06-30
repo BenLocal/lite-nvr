@@ -1,8 +1,8 @@
+use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{
     Json, Router,
     routing::{get, post},
 };
-use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use nvr_db::{kv::Kv, user::UserInfo};
 use serde::{Deserialize, Serialize};
 

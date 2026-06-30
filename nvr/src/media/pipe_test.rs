@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::{dest_name, Pipe};
+use super::{Pipe, dest_name};
 use crate::media::{
     stream::RawSinkSource,
     types::{EncodeConfig, InputConfig, OutputDest, PipeConfig, VideoRawFrame},

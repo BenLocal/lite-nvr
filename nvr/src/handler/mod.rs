@@ -2,8 +2,8 @@ use axum::{
     Json,
     response::{IntoResponse, Response},
 };
-use serde::Serialize;
 use reqwest::StatusCode;
+use serde::Serialize;
 
 pub mod device;
 pub mod media_pipe;
@@ -52,7 +52,8 @@ impl IntoResponse for ApiError {
                 message: self.0.to_string(),
                 data: None,
             }),
-        ).into_response()
+        )
+            .into_response()
     }
 }
 

@@ -126,7 +126,11 @@ fn record_archive_root() -> anyhow::Result<PathBuf> {
     Ok(std::env::current_dir()?.join("data").join("records"))
 }
 
-async fn archive_record_file(stream: &str, file_name: &str, source_path: &str) -> anyhow::Result<PathBuf> {
+async fn archive_record_file(
+    stream: &str,
+    file_name: &str,
+    source_path: &str,
+) -> anyhow::Result<PathBuf> {
     let relative_path = Path::new(file_name);
     let target_path = record_archive_root()?.join(stream).join(relative_path);
     let parent = target_path
@@ -156,9 +160,7 @@ async fn persist_record_ts(
         .parent()
         .map(|path| path.to_string_lossy().to_string())
         .unwrap_or_default();
-    let archived_size = tokio::fs::metadata(&archived_path)
-        .await?
-        .len() as usize;
+    let archived_size = tokio::fs::metadata(&archived_path).await?.len() as usize;
     let meta = ffmpeg_bus::metadata::probe(&archived_path_string)?;
     let video_stream = meta
         .streams

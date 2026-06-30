@@ -15,11 +15,7 @@ struct PipeEntry {
 static PIPE_MANAGER: LazyLock<RwLock<HashMap<String, PipeEntry>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-async fn upsert_pipe(
-    id: &str,
-    config: PipeConfig,
-    update_if_exists: bool,
-) -> anyhow::Result<()> {
+async fn upsert_pipe(id: &str, config: PipeConfig, update_if_exists: bool) -> anyhow::Result<()> {
     // Phase 1: take ownership of any existing entry under the write lock.
     let existing = {
         let mut pipes = PIPE_MANAGER.write().await;

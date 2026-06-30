@@ -89,8 +89,12 @@ impl Pipe {
         // We hold the streams temporarily so we can size the ZLM track coordinator
         // based on successful Zlm outputs (an audio output may fail if the input
         // has no audio stream).
-        let mut accepted: Vec<(usize, ffmpeg_bus::stream::AvStream, VideoRawFrameStream, OutputConfig)> =
-            Vec::new();
+        let mut accepted: Vec<(
+            usize,
+            ffmpeg_bus::stream::AvStream,
+            VideoRawFrameStream,
+            OutputConfig,
+        )> = Vec::new();
         for (i, output_config) in self.config.outputs.iter().enumerate() {
             let id = format!("out_{}", i);
             let fb_output = match output_config.clone().into() {
@@ -317,12 +321,7 @@ async fn forward_raw_packet_stream_to_zlm(
                         } else {
                             default_height as i32
                         };
-                        log::info!(
-                            "ZLM: video track init ({}x{}, fps={})",
-                            w,
-                            h,
-                            default_fps
-                        );
+                        log::info!("ZLM: video track init ({}x{}, fps={})", w, h, default_fps);
                         Track::new(
                             CodecId::H264,
                             Some(CodecArgs::Video(VideoCodecArgs {
@@ -387,8 +386,7 @@ async fn forward_raw_packet_stream_to_zlm(
                 std::borrow::Cow::Borrowed(frame.data.as_ref())
             };
 
-        let zlm_frame =
-            ZlmFrame::new(make_codec_id(), dts_ms as u64, pts_ms as u64, data.as_ref());
+        let zlm_frame = ZlmFrame::new(make_codec_id(), dts_ms as u64, pts_ms as u64, data.as_ref());
         if !media.input_frame(&zlm_frame) {
             log::warn!(
                 "ZLM: input_frame failed (av={:?}, pts_ms={}, dts_ms={}, len={})",
