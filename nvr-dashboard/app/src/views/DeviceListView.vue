@@ -269,8 +269,6 @@ async function copyText(value: string, label: string) {
             header="操作"
             :exportable="false"
             class="action-column"
-            frozen
-            align-frozen="right"
             style="width: 9rem; min-width: 9rem; max-width: 9rem"
           >
             <template #body="{ data }">
