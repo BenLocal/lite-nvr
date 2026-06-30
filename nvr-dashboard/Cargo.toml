@@ -5,6 +5,9 @@ edition = "2024"
 build = "build.rs"
 
 [dependencies]
-axum-embed = { workspace = true }
 axum = { workspace = true }
-rust-embed = { workspace = true }
+rust-embed = { workspace = true, features = ["mime-guess"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tower = { workspace = true, features = ["util"] }
