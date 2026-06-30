@@ -1,6 +1,7 @@
 import { getAuthToken } from '../auth/token'
 
-type RequestMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+// Project convention: REST API uses only GET and POST (no PUT/PATCH/DELETE).
+type RequestMethod = 'GET' | 'POST'
 
 const API_BASE = '/api'
 

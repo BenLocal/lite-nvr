@@ -34,13 +34,13 @@ export function addDevice(payload: DevicePayload) {
 
 export function updateDevice(id: string, payload: DevicePayload) {
   return request<DeviceItem>(`/device/update/${encodeURIComponent(id)}`, {
-    method: 'PUT',
+    method: 'POST',
     body: payload,
   })
 }
 
 export function removeDevice(id: string) {
   return request<string>(`/device/remove/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
+    method: 'POST',
   })
 }

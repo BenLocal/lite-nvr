@@ -1,7 +1,7 @@
 use axum::{
     Json, Router,
     extract::Path,
-    routing::{delete, get, post, put},
+    routing::{get, post},
 };
 use chrono::Utc;
 use harsh::Harsh;
@@ -33,8 +33,8 @@ pub fn device_router() -> Router {
         .route("/", get(index))
         .route("/list", get(list_devices))
         .route("/add", post(add_device))
-        .route("/update/{id}", put(update_device))
-        .route("/remove/{id}", delete(remove_device))
+        .route("/update/{id}", post(update_device))
+        .route("/remove/{id}", post(remove_device))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
