@@ -5,6 +5,6 @@ edition = "2024"
 build = "build.rs"
 
 [dependencies]
-axum-embed = "0.1"
-axum = "0.8"
-rust-embed = "8"
+axum-embed = { workspace = true }
+axum = { workspace = true }
+rust-embed = { workspace = true }

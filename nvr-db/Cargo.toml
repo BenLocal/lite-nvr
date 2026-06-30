@@ -4,13 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-turso = "0.4"
-anyhow = "1"
-tokio = { version = "1", features = ["full"] }
-futures = "0.3"
-rust-embed = "8"
-chrono = { version = "0.4", features = ["serde"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-uuid = "1.21.0"
-argon2 = "0.5"
+turso = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+rust-embed = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+argon2 = { workspace = true }
