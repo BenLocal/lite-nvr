@@ -4,8 +4,10 @@
 //! - [`crypto`] — Curve25519 (NaCl box) key exchange + ChaCha20 channel cipher.
 //! - [`cloud`] — Xiaomi account auth + miio-signed cloud API.
 //! - [`device`] — device discovery + miss/CS2 connection resolution.
-//! - (next) TUTK CS2 transport, MTP producer.
+//! - [`cs2`] — TUTK CS2 P2P transport (UDP/TCP).
+//! - (next) miss client + MTP producer, lite-nvr integration.
 
 pub mod cloud;
 pub mod crypto;
+pub mod cs2;
 pub mod device;
