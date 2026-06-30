@@ -1,12 +1,5 @@
 [env]
 FFMPEG_DIR = { value = "ffmpeg", relative = true }
-
-# 本地开发：用本地 ./zlm 安装（ZLM_DIR 优先级最高，会盖过下面的预编译下载）。
-# 需要本地构建 ZLMediaKit 时取消注释下一行即可。
-# ZLM_DIR = { value = "zlm", relative = true }
-
-# 默认（CI / 下游 / 无本地安装）：从 ZLMediaKit-Build releases 下载预编译产物（动态库）。
-# 固定到具体 tag，避免 releases/latest 重定向跳过 prerelease 命中旧版本。
 ZLM_RELEASE_URL = "https://github.com/BenLocal/ZLMediaKit-Build/releases/download/autobuild-2026-06-24"
 
 # Linux x86_64
