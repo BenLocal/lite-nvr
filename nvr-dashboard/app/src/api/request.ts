@@ -2,6 +2,8 @@ import { getAuthToken } from '../auth/token'
 
 type RequestMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 
+const API_BASE = '/api'
+
 interface RequestOptions extends Omit<RequestInit, 'method' | 'body'> {
   method?: RequestMethod
   body?: unknown
@@ -13,7 +15,6 @@ interface BaseResponse<T> {
   data: T | null
 }
 
-const API_BASE = import.meta.env.DEV ? '/api' : ''
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = 'GET', body, headers, ...rest } = options
