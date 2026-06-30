@@ -61,7 +61,7 @@ install-watch:
 	cargo install cargo-watch
 
 build:
-	cargo build --workspace
+	cargo build --workspace -vv
 
 run:
 	cargo run --package nvr
