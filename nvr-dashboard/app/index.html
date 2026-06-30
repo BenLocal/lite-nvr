@@ -5,7 +5,22 @@
   <meta charset="UTF-8">
   <link rel="icon" href="/favicon.ico">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
   <title>Vite App</title>
+  <!-- Render-blocking dark canvas so the first (uncached) paint is not a white
+       flash before the view CSS chunks load. Matches the app/login gradient. -->
+  <style>
+    html {
+      background-color: #0f172a;
+      color-scheme: dark;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+    }
+  </style>
 </head>
 
 <body>
