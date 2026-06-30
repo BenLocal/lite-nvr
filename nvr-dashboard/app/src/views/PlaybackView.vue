@@ -1397,7 +1397,7 @@ function formatDaySecond(second: number) {
 .player-shell-dialog {
   height: 100%;
   margin-bottom: 0;
-  padding: 1rem;
+  padding: 1rem 0.5rem;
   grid-template-columns: 1fr;
   grid-template-rows: minmax(0, 1fr) auto;
 }
@@ -1507,6 +1507,10 @@ function formatDaySecond(second: number) {
 .timeline-card-dialog {
   min-height: 0;
   height: auto;
+
+  /* Trim horizontal padding so the draggable timeline track is as wide as
+     possible across the full-screen playback dialog. */
+  padding: 1rem 0.5rem;
   background:
     radial-gradient(circle at 0% 0%, rgb(59 130 246 / 12%), transparent 22rem),
     rgb(15 23 42 / 64%);
