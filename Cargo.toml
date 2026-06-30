@@ -1,5 +1,12 @@
 [workspace]
-members = ["ffmpeg-bus", "nvr", "nvr-dashboard", "nvr-db"]
+members = [
+    "ffmpeg-bus",
+    "nvr",
+    "nvr-dashboard",
+    "nvr-db",
+    "crates/media-pipe-core",
+    "crates/media-pipe-zlm",
+]
 resolver = "1"
 
 [workspace.dependencies]

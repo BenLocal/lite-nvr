@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     handler::{ApiJsonResult, ok_json},
     manager,
-    media::types::{EncodeConfig, InputConfig, OutputConfig, OutputDest, PipeConfig},
 };
+use media_pipe_core::{EncodeConfig, InputConfig, OutputConfig, OutputDest, PipeConfig};
 
 pub fn media_pipe_router() -> Router {
     Router::new()
@@ -78,13 +78,14 @@ async fn add_pipe(Json(config): Json<PipeRequest>) -> ApiJsonResult<String> {
         let dest = match output.t.unwrap_or_default().as_str() {
             "zlm" => {
                 if let Some(zlm) = output.zlm {
-                    OutputDest::Zlm(Arc::new(rszlm::media::Media::new_with_default_vhost(
+                    let media = Arc::new(rszlm::media::Media::new_with_default_vhost(
                         zlm.app.as_str(),
                         zlm.stream.as_str(),
                         0.0,
                         true,
                         false,
-                    )))
+                    ));
+                    media_pipe_zlm::zlm_video_dest(media)
                 } else {
                     return Err(anyhow::anyhow!("zlm config is required").into());
                 }

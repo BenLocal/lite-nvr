@@ -3,11 +3,31 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use bytes::Bytes;
-use ffmpeg_bus::bus::OutputAvType;
+use ffmpeg_bus::bus::{OutputAvType, VideoRawFrameStream};
+use ffmpeg_bus::stream::AvStream;
+use tokio::task::JoinHandle;
 
-use crate::media::stream::RawSinkSource;
+use crate::stream::RawSinkSource;
 
 use ffmpeg_bus::bus::{OutputConfig as FbOutputConfig, OutputDest as FbOutputDest};
+
+/// A sink for a `Demuxed` (raw passthrough) output.
+///
+/// The [`Pipe`](crate::pipe::Pipe) hands over an accepted output's codec
+/// metadata (`av`) and its demuxed packet stream; the sink spawns its own
+/// forwarding task and returns the `JoinHandle`. This is the boundary that lets
+/// the core stay free of any specific media server (e.g. ZLMediaKit) — the
+/// implementation lives in a separate crate.
+pub trait DemuxedSink: Send + Sync + 'static {
+    /// Begin forwarding the demuxed `stream` (with codec metadata `av`).
+    fn start(&self, av: AvStream, stream: VideoRawFrameStream) -> JoinHandle<()>;
+
+    /// Called when the Pipe could not create this output (e.g. the input has no
+    /// matching stream). Lets a sink that coordinates with siblings (such as a
+    /// video+audio pair sharing one media) drop the missing one from its
+    /// expected set. Default: no-op.
+    fn on_rejected(&self) {}
+}
 
 /// Encode configuration (used as HashMap key, same config shares encoder)
 #[derive(Clone, Debug)]
@@ -74,9 +94,9 @@ pub enum OutputDest {
     /// Encoded packet sink，only for encoded packet
     #[allow(dead_code)]
     RawPacket { sink: Arc<RawSinkSource> },
-    /// ZLMediaKit Media: push raw (demuxed) packets to ZLM
-    #[cfg(feature = "zlm")]
-    Zlm(Arc<rszlm::media::Media>),
+    /// Demuxed (raw codec) passthrough delivered to a [`DemuxedSink`], e.g. a
+    /// ZLMediaKit media. One demuxed input packet per emitted item.
+    Demuxed { sink: Arc<dyn DemuxedSink> },
 }
 
 /// Configuration for a single output
@@ -118,7 +138,6 @@ impl OutputConfig {
         }
     }
 
-    #[allow(dead_code)]
     pub fn with_av_type(mut self, av_type: OutputAvType) -> Self {
         self.av_type = av_type;
         self
@@ -231,13 +250,11 @@ fn to_fb_output(config: &OutputConfig) -> Option<FbOutputConfig> {
         },
         OutputDest::RawFrame { .. } => FbOutputDest::Raw,
         OutputDest::RawPacket { .. } => FbOutputDest::Encoded,
-        // ZLM consumes raw codec frames directly (no container framing).
-        // `Demuxed` gives one demuxed input packet per emitted item with no
-        // re-encoding or muxing, so video gets clean Annex B / AVCC NALs and
-        // audio gets one raw AAC frame per packet — exactly what
-        // `mk_frame_create` expects.
-        #[cfg(feature = "zlm")]
-        OutputDest::Zlm(_) => FbOutputDest::Demuxed,
+        // A demuxed sink (e.g. ZLM) consumes raw codec frames directly (no
+        // container framing). `Demuxed` gives one demuxed input packet per
+        // emitted item with no re-encoding or muxing, so video gets clean
+        // Annex B / AVCC NALs and audio gets one raw AAC frame per packet.
+        OutputDest::Demuxed { .. } => FbOutputDest::Demuxed,
     };
     let id = config
         .id

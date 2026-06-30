@@ -1848,6 +1848,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "media-pipe-core"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "ffmpeg-bus",
+ "futures",
+ "log",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
+name = "media-pipe-zlm"
+version = "0.1.0"
+dependencies = [
+ "ffmpeg-bus",
+ "futures",
+ "log",
+ "media-pipe-core",
+ "rszlm",
+ "tokio",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2040,6 +2065,8 @@ dependencies = [
  "harsh",
  "log",
  "md5",
+ "media-pipe-core",
+ "media-pipe-zlm",
  "nvr-dashboard",
  "nvr-db",
  "reqwest",

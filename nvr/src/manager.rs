@@ -5,7 +5,7 @@ use std::{
 
 use tokio::{sync::RwLock, task::JoinHandle};
 
-use crate::media::{pipe::Pipe, types::PipeConfig};
+use media_pipe_core::{Pipe, PipeConfig};
 
 struct PipeEntry {
     pipe: Arc<Pipe>,

@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::media::types::VideoRawFrame;
+use crate::types::VideoRawFrame;
 
 pub struct RawSinkSource {
     pub writer: tokio::sync::mpsc::Sender<VideoRawFrame>,

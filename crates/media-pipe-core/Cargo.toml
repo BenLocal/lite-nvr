@@ -1,0 +1,13 @@
+[package]
+name = "media-pipe-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ffmpeg-bus = { path = "../../ffmpeg-bus" }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+log = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }

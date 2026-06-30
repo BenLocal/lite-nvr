@@ -10,7 +10,6 @@ mod db;
 mod handler;
 mod init;
 mod manager;
-mod media;
 #[cfg(feature = "zlm")]
 mod zlm;
 

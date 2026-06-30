@@ -4,13 +4,8 @@ use nvr_db::device::DeviceInfo;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    db::app_db_conn,
-    manager,
-    media::types::{InputConfig, OutputConfig, OutputDest, PipeConfig},
-};
-#[cfg(feature = "zlm")]
-use ffmpeg_bus::bus::OutputAvType;
+use crate::{db::app_db_conn, manager};
+use media_pipe_core::{InputConfig, PipeConfig};
 
 pub(crate) fn init_device_pipes(
     zlm_ready: oneshot::Receiver<()>,
@@ -82,17 +77,11 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
             device.record,
             false,
         ));
-        let mut outs = vec![OutputConfig::new(OutputDest::Zlm(Arc::clone(&media)), None)];
-        if device.include_audio {
-            outs.push(
-                OutputConfig::new(OutputDest::Zlm(media), None).with_av_type(OutputAvType::Audio),
-            );
-        }
-        outs
+        media_pipe_zlm::zlm_outputs(media, device.include_audio)
     };
 
     #[cfg(not(feature = "zlm"))]
-    let outputs: Vec<OutputConfig> = {
+    let outputs: Vec<media_pipe_core::OutputConfig> = {
         return Err(anyhow::anyhow!(
             "zlm feature is disabled, device auto-pipeline is unavailable"
         ));
