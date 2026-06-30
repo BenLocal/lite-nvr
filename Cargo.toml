@@ -6,6 +6,7 @@ members = [
     "nvr-db",
     "crates/media-pipe-core",
     "crates/media-pipe-zlm",
+    "crates/xiaomi",
 ]
 resolver = "1"
 
@@ -41,3 +42,8 @@ env_logger = "0.11"
 argon2 = "0.5"
 harsh = "0.2"
 md5 = "0.8"
+# Xiaomi camera (go2rtc port)
+chacha20 = "0.9"
+dryoc = "0.7"
+hex = "0.4"
+rand = "0.8"

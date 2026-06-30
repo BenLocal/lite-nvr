@@ -1,0 +1,11 @@
+[package]
+name = "xiaomi"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+chacha20 = { workspace = true }
+dryoc = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
