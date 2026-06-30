@@ -11,8 +11,16 @@ pub struct DeviceInfo {
     pub description: String,
     #[serde(default)]
     pub include_audio: bool,
+    /// Whether this device's stream is recorded to disk (HLS segments). Defaults
+    /// to true so devices created before this field keep recording.
+    #[serde(default = "default_record")]
+    pub record: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+fn default_record() -> bool {
+    true
 }
 
 pub async fn list(conn: &Connection) -> anyhow::Result<Vec<DeviceInfo>> {

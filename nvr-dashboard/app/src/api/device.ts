@@ -7,6 +7,7 @@ export interface DeviceItem {
   input_value: string
   description: string
   include_audio: boolean
+  record: boolean
   created_at: string
   updated_at: string
   flv_url?: string
@@ -19,6 +20,7 @@ export interface DevicePayload {
   input_value: string
   description?: string
   include_audio?: boolean
+  record?: boolean
 }
 
 export function listDevices() {

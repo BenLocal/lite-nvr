@@ -72,11 +72,14 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
 
     #[cfg(feature = "zlm")]
     let outputs = {
+        // hls_enabled drives recording: ZLM only produces the HLS segments that
+        // get archived (on_record_ts) when this is on. Live view uses FLV, which
+        // is independent, so disabling HLS just turns recording off.
         let media = Arc::new(rszlm::media::Media::new_with_default_vhost(
             "live",
             device.id.as_str(),
             0.0,
-            true,
+            device.record,
             false,
         ));
         let mut outs = vec![OutputConfig::new(OutputDest::Zlm(Arc::clone(&media)), None)];

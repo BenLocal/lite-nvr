@@ -48,6 +48,7 @@ const initialValues = {
   input_value: "",
   description: "",
   include_audio: false,
+  record: true,
 };
 
 onMounted(() => {
@@ -78,6 +79,7 @@ function resolver({ values }: { values: Record<string, unknown> }) {
       input_value: inputValue,
       description,
       include_audio: Boolean(values.include_audio),
+      record: values.record === undefined ? true : Boolean(values.record),
     },
     errors,
   };
@@ -124,6 +126,7 @@ async function onSubmit(event: { valid: boolean; values: Record<string, unknown>
     input_value: String(event.values.input_value ?? ""),
     description: String(event.values.description ?? ""),
     include_audio: Boolean(event.values.include_audio),
+    record: event.values.record === undefined ? true : Boolean(event.values.record),
   };
 
   saving.value = true;
@@ -367,6 +370,12 @@ async function copyText(value: string, label: string) {
           <label for="include_audio">包含音频</label>
           <ToggleSwitch id="include_audio" name="include_audio" />
           <span class="field-hint">开启后推流会包含音频轨（需输入源带音频）</span>
+        </div>
+
+        <div class="field field-inline">
+          <label for="record">录制</label>
+          <ToggleSwitch id="record" name="record" />
+          <span class="field-hint">开启后该设备的录像会保存到磁盘，可在回放中查看</span>
         </div>
 
         <div class="field">
