@@ -141,9 +141,8 @@ async fn remove_pipe(Path(id): Path<String>) -> ApiJsonResult<String> {
 }
 
 async fn get_pipe_status(Path(id): Path<String>) -> ApiJsonResult<String> {
-    let pipe = manager::get_pipe(&id).await;
-    if let Some(pipe) = pipe {
-        return Ok(ok_json(pipe.is_started().to_string()));
+    match manager::status(&id).await {
+        Some(started) => Ok(ok_json(started.to_string())),
+        None => Ok(ok_json("not found".to_string())),
     }
-    Ok(ok_json("not found".to_string()))
 }

@@ -8,10 +8,9 @@
 //! Video-only for now; audio (PCMA/Opus) is a follow-up once the ZLM audio
 //! track codecs are wired. UNTESTED until run against a real camera.
 //!
-//! The pull function is ready; wiring it to a `xiaomi` device input type +
-//! the manager lifecycle + the dashboard is the remaining follow-up, so the
-//! items are currently `allow(dead_code)`.
-#![allow(dead_code)]
+//! Wired into the device lifecycle: a device with `input_type == "xiaomi"` and
+//! an `input_value` holding the [`XiaomiConfig`] JSON is started/stopped by the
+//! manager like any other device. The dashboard form + audio are follow-ups.
 
 use std::sync::Arc;
 
@@ -20,16 +19,19 @@ use rszlm::{
     media::Media,
     obj::{CodecArgs, CodecId, Track, VideoCodecArgs},
 };
+use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use xiaomi::{cloud::Cloud, device, miss};
 
-/// Everything needed to pull one Xiaomi camera. `token` is the `passToken`
-/// obtained from a prior account login (`Cloud::login` -> `user_token`).
-#[derive(Clone, Debug)]
+/// Everything needed to pull one Xiaomi camera. Parsed from a device's
+/// `input_value` JSON when `input_type == "xiaomi"`. `token` is the `passToken`
+/// from a prior account login (see the `validate` CLI / `Cloud::user_token`).
+#[derive(Clone, Serialize, Deserialize)]
 pub struct XiaomiConfig {
     pub user_id: String,
     pub token: String,
     /// Region: "" (mainland China) or de/i2/ru/sg/us.
+    #[serde(default)]
     pub region: String,
     pub did: String,
     pub model: String,
@@ -37,13 +39,32 @@ pub struct XiaomiConfig {
     pub ip: String,
 }
 
+// Manual Debug so the secret `token` never lands in logs.
+impl std::fmt::Debug for XiaomiConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("XiaomiConfig")
+            .field("user_id", &self.user_id)
+            .field("token", &"<redacted>")
+            .field("region", &self.region)
+            .field("did", &self.did)
+            .field("model", &self.model)
+            .field("ip", &self.ip)
+            .finish()
+    }
+}
+
 /// Spawn a blocking worker that streams the camera into `media` until `cancel`.
-pub fn spawn_to_zlm(cfg: XiaomiConfig, media: Arc<Media>, cancel: CancellationToken) {
+/// Returns the worker thread handle so the caller can join it on teardown.
+pub fn spawn_to_zlm(
+    cfg: XiaomiConfig,
+    media: Arc<Media>,
+    cancel: CancellationToken,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         if let Err(e) = run(&cfg, &media, &cancel) {
             log::error!("xiaomi: device {} stream ended: {:#}", cfg.did, e);
         }
-    });
+    })
 }
 
 fn run(cfg: &XiaomiConfig, media: &Arc<Media>, cancel: &CancellationToken) -> anyhow::Result<()> {
