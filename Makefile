@@ -4,11 +4,24 @@
         frontend-typecheck clean clean-frontend
 
 PROJECT_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+
+ifneq (,$(wildcard $(PROJECT_ROOT)/.env))
+include $(PROJECT_ROOT)/.env
+export
+endif
+
 FFMPEG_DIR ?= $(PROJECT_ROOT)/ffmpeg
-ZLM_DIR    ?= $(PROJECT_ROOT)/zlm
 RUST_LOG   ?= info
-export FFMPEG_DIR ZLM_DIR RUST_LOG
-export LD_LIBRARY_PATH := $(FFMPEG_DIR)/lib:$(ZLM_DIR)/lib:$(LD_LIBRARY_PATH)
+export FFMPEG_DIR RUST_LOG
+
+LD_LIBRARY_PATH := $(FFMPEG_DIR)/lib:$(LD_LIBRARY_PATH)
+
+ifneq ($(strip $(ZLM_DIR)),)
+export ZLM_DIR
+LD_LIBRARY_PATH := $(LD_LIBRARY_PATH):$(ZLM_DIR)/lib
+endif
+
+export LD_LIBRARY_PATH
 
 DASHBOARD_DIR := nvr-dashboard/app
 

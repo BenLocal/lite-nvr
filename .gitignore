@@ -15,3 +15,5 @@ nvr.db-shm
 nvr.db-wal
 
 zlmediakit*
+
+.env
