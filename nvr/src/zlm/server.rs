@@ -123,7 +123,7 @@ pub(crate) fn start_zlm_server(
 }
 
 fn record_archive_root() -> anyhow::Result<PathBuf> {
-    Ok(std::env::current_dir()?.join("data").join("records"))
+    Ok(crate::config::config().record_dir())
 }
 
 async fn archive_record_file(
