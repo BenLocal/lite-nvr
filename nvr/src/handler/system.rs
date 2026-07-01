@@ -3,14 +3,77 @@ use serde::{Deserialize, Serialize};
 #[cfg(target_os = "linux")]
 use tokio_linux_video::Device;
 
+use crate::db::app_db_conn;
 use crate::handler::{ApiJsonResult, ok_json};
+use crate::init::device::build_flv_url;
+use crate::manager;
 
 pub fn system_router() -> Router {
     Router::new()
         .route("/", get(index))
+        .route("/overview", get(overview))
         .route("/list/device/formats", get(list_device_formats))
         .route("/list/v4l2/devices", get(list_v4l2_device))
         .route("/list/x11grab/devices", get(list_x11grab_device))
+}
+
+#[derive(Serialize)]
+struct OverviewResponse {
+    device_total: usize,
+    device_online: usize,
+    device_offline: usize,
+    record_segment_count: usize,
+    record_total_bytes: u64,
+    devices: Vec<OverviewDevice>,
+}
+
+#[derive(Serialize)]
+struct OverviewDevice {
+    id: String,
+    name: String,
+    input_type: String,
+    description: String,
+    online: bool,
+    record: bool,
+    flv_url: String,
+}
+
+/// System overview: device online/offline counts, recording storage totals, and
+/// per-device live status (online = a pipe/worker is running for it).
+async fn overview() -> ApiJsonResult<OverviewResponse> {
+    let conn = app_db_conn()?;
+    let devices = nvr_db::device::list(&conn).await?;
+
+    let mut items = Vec::with_capacity(devices.len());
+    let mut online = 0usize;
+    for d in &devices {
+        let is_online = manager::status(&d.id).await.unwrap_or(false);
+        if is_online {
+            online += 1;
+        }
+        items.push(OverviewDevice {
+            id: d.id.clone(),
+            name: d.name.clone(),
+            input_type: d.input_type.clone(),
+            description: d.description.clone(),
+            online: is_online,
+            record: d.record,
+            flv_url: build_flv_url(&d.id),
+        });
+    }
+
+    let total = devices.len();
+    let record_segment_count = nvr_db::record_segment::count(&conn).await?;
+    let record_total_bytes = nvr_db::record_segment::total_size(&conn).await?;
+
+    Ok(ok_json(OverviewResponse {
+        device_total: total,
+        device_online: online,
+        device_offline: total - online,
+        record_segment_count,
+        record_total_bytes,
+        devices: items,
+    }))
 }
 
 #[derive(Serialize, Deserialize)]

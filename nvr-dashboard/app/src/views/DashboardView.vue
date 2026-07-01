@@ -1,20 +1,47 @@
 <script setup lang="ts">
 import Card from 'primevue/card'
-import { ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { getOverview, type SystemOverview } from '../api/system'
+import { useAppToast } from '../utils/toast'
 
-const stats = ref([
-  { label: '在线设备', value: '12', icon: 'pi-video', color: '#10b981', trend: '+2' },
-  { label: '离线设备', value: '3', icon: 'pi-times-circle', color: '#ef4444', trend: '-1' },
-  { label: '录像时长', value: '1.2TB', icon: 'pi-database', color: '#3b82f6', trend: '+120GB' },
-  { label: '告警事件', value: '5', icon: 'pi-exclamation-triangle', color: '#f59e0b', trend: '+2' },
-])
+const appToast = useAppToast()
+const overview = ref<SystemOverview | null>(null)
+const loading = ref(false)
 
-const recentDevices = ref([
-  { name: '前门摄像头', status: 'online', location: '一楼大厅', fps: 25, bitrate: '2.5 Mbps' },
-  { name: '后门摄像头', status: 'online', location: '一楼后门', fps: 25, bitrate: '2.3 Mbps' },
-  { name: '停车场摄像头', status: 'offline', location: '地下停车场', fps: 0, bitrate: '0 Mbps' },
-  { name: '会议室摄像头', status: 'online', location: '三楼会议室', fps: 30, bitrate: '3.1 Mbps' },
-])
+function formatBytes(bytes: number): string {
+  if (!bytes || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
+  const val = bytes / Math.pow(1024, i)
+  return `${val.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
+}
+
+const stats = computed(() => {
+  const o = overview.value
+  return [
+    { label: '在线设备', value: String(o?.device_online ?? 0), icon: 'pi-video', color: '#10b981' },
+    { label: '离线设备', value: String(o?.device_offline ?? 0), icon: 'pi-times-circle', color: '#ef4444' },
+    { label: '录像存储', value: formatBytes(o?.record_total_bytes ?? 0), icon: 'pi-database', color: '#3b82f6' },
+    { label: '录像片段', value: String(o?.record_segment_count ?? 0), icon: 'pi-file', color: '#f59e0b' },
+  ]
+})
+
+const recentDevices = computed(() => (overview.value?.devices ?? []).slice(0, 6))
+
+async function load() {
+  loading.value = true
+  try {
+    overview.value = await getOverview()
+  } catch (error) {
+    appToast.errorFrom('加载失败', error, '系统概览加载失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => {
+  void load()
+})
 </script>
 
 <template>
@@ -43,7 +70,6 @@ const recentDevices = ref([
         <div class="stat-content">
           <div class="stat-label">{{ stat.label }}</div>
           <div class="stat-value">{{ stat.value }}</div>
-          <div class="stat-trend" :style="{ color: stat.color }">{{ stat.trend }}</div>
         </div>
       </div>
     </div>
@@ -62,25 +88,26 @@ const recentDevices = ref([
           </div>
         </template>
         <template #content>
-          <div class="device-list">
-            <div v-for="device in recentDevices" :key="device.name" class="device-item">
+          <div v-if="!loading && !recentDevices.length" class="device-empty">暂无设备</div>
+          <div v-else class="device-list">
+            <div v-for="device in recentDevices" :key="device.id" class="device-item">
               <div class="device-info">
-                <div class="device-status" :class="device.status">
+                <div class="device-status" :class="device.online ? 'online' : 'offline'">
                   <span class="status-dot"></span>
                 </div>
                 <div class="device-details">
                   <div class="device-name">{{ device.name }}</div>
-                  <div class="device-location">{{ device.location }}</div>
+                  <div class="device-location">{{ device.description || device.input_type }}</div>
                 </div>
               </div>
               <div class="device-metrics">
                 <div class="metric">
-                  <span class="metric-label">FPS</span>
-                  <span class="metric-value">{{ device.fps }}</span>
+                  <span class="metric-label">类型</span>
+                  <span class="metric-value">{{ device.input_type }}</span>
                 </div>
                 <div class="metric">
-                  <span class="metric-label">码率</span>
-                  <span class="metric-value">{{ device.bitrate }}</span>
+                  <span class="metric-label">录制</span>
+                  <span class="metric-value">{{ device.record ? '开' : '关' }}</span>
                 </div>
               </div>
             </div>
@@ -394,6 +421,13 @@ const recentDevices = ref([
 .device-location {
   font-size: 0.6875rem;
   color: #64748b;
+}
+
+.device-empty {
+  padding: 2rem;
+  text-align: center;
+  font-size: 0.8125rem;
+  color: #94a3b8;
 }
 
 .device-metrics {

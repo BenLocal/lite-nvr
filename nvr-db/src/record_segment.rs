@@ -210,6 +210,31 @@ pub async fn list_by_stream_time_range(
     Ok(records)
 }
 
+/// Total number of record segments across all streams.
+pub async fn count(conn: &Connection) -> anyhow::Result<usize> {
+    let mut rows = conn
+        .query("SELECT COUNT(*) FROM record_segments", ())
+        .await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(0);
+    };
+    Ok(row.get::<i64>(0)? as usize)
+}
+
+/// Total size in bytes of all record segment files.
+pub async fn total_size(conn: &Connection) -> anyhow::Result<u64> {
+    let mut rows = conn
+        .query(
+            "SELECT COALESCE(SUM(file_size), 0) FROM record_segments",
+            (),
+        )
+        .await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(0);
+    };
+    Ok(row.get::<i64>(0)? as u64)
+}
+
 pub async fn count_by_stream(stream: &str, conn: &Connection) -> anyhow::Result<usize> {
     let mut rows = conn
         .query(
