@@ -47,8 +47,10 @@ impl Pipe {
         self.cancel.is_cancelled()
     }
 
-    /// Start the pipeline
-    pub async fn start(&self) {
+    /// Start the pipeline. `input_options` are passed straight to the demuxer
+    /// (e.g. `rtsp_transport=tcp` for RTSP); the caller decides transport policy
+    /// so the core stays input-agnostic.
+    pub async fn start(&self, input_options: Option<HashMap<String, String>>) {
         if self.started.swap(true, Ordering::Relaxed) {
             log::warn!("Pipe already started");
             return;
@@ -64,17 +66,6 @@ impl Pipe {
 
         let bus = FbBus::new("pipe");
         let cancel = self.cancel.clone();
-
-        // RTSP over UDP (FFmpeg's default) drops packets on lossy/jittery links,
-        // which corrupts the H264 stream ("RTP: missed packets" -> decode errors).
-        // Force TCP transport with a socket timeout for RTSP inputs.
-        let input_options = match &self.config.input {
-            InputConfig::Network { url } if url.starts_with("rtsp://") => Some(HashMap::from([
-                ("rtsp_transport".to_string(), "tcp".to_string()),
-                ("stimeout".to_string(), "5000000".to_string()),
-            ])),
-            _ => None,
-        };
 
         // Map and add input
         let fb_input = self.config.input.clone().into();

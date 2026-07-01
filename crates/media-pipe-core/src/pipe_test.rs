@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use super::{Pipe, dest_name};
 use crate::{
@@ -330,9 +330,15 @@ async fn test_pipe_start_with_rtsp_input() {
     let pipe = Arc::new(Pipe::new(config));
     let pipe_clone = pipe.clone();
 
-    // Start pipe in background
+    // Start pipe in background. The caller supplies demux options — force TCP
+    // transport for this RTSP input.
     let handle = tokio::spawn(async move {
-        pipe_clone.start().await;
+        pipe_clone
+            .start(Some(HashMap::from([(
+                "rtsp_transport".to_string(),
+                "tcp".to_string(),
+            )])))
+            .await;
     });
 
     // Wait a bit then cancel
@@ -356,9 +362,9 @@ async fn test_pipe_raw_frame_output() {
     let pipe = Arc::new(Pipe::new(config));
     let pipe_clone = pipe.clone();
 
-    // Start pipe in background
+    // Start pipe in background (file input needs no demux options)
     let handle = tokio::spawn(async move {
-        pipe_clone.start().await;
+        pipe_clone.start(None).await;
     });
 
     // Try to receive some frames

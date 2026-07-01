@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use media_pipe_core::{Pipe, PipeConfig};
+use media_pipe_core::{InputConfig, Pipe, PipeConfig};
 use tokio::{sync::RwLock, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
@@ -102,14 +102,29 @@ async fn upsert_entry(
     Ok(())
 }
 
+/// RTSP over UDP (FFmpeg's default) drops packets on lossy/jittery links, which
+/// corrupts the H264 stream ("RTP: missed packets" -> decode errors). Force TCP
+/// transport with a socket timeout for rtsp:// inputs. Transport policy lives
+/// here (the app) so `media-pipe-core` stays input-agnostic.
+fn input_options(input: &InputConfig) -> Option<HashMap<String, String>> {
+    match input {
+        InputConfig::Network { url } if url.starts_with("rtsp://") => Some(HashMap::from([
+            ("rtsp_transport".to_string(), "tcp".to_string()),
+            ("stimeout".to_string(), "5000000".to_string()),
+        ])),
+        _ => None,
+    }
+}
+
 async fn upsert_pipe(id: &str, config: PipeConfig, update_if_exists: bool) -> anyhow::Result<()> {
     upsert_entry(
         id,
         move || {
+            let options = input_options(&config.input);
             let pipe = Arc::new(Pipe::new(config));
             let pipe_for_task = Arc::clone(&pipe);
             let handle = tokio::spawn(async move {
-                pipe_for_task.start().await;
+                pipe_for_task.start(options).await;
             });
             Entry::Pipe { pipe, handle }
         },
