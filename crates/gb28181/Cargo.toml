@@ -1,0 +1,12 @@
+[package]
+name = "gb28181"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+quick-xml = { workspace = true }
+encoding_rs = { workspace = true }
+md-5 = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }

@@ -4,6 +4,7 @@ members = [
     "nvr",
     "nvr-dashboard",
     "nvr-db",
+    "crates/gb28181",
     "crates/media-pipe-core",
     "crates/media-pipe-zlm",
     "crates/xiaomi",
@@ -51,3 +52,6 @@ base64 = "0.22"
 md-5 = "0.10"
 sha1 = "0.10"
 sha2 = "0.10"
+thiserror = "2"
+quick-xml = { version = "0.37", features = ["serialize"] }
+encoding_rs = "0.8"
