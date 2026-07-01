@@ -101,11 +101,29 @@ mod tests {
         let k = decode_keepalive(body).unwrap();
         assert_eq!(k.status, ""); // defaulted, not an error
     }
+
+    #[test]
+    fn peek_returns_other_for_unknown_cmd_type() {
+        // `decode_xml` does not change case — "Subscribe" must be preserved exactly.
+        let body = br#"<Notify>
+<CmdType>Subscribe</CmdType>
+<SN>1</SN>
+<DeviceID>34020000001320000001</DeviceID>
+</Notify>"#;
+        assert_eq!(
+            peek_cmd_type(body).unwrap(),
+            CmdType::Other("Subscribe".into())
+        );
+    }
 }
 
 // --- Task 6: Catalog query encode + response decode ---
 
 /// A Catalog query `<Query>` we SEND to a device. Strict UTF-8 encode.
+///
+/// # Safety / injection contract
+/// `device_id` MUST be a plain GB code (digits only, no XML metacharacters).
+/// It is interpolated directly into the XML without escaping.
 pub fn encode_catalog_query(sn: u64, device_id: &str) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n\
@@ -330,6 +348,11 @@ mod accumulator_tests {
 
 // --- Task 8: DeviceInfo query encode + response decode ---
 
+/// Build a DeviceInfo query `<Query>` we SEND to a device. Strict UTF-8 encode.
+///
+/// # Safety / injection contract
+/// `device_id` MUST be a plain GB code (digits only, no XML metacharacters).
+/// It is interpolated directly into the XML without escaping.
 pub fn encode_deviceinfo_query(sn: u64, device_id: &str) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n\

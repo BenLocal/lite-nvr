@@ -75,7 +75,12 @@ impl Registrar {
     }
 
     /// Mark devices offline if keepalive is stale, and drop expired registrations.
-    /// Returns the device ids that just went offline or were removed.
+    ///
+    /// Returns the device ids whose state changed — a mix of two cases:
+    /// - **Just went OFFLINE** (still registered, keepalive overdue): `get()` returns `Some` with `online == false`.
+    /// - **DROPPED** (registration expired): `get()` returns `None`.
+    ///
+    /// Callers distinguish the two by checking `get()` after the sweep.
     pub fn sweep(&mut self, now: i64) -> Vec<String> {
         let mut changed = Vec::new();
         self.devices.retain(|id, d| {

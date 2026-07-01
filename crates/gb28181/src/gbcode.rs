@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 /// A GB device/channel code. Stored opaque (never rejected on malformed input);
 /// `parse()` is a best-effort structural view.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct GbCode(pub String);
+pub struct GbCode(String);
 
 impl GbCode {
     pub fn new(s: impl Into<String>) -> Self {
@@ -75,7 +75,9 @@ impl SsrcGenerator {
         };
         let seq = self.seq.fetch_add(1, Ordering::Relaxed) % 10000;
         let s = format!("{head}{}{:04}", self.domain5, seq);
-        let n: u32 = s.parse().unwrap_or(0);
+        let n: u32 = s
+            .parse()
+            .expect("SSRC is always a 10-digit value that fits in u32");
         (n, s)
     }
 }

@@ -22,9 +22,13 @@ fn sniff_encoding(bytes: &[u8]) -> Option<&'static str> {
     let idx = head.find("encoding=")?;
     let rest = &head[idx + "encoding=".len()..];
     let quote = rest.chars().next()?; // ' or "
-    let val: String = rest[1..].chars().take_while(|&c| c != quote).collect();
+    let val: String = rest[quote.len_utf8()..]
+        .chars()
+        .take_while(|&c| c != quote)
+        .collect();
     match val.as_str() {
-        "gb2312" | "gbk" | "gb18030" => Some("gbk"),
+        "gb18030" => Some("gb18030"),
+        "gb2312" | "gbk" => Some("gbk"),
         "utf-8" | "utf8" => Some("utf-8"),
         _ => None,
     }
@@ -56,5 +60,15 @@ mod tests {
     fn missing_declaration_defaults_utf8() {
         let s = decode_xml("<A>x</A>".as_bytes()).unwrap();
         assert_eq!(s, "<A>x</A>");
+    }
+
+    #[test]
+    fn invalid_utf8_in_encoding_attribute_does_not_panic() {
+        // \xff\xfe immediately after `encoding=` is invalid UTF-8; from_utf8_lossy
+        // replaces it with U+FFFD (3 bytes), and the old `rest[1..]` would slice
+        // into the middle of that codepoint.  The fix uses `quote.len_utf8()`.
+        let body: &[u8] = b"<?xml version=\"1.0\" encoding=\xff\xfe?><A>x</A>";
+        // Must not panic — Ok or Err are both acceptable.
+        let _result = decode_xml(body);
     }
 }
