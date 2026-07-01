@@ -28,7 +28,10 @@ mod tests {
 
     #[test]
     fn display_includes_context() {
-        assert_eq!(GbError::DeviceOffline("340...1".into()).to_string(), "device offline: 340...1");
+        assert_eq!(
+            GbError::DeviceOffline("340...1".into()).to_string(),
+            "device offline: 340...1"
+        );
         assert_eq!(GbError::Timeout.to_string(), "timeout");
     }
 }

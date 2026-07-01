@@ -53,15 +53,15 @@ struct RawNotify {
 /// Peek the `<CmdType>` of any MANSCDP body without committing to a full type.
 pub fn peek_cmd_type(body: &[u8]) -> Result<CmdType> {
     let xml = decode_xml(body)?;
-    let raw: RawNotify = quick_xml::de::from_str(&xml)
-        .map_err(|e| GbError::XmlDecode(e.to_string()))?;
+    let raw: RawNotify =
+        quick_xml::de::from_str(&xml).map_err(|e| GbError::XmlDecode(e.to_string()))?;
     Ok(CmdType::from_str(&raw.cmd_type))
 }
 
 pub fn decode_keepalive(body: &[u8]) -> Result<Keepalive> {
     let xml = decode_xml(body)?;
-    let raw: RawNotify = quick_xml::de::from_str(&xml)
-        .map_err(|e| GbError::XmlDecode(e.to_string()))?;
+    let raw: RawNotify =
+        quick_xml::de::from_str(&xml).map_err(|e| GbError::XmlDecode(e.to_string()))?;
     Ok(Keepalive {
         sn: raw.sn,
         device_id: raw.device_id,
@@ -96,7 +96,8 @@ mod tests {
 
     #[test]
     fn tolerates_missing_status() {
-        let body = br#"<Notify><CmdType>Keepalive</CmdType><SN>1</SN><DeviceID>d</DeviceID></Notify>"#;
+        let body =
+            br#"<Notify><CmdType>Keepalive</CmdType><SN>1</SN><DeviceID>d</DeviceID></Notify>"#;
         let k = decode_keepalive(body).unwrap();
         assert_eq!(k.status, ""); // defaulted, not an error
     }
@@ -160,8 +161,8 @@ struct RawCatalogItem {
 
 pub fn decode_catalog_response(body: &[u8]) -> Result<CatalogResponse> {
     let xml = decode_xml(body)?;
-    let raw: RawCatalogResponse = quick_xml::de::from_str(&xml)
-        .map_err(|e| GbError::XmlDecode(e.to_string()))?;
+    let raw: RawCatalogResponse =
+        quick_xml::de::from_str(&xml).map_err(|e| GbError::XmlDecode(e.to_string()))?;
     Ok(CatalogResponse {
         sn: raw.sn,
         device_id: raw.device_id,
@@ -234,7 +235,11 @@ pub struct CatalogAccumulator {
 
 impl CatalogAccumulator {
     pub fn new(sn: u64) -> Self {
-        Self { sn, sum_num: 0, items: Vec::new() }
+        Self {
+            sn,
+            sum_num: 0,
+            items: Vec::new(),
+        }
     }
 
     /// Feed a decoded chunk. Chunks with a mismatched SN are ignored (return false).
@@ -257,7 +262,11 @@ impl CatalogAccumulator {
     /// `sum_num` items were collected (partial-tolerant per the resilience policy).
     pub fn finish(self) -> Catalog {
         let incomplete = self.sum_num > 0 && (self.items.len() as u32) < self.sum_num;
-        Catalog { sum_num: self.sum_num, items: self.items, incomplete }
+        Catalog {
+            sum_num: self.sum_num,
+            items: self.items,
+            incomplete,
+        }
     }
 }
 
@@ -274,11 +283,20 @@ mod accumulator_tests {
     use super::*;
 
     fn item(id: &str) -> CatalogItem {
-        CatalogItem { device_id: id.into(), name: id.into(), status: "ON".into() }
+        CatalogItem {
+            device_id: id.into(),
+            name: id.into(),
+            status: "ON".into(),
+        }
     }
 
     fn chunk(sn: u64, sum: u32, ids: &[&str]) -> CatalogResponse {
-        CatalogResponse { sn, device_id: "d".into(), sum_num: sum, items: ids.iter().map(|i| item(i)).collect() }
+        CatalogResponse {
+            sn,
+            device_id: "d".into(),
+            sum_num: sum,
+            items: ids.iter().map(|i| item(i)).collect(),
+        }
     }
 
     #[test]
@@ -348,8 +366,8 @@ struct RawDeviceInfo {
 
 pub fn decode_deviceinfo(body: &[u8]) -> Result<DeviceInfo> {
     let xml = decode_xml(body)?;
-    let raw: RawDeviceInfo = quick_xml::de::from_str(&xml)
-        .map_err(|e| GbError::XmlDecode(e.to_string()))?;
+    let raw: RawDeviceInfo =
+        quick_xml::de::from_str(&xml).map_err(|e| GbError::XmlDecode(e.to_string()))?;
     Ok(DeviceInfo {
         sn: raw.sn,
         device_id: raw.device_id,
