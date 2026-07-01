@@ -10,4 +10,4 @@ pub mod registrar;
 pub mod sdp;
 pub mod types;
 
-// pub use error::GbError;  // uncommented in Task 2 once GbError is defined
+pub use error::GbError;
