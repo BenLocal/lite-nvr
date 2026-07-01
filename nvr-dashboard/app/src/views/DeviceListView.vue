@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import Form from "@primevue/forms/form";
 import Button from "primevue/button";
 import Card from "primevue/card";
@@ -8,6 +8,7 @@ import DataTable from "primevue/datatable";
 import Dialog from "primevue/dialog";
 import InputText from "primevue/inputtext";
 import Message from "primevue/message";
+import Password from "primevue/password";
 import Select from "primevue/select";
 import Textarea from "primevue/textarea";
 import ToggleSwitch from "primevue/toggleswitch";
@@ -40,6 +41,17 @@ const inputTypeOptions = [
   { label: "V4L2", value: "v4l2" },
   { label: "X11 Grab", value: "x11grab" },
   { label: "Lavfi", value: "lavfi" },
+  { label: "小米摄像头", value: "xiaomi" },
+];
+
+// go2rtc Xiaomi cloud regions ("" = mainland China).
+const regionOptions = [
+  { label: "中国大陆", value: "" },
+  { label: "德国 (de)", value: "de" },
+  { label: "印度 (i2)", value: "i2" },
+  { label: "俄罗斯 (ru)", value: "ru" },
+  { label: "新加坡 (sg)", value: "sg" },
+  { label: "美国 (us)", value: "us" },
 ];
 
 const initialValues = {
@@ -49,7 +61,48 @@ const initialValues = {
   description: "",
   include_audio: false,
   record: true,
+  // Xiaomi-only structured fields; serialized into input_value on submit.
+  xm_user_id: "",
+  xm_token: "",
+  xm_region: "",
+  xm_did: "",
+  xm_model: "",
+  xm_ip: "",
 };
+
+// Split a xiaomi device's input_value JSON back into the xm_* form fields when
+// editing; other input types keep the single input_value field.
+const formInitialValues = computed(() => {
+  const device = editingDevice.value;
+  if (!device) {
+    return initialValues;
+  }
+  const base = {
+    ...initialValues,
+    name: device.name,
+    input_type: device.input_type,
+    input_value: device.input_value,
+    description: device.description,
+    include_audio: device.include_audio,
+    record: device.record,
+  };
+  if (device.input_type === "xiaomi" && device.input_value) {
+    try {
+      const cfg = JSON.parse(device.input_value) as Partial<
+        Record<"user_id" | "token" | "region" | "did" | "model" | "ip", string>
+      >;
+      base.xm_user_id = cfg.user_id ?? "";
+      base.xm_token = cfg.token ?? "";
+      base.xm_region = cfg.region ?? "";
+      base.xm_did = cfg.did ?? "";
+      base.xm_model = cfg.model ?? "";
+      base.xm_ip = cfg.ip ?? "";
+    } catch {
+      // malformed config — leave the xm_* fields blank
+    }
+  }
+  return base;
+});
 
 onMounted(() => {
   void loadDevices();
@@ -58,7 +111,6 @@ onMounted(() => {
 function resolver({ values }: { values: Record<string, unknown> }) {
   const name = String(values.name ?? "").trim();
   const inputType = String(values.input_type ?? "").trim();
-  const inputValue = String(values.input_value ?? "").trim();
   const description = String(values.description ?? "").trim();
   const errors: Record<string, { message: string }[]> = {};
 
@@ -66,23 +118,50 @@ function resolver({ values }: { values: Record<string, unknown> }) {
     errors.name = [{ message: "请输入设备名称" }];
   }
   if (!inputType) {
-    errors.input_type = [{ message: "请输入输入类型" }];
-  }
-  if (!inputValue) {
-    errors.input_value = [{ message: "请输入输入地址或标识" }];
+    errors.input_type = [{ message: "请选择输入类型" }];
   }
 
-  return {
-    values: {
-      name,
-      input_type: inputType,
-      input_value: inputValue,
-      description,
-      include_audio: Boolean(values.include_audio),
-      record: values.record === undefined ? true : Boolean(values.record),
-    },
-    errors,
+  const cleaned: Record<string, unknown> = {
+    name,
+    input_type: inputType,
+    description,
+    include_audio: Boolean(values.include_audio),
+    record: values.record === undefined ? true : Boolean(values.record),
   };
+
+  if (inputType === "xiaomi") {
+    const xm = {
+      user_id: String(values.xm_user_id ?? "").trim(),
+      token: String(values.xm_token ?? "").trim(),
+      region: String(values.xm_region ?? "").trim(),
+      did: String(values.xm_did ?? "").trim(),
+      model: String(values.xm_model ?? "").trim(),
+      ip: String(values.xm_ip ?? "").trim(),
+    };
+    if (!xm.user_id) errors.xm_user_id = [{ message: "请输入用户 ID" }];
+    if (!xm.token) errors.xm_token = [{ message: "请输入 Token" }];
+    if (!xm.did) errors.xm_did = [{ message: "请输入设备 DID" }];
+    if (!xm.model) errors.xm_model = [{ message: "请输入设备型号" }];
+    if (!xm.ip) errors.xm_ip = [{ message: "请输入摄像头 IP" }];
+
+    Object.assign(cleaned, {
+      xm_user_id: xm.user_id,
+      xm_token: xm.token,
+      xm_region: xm.region,
+      xm_did: xm.did,
+      xm_model: xm.model,
+      xm_ip: xm.ip,
+      input_value: JSON.stringify(xm),
+    });
+  } else {
+    const inputValue = String(values.input_value ?? "").trim();
+    if (!inputValue) {
+      errors.input_value = [{ message: "请输入输入地址或标识" }];
+    }
+    cleaned.input_value = inputValue;
+  }
+
+  return { values: cleaned, errors };
 }
 
 async function loadDevices() {
@@ -120,10 +199,23 @@ async function onSubmit(event: { valid: boolean; values: Record<string, unknown>
     return;
   }
 
+  const inputType = String(event.values.input_type ?? "");
+  let inputValue = String(event.values.input_value ?? "");
+  if (inputType === "xiaomi") {
+    inputValue = JSON.stringify({
+      user_id: String(event.values.xm_user_id ?? "").trim(),
+      token: String(event.values.xm_token ?? "").trim(),
+      region: String(event.values.xm_region ?? "").trim(),
+      did: String(event.values.xm_did ?? "").trim(),
+      model: String(event.values.xm_model ?? "").trim(),
+      ip: String(event.values.xm_ip ?? "").trim(),
+    });
+  }
+
   const payload: DevicePayload = {
     name: String(event.values.name ?? ""),
-    input_type: String(event.values.input_type ?? ""),
-    input_value: String(event.values.input_value ?? ""),
+    input_type: inputType,
+    input_value: inputValue,
     description: String(event.values.description ?? ""),
     include_audio: Boolean(event.values.include_audio),
     record: event.values.record === undefined ? true : Boolean(event.values.record),
@@ -169,6 +261,27 @@ function confirmDelete(device: DeviceItem) {
 
 function formatTime(value: string) {
   return new Date(value).toLocaleString("zh-CN", { hour12: false });
+}
+
+// Never expose a xiaomi device's raw input_value (it holds the secret token) in
+// the table — show a redacted did/model/ip summary instead.
+function inputValueDisplay(device: DeviceItem) {
+  if (device.input_type !== "xiaomi") {
+    return device.input_value;
+  }
+  try {
+    const cfg = JSON.parse(device.input_value) as Partial<
+      Record<"did" | "model" | "ip", string>
+    >;
+    const parts = [
+      cfg.did && `did=${cfg.did}`,
+      cfg.model && `model=${cfg.model}`,
+      cfg.ip && `ip=${cfg.ip}`,
+    ].filter(Boolean);
+    return parts.length ? parts.join("  ") : "小米摄像头";
+  } catch {
+    return "小米摄像头";
+  }
 }
 
 function buildFlvUrl(deviceId: string) {
@@ -250,15 +363,15 @@ async function copyText(value: string, label: string) {
           </Column>
           <Column field="input_value" header="输入地址/标识" style="width: 24rem; min-width: 24rem">
             <template #body="{ data }">
-              <div class="copy-cell copy-cell-input" :title="data.input_value">
-                <span class="mono-text ellipsis-text">{{ data.input_value }}</span>
+              <div class="copy-cell copy-cell-input" :title="inputValueDisplay(data)">
+                <span class="mono-text ellipsis-text">{{ inputValueDisplay(data) }}</span>
                 <Button
                   icon="pi pi-copy"
                   text
                   rounded
                   class="copy-button"
                   aria-label="复制输入地址"
-                  @click="copyText(data.input_value, '输入地址')"
+                  @click="copyText(inputValueDisplay(data), '输入地址')"
                 />
               </div>
             </template>
@@ -315,8 +428,9 @@ async function copyText(value: string, label: string) {
     >
       <Form
         v-slot="$form"
+        :key="editingDevice?.id ?? 'new'"
         :resolver="resolver"
-        :initial-values="editingDevice ?? initialValues"
+        :initial-values="formInitialValues"
         class="device-form"
         @submit="onSubmit"
       >
@@ -352,7 +466,120 @@ async function copyText(value: string, label: string) {
           </div>
         </div>
 
-        <div class="field">
+        <template v-if="$form.input_type?.value === 'xiaomi'">
+          <div class="field-grid">
+            <div class="field">
+              <label for="xm_user_id">用户 ID</label>
+              <InputText
+                id="xm_user_id"
+                name="xm_user_id"
+                class="field-input"
+                placeholder="Xiaomi user_id"
+                :invalid="$form.xm_user_id?.invalid"
+              />
+              <Message
+                v-if="$form.xm_user_id?.invalid"
+                severity="error"
+                size="small"
+                variant="simple"
+              >
+                {{ $form.xm_user_id.error?.message }}
+              </Message>
+            </div>
+            <div class="field">
+              <label for="xm_token">Token</label>
+              <Password
+                id="xm_token"
+                name="xm_token"
+                class="field-input"
+                :feedback="false"
+                toggle-mask
+                placeholder="passToken"
+                :invalid="$form.xm_token?.invalid"
+              />
+              <Message
+                v-if="$form.xm_token?.invalid"
+                severity="error"
+                size="small"
+                variant="simple"
+              >
+                {{ $form.xm_token.error?.message }}
+              </Message>
+            </div>
+          </div>
+
+          <div class="field-grid">
+            <div class="field">
+              <label for="xm_did">设备 DID</label>
+              <InputText
+                id="xm_did"
+                name="xm_did"
+                class="field-input"
+                placeholder="did"
+                :invalid="$form.xm_did?.invalid"
+              />
+              <Message v-if="$form.xm_did?.invalid" severity="error" size="small" variant="simple">
+                {{ $form.xm_did.error?.message }}
+              </Message>
+            </div>
+            <div class="field">
+              <label for="xm_model">型号 Model</label>
+              <InputText
+                id="xm_model"
+                name="xm_model"
+                class="field-input"
+                placeholder="如 chuangmi.camera.xxx"
+                :invalid="$form.xm_model?.invalid"
+              />
+              <Message
+                v-if="$form.xm_model?.invalid"
+                severity="error"
+                size="small"
+                variant="simple"
+              >
+                {{ $form.xm_model.error?.message }}
+              </Message>
+            </div>
+          </div>
+
+          <div class="field-grid">
+            <div class="field">
+              <label for="xm_ip">摄像头 IP</label>
+              <InputText
+                id="xm_ip"
+                name="xm_ip"
+                class="field-input"
+                placeholder="192.168.x.y"
+                :invalid="$form.xm_ip?.invalid"
+              />
+              <Message v-if="$form.xm_ip?.invalid" severity="error" size="small" variant="simple">
+                {{ $form.xm_ip.error?.message }}
+              </Message>
+            </div>
+            <div class="field">
+              <label for="xm_region">区域</label>
+              <Select
+                id="xm_region"
+                name="xm_region"
+                :options="regionOptions"
+                option-label="label"
+                option-value="value"
+                size="small"
+                class="field-input"
+                placeholder="选择区域"
+              />
+            </div>
+          </div>
+
+          <div class="field">
+            <span class="field-hint">
+              运行 <code>cargo run -p xiaomi --bin validate</code>
+              登录小米账号即可获取 user_id / token，并列出各摄像头的 did / model / ip。
+            </span>
+          </div>
+        </template>
+
+        <div v-else class="field">
           <label for="input_value">输入地址/标识</label>
           <InputText
             id="input_value"
