@@ -1,8 +1,6 @@
 use std::time::Duration;
 
-use gb28181::{
-    AuthConfig, CatalogItem, GbClient, GbClientConfig, GbEvent, GbServer, GbServerConfig,
-};
+use gb28181::{CatalogItem, GbClient, GbClientConfig, GbEvent, GbServer, GbServerConfig};
 
 use super::*;
 use crate::gb::receiver::fake::FakeReceiver;
