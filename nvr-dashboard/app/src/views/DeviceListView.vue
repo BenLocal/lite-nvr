@@ -22,6 +22,7 @@ import {
   type DeviceItem,
   type DevicePayload,
 } from "../api/device";
+import { getGbCatalog, getGbDevices, type GbChannel, type GbDevice } from "../api/gb";
 import { useAppToast } from "../utils/toast";
 
 const appToast = useAppToast();
@@ -34,6 +35,39 @@ const dialogVisible = ref(false);
 const previewVisible = ref(false);
 const editingDevice = ref<DeviceItem | null>(null);
 const previewDevice = ref<DeviceItem | null>(null);
+
+// GB28181 pickers use standalone refs (not @primevue/forms fields) because their
+// options are loaded on demand from the live registrar/catalog API.
+const gbDevices = ref<GbDevice[]>([]);
+const gbChannels = ref<GbChannel[]>([]);
+const gbDeviceId = ref<string>("");
+const gbChannelId = ref<string>("");
+
+async function loadGbDevices() {
+  try {
+    gbDevices.value = await getGbDevices();
+  } catch {
+    gbDevices.value = [];
+  }
+}
+
+async function onGbDeviceChange(deviceId: string) {
+  gbDeviceId.value = deviceId;
+  gbChannelId.value = "";
+  gbChannels.value = [];
+  if (!deviceId) return;
+  try {
+    gbChannels.value = await getGbCatalog(deviceId);
+  } catch {
+    gbChannels.value = [];
+  }
+}
+
+function resetGbFields() {
+  gbDeviceId.value = "";
+  gbChannelId.value = "";
+  gbChannels.value = [];
+}
 const inputTypeOptions = [
   { label: "RTSP", value: "rtsp" },
   { label: "RTMP", value: "rtmp" },
@@ -42,6 +76,7 @@ const inputTypeOptions = [
   { label: "X11 Grab", value: "x11grab" },
   { label: "Lavfi", value: "lavfi" },
   { label: "小米摄像头", value: "xiaomi" },
+  { label: "国标 GB28181", value: "gb28181" },
 ];
 
 // go2rtc Xiaomi cloud regions ("" = mainland China).
@@ -153,6 +188,16 @@ function resolver({ values }: { values: Record<string, unknown> }) {
       xm_ip: xm.ip,
       input_value: JSON.stringify(xm),
     });
+  } else if (inputType === "gb28181") {
+    if (!gbDeviceId.value) {
+      errors.input_value = [{ message: "请选择国标设备" }];
+    } else if (!gbChannelId.value) {
+      errors.input_value = [{ message: "请选择国标通道" }];
+    }
+    cleaned.input_value = JSON.stringify({
+      device_id: gbDeviceId.value,
+      channel_id: gbChannelId.value,
+    });
   } else {
     const inputValue = String(values.input_value ?? "").trim();
     if (!inputValue) {
@@ -177,12 +222,41 @@ async function loadDevices() {
 
 function openCreateDialog() {
   editingDevice.value = null;
+  resetGbFields();
   dialogVisible.value = true;
 }
 
 function openEditDialog(device: DeviceItem) {
   editingDevice.value = device;
+  resetGbFields();
+  hydrateGbFields(device);
   dialogVisible.value = true;
+}
+
+// Split a gb28181 device's input_value JSON back into the picker refs and
+// preload its device list + channel catalog so the dropdowns show the saved
+// selection when editing.
+function hydrateGbFields(device: DeviceItem) {
+  if (device.input_type !== "gb28181" || !device.input_value) {
+    return;
+  }
+  try {
+    const cfg = JSON.parse(device.input_value) as {
+      device_id?: string;
+      channel_id?: string;
+    };
+    gbDeviceId.value = cfg.device_id ?? "";
+    gbChannelId.value = cfg.channel_id ?? "";
+    void loadGbDevices();
+    if (gbDeviceId.value) {
+      const savedChannel = gbChannelId.value;
+      void onGbDeviceChange(gbDeviceId.value).then(() => {
+        gbChannelId.value = savedChannel;
+      });
+    }
+  } catch {
+    resetGbFields();
+  }
 }
 
 function openPreview(device: DeviceItem) {
@@ -209,6 +283,11 @@ async function onSubmit(event: { valid: boolean; values: Record<string, unknown>
       did: String(event.values.xm_did ?? "").trim(),
       model: String(event.values.xm_model ?? "").trim(),
       ip: String(event.values.xm_ip ?? "").trim(),
+    });
+  } else if (inputType === "gb28181") {
+    inputValue = JSON.stringify({
+      device_id: gbDeviceId.value,
+      channel_id: gbChannelId.value,
     });
   }
 
@@ -266,6 +345,17 @@ function formatTime(value: string) {
 // Never expose a xiaomi device's raw input_value (it holds the secret token) in
 // the table — show a redacted did/model/ip summary instead.
 function inputValueDisplay(device: DeviceItem) {
+  if (device.input_type === "gb28181") {
+    try {
+      const cfg = JSON.parse(device.input_value) as {
+        device_id?: string;
+        channel_id?: string;
+      };
+      return `${cfg.device_id ?? "?"} / ${cfg.channel_id ?? "?"}`;
+    } catch {
+      return device.input_value;
+    }
+  }
   if (device.input_type !== "xiaomi") {
     return device.input_value;
   }
@@ -575,6 +665,42 @@ async function copyText(value: string, label: string) {
             <span class="field-hint">
               运行 <code>cargo run -p xiaomi --bin validate</code>
               登录小米账号即可获取 user_id / token，并列出各摄像头的 did / model / ip。
+            </span>
+          </div>
+        </template>
+
+        <template v-else-if="$form.input_type?.value === 'gb28181'">
+          <div class="field">
+            <label for="gb_device">国标设备</label>
+            <Select
+              id="gb_device"
+              class="field-input"
+              :options="gbDevices"
+              option-label="device_id"
+              option-value="device_id"
+              :model-value="gbDeviceId"
+              placeholder="选择已注册的国标设备"
+              @update:model-value="onGbDeviceChange"
+              @before-show="loadGbDevices"
+            />
+          </div>
+          <div class="field">
+            <label for="gb_channel">国标通道</label>
+            <Select
+              id="gb_channel"
+              v-model="gbChannelId"
+              class="field-input"
+              :options="gbChannels"
+              option-label="name"
+              option-value="channel_id"
+              placeholder="选择通道"
+              :disabled="!gbDeviceId"
+            />
+          </div>
+          <div class="field">
+            <span class="field-hint">
+              国标设备需先注册到本平台（NVR_GB_ENABLE=1）。下拉框列出在线设备及其通道，
+              保存后仅在有人观看时按需 INVITE 拉流。
             </span>
           </div>
         </template>
