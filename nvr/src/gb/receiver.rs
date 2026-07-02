@@ -1,112 +1,154 @@
-//! The media-receive seam. The bridge orchestration depends only on the
-//! `MediaReceiver` trait; the real impl wraps ZLM's `RtpServer`, so pull/teardown
-//! logic is testable without ZLM.
+//! The media-receive seam. The bridge depends only on the `MediaReceiver` trait,
+//! so pull/teardown logic is testable without ZLM. The real impl drives the
+//! `ZlmControl` worker; the worker owns the `RtpServer`, so nothing here holds a
+//! raw ZLM pointer — no `unsafe impl Send`.
 
+use std::net::SocketAddr;
+
+use async_trait::async_trait;
 use gb28181::Transport;
 
-/// A live receiver ZLM opened for one stream. Kept alive for the session; drop
-/// releases the underlying port. Stored behind the bridge's `Mutex`, so `Send`
-/// (not `Sync`) is the only bound the bridge needs.
+use crate::zlm::cmd::{ZlmControl, mode_for};
+
+/// A live receiver ZLM opened for one stream. Dropping it releases the port.
+#[async_trait]
 pub trait ReceiverHandle: Send {
-    /// UDP port the device must send its PS/RTP to.
+    /// Port the device must send its PS/RTP to (UDP) or connect to (TCP passive).
     fn port(&self) -> u16;
+    /// TCP-active only: connect out to the device's media addr (from the SDP
+    /// answer). No-op / unused for UDP and TCP-passive.
+    async fn connect(&self, remote: SocketAddr) -> anyhow::Result<()>;
 }
 
 /// Opens a media receiver for a stream id.
+#[async_trait]
 pub trait MediaReceiver: Send + Sync {
-    fn open(
+    async fn open(
         &self,
         stream_id: &str,
         transport: Transport,
     ) -> anyhow::Result<Box<dyn ReceiverHandle>>;
 }
 
-/// Real receiver: a ZLM `RtpServer` that ingests PS/RTP into a ZLM stream named
-/// `stream_id`. Only UDP (tcp_mode 0) is exercised in P1-3.
-pub struct ZlmRtpReceiver;
-
-struct ZlmReceiverHandle {
-    // Field order matters only for readability; Drop on RtpServer releases the port.
-    server: rszlm::server::RtpServer,
+/// Real receiver: drives the `ZlmControl` worker to create/connect/close
+/// `RtpServer`s that publish `stream_id` under ZLM's `rtp` app.
+pub struct ZlmRtpReceiver {
+    control: ZlmControl,
 }
 
-// SAFETY: `RtpServer` wraps a raw `mk_rtp_server` pointer (a ZLM shared_ptr
-// handle), which is why it is auto-!Send/!Sync. Sending it across threads is
-// sound: the handle is a shared_ptr with atomic refcounting, `bind_port` reads
-// a write-once value, and `Drop` (mk_rtp_server_release) is safe from any
-// thread. `ZlmReceiverHandle` is a private struct exposing only `port()`, so the
-// &self-mutating RtpServer methods (on_detach/connect) that would be unsound to
-// share are unreachable.
-unsafe impl Send for ZlmReceiverHandle {}
-
-impl ReceiverHandle for ZlmReceiverHandle {
-    fn port(&self) -> u16 {
-        self.server.bind_port()
+impl ZlmRtpReceiver {
+    pub fn new(control: ZlmControl) -> Self {
+        Self { control }
     }
 }
 
+struct ZlmReceiverHandle {
+    stream_id: String,
+    port: u16,
+    control: ZlmControl,
+}
+
+#[async_trait]
+impl ReceiverHandle for ZlmReceiverHandle {
+    fn port(&self) -> u16 {
+        self.port
+    }
+    async fn connect(&self, remote: SocketAddr) -> anyhow::Result<()> {
+        self.control.connect_rtp(&self.stream_id, remote).await
+    }
+}
+
+impl Drop for ZlmReceiverHandle {
+    fn drop(&mut self) {
+        self.control.close_rtp(&self.stream_id); // fire-and-forget, releases the port
+    }
+}
+
+#[async_trait]
 impl MediaReceiver for ZlmRtpReceiver {
-    fn open(
+    async fn open(
         &self,
         stream_id: &str,
         transport: Transport,
     ) -> anyhow::Result<Box<dyn ReceiverHandle>> {
-        let tcp_mode = match transport {
-            Transport::Udp => rszlm::server::RtpServerTcpMode::Disabled,
-            // TCP media is deferred (P1-3 is UDP-only); reject explicitly rather
-            // than silently mis-binding.
-            Transport::TcpPassive | Transport::TcpActive => {
-                return Err(anyhow::anyhow!(
-                    "gb28181: TCP media transport not supported yet"
-                ));
-            }
-        };
-        // port 0 = let ZLM pick a free UDP port; bind_port() reports it.
-        let server = rszlm::server::RtpServer::new(0, tcp_mode, stream_id);
-        Ok(Box::new(ZlmReceiverHandle { server }))
+        let port = self
+            .control
+            .open_rtp(stream_id, mode_for(transport))
+            .await?;
+        Ok(Box::new(ZlmReceiverHandle {
+            stream_id: stream_id.to_string(),
+            port,
+            control: self.control.clone(),
+        }))
     }
 }
 
 #[cfg(test)]
 pub(crate) mod fake {
     use super::*;
+    use std::sync::Arc;
     use std::sync::Mutex;
 
-    /// Test receiver: hands out deterministic ports and records opened streams.
-    #[derive(Default)]
+    /// Test receiver: hands out deterministic ports and records (stream_id,
+    /// transport) per open and the remote of each active connect. All state is
+    /// behind `Arc` so a test can `clone()` the receiver, move one copy into the
+    /// bridge, and read the recordings through the other.
+    #[derive(Default, Clone)]
     pub struct FakeReceiver {
-        pub opened: Mutex<Vec<String>>,
-        next_port: Mutex<u16>,
+        pub opened: Arc<Mutex<Vec<(String, Transport)>>>,
+        pub connected: Arc<Mutex<Vec<SocketAddr>>>,
+        next_port: Arc<Mutex<u16>>,
     }
 
     pub struct FakeHandle {
         port: u16,
+        connected: Arc<Mutex<Vec<SocketAddr>>>,
     }
 
+    #[async_trait]
     impl ReceiverHandle for FakeHandle {
         fn port(&self) -> u16 {
             self.port
         }
-    }
-
-    impl MediaReceiver for FakeReceiver {
-        fn open(
-            &self,
-            stream_id: &str,
-            _transport: Transport,
-        ) -> anyhow::Result<Box<dyn ReceiverHandle>> {
-            self.opened.lock().unwrap().push(stream_id.to_string());
-            let mut p = self.next_port.lock().unwrap();
-            *p = if *p == 0 { 40000 } else { *p + 2 };
-            Ok(Box::new(FakeHandle { port: *p }))
+        async fn connect(&self, remote: SocketAddr) -> anyhow::Result<()> {
+            self.connected.lock().unwrap().push(remote);
+            Ok(())
         }
     }
 
-    #[test]
-    fn fake_hands_out_ports_and_records() {
+    #[async_trait]
+    impl MediaReceiver for FakeReceiver {
+        async fn open(
+            &self,
+            stream_id: &str,
+            transport: Transport,
+        ) -> anyhow::Result<Box<dyn ReceiverHandle>> {
+            self.opened
+                .lock()
+                .unwrap()
+                .push((stream_id.to_string(), transport));
+            let mut p = self.next_port.lock().unwrap();
+            *p = if *p == 0 { 40000 } else { *p + 2 };
+            Ok(Box::new(FakeHandle {
+                port: *p,
+                connected: self.connected.clone(),
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn fake_records_open_and_connect() {
         let r = FakeReceiver::default();
-        let h = r.open("cam1", Transport::Udp).unwrap();
+        let h = r.open("cam1", Transport::TcpActive).await.unwrap();
         assert_eq!(h.port(), 40000);
-        assert_eq!(r.opened.lock().unwrap().as_slice(), &["cam1".to_string()]);
+        h.connect("1.2.3.4:5000".parse().unwrap()).await.unwrap();
+        assert_eq!(
+            r.opened.lock().unwrap().as_slice(),
+            &[("cam1".to_string(), Transport::TcpActive)]
+        );
+        assert_eq!(
+            r.connected.lock().unwrap().as_slice(),
+            &["1.2.3.4:5000".parse().unwrap()]
+        );
     }
 }

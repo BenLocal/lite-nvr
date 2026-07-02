@@ -85,7 +85,7 @@ impl GbBridge {
         stream_id: &str,
         mapping: &crate::gb::stream_map::Mapping,
     ) -> anyhow::Result<()> {
-        let handle = self.receiver.open(stream_id, Transport::Udp)?;
+        let handle = self.receiver.open(stream_id, Transport::Udp).await?;
         let port = handle.port();
         let (ssrc, ssrc_str) = self.server.next_ssrc(SsrcKind::Live);
         let media_addr = format!("{}:{}", self.media_ip, port).parse()?;

@@ -16,6 +16,7 @@ use gb28181::{GbEvent, GbServer};
 use crate::gb::bridge::GbBridge;
 use crate::gb::config::GbConfig;
 use crate::gb::receiver::ZlmRtpReceiver;
+use crate::zlm::cmd::ZlmControl;
 
 static BRIDGE: OnceLock<Arc<GbBridge>> = OnceLock::new();
 
@@ -38,10 +39,11 @@ pub async fn init(cfg: GbConfig) -> anyhow::Result<()> {
         cfg.sip_id
     );
     spawn_event_logger(events);
+    let control = ZlmControl::spawn();
     let bridge = Arc::new(GbBridge::new(
         server,
         cfg.media_ip.clone(),
-        Box::new(ZlmRtpReceiver),
+        Box::new(ZlmRtpReceiver::new(control)),
     ));
     let _ = BRIDGE.set(bridge);
     Ok(())

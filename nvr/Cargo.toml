@@ -10,6 +10,7 @@ test = false
 
 [dependencies]
 tokio = { workspace = true }
+async-trait = "0.1"
 log = { workspace = true }
 env_logger = { workspace = true }
 anyhow = { workspace = true }
