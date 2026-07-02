@@ -41,8 +41,8 @@ async fn list_devices() -> ApiJsonResult<Vec<GbDeviceItem>> {
     Ok(ok_json(items))
 }
 
-/// Query a device's channel catalog (live MANSCDP Catalog). Returns 503-ish
-/// empty when GB is disabled; propagates crate errors otherwise.
+/// Query a device's channel catalog (live MANSCDP Catalog). Returns an empty
+/// list (HTTP 200) when GB is disabled; propagates crate errors otherwise.
 async fn catalog(Path(device_id): Path<String>) -> ApiJsonResult<Vec<GbChannelItem>> {
     let Some(bridge) = crate::gb::bridge() else {
         return Ok(ok_json(Vec::new()));

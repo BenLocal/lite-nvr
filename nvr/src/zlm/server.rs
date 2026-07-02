@@ -49,7 +49,9 @@ pub(crate) fn start_zlm_server(
                 });
                 let runtime_nf = runtime.clone();
                 events.on_media_not_found(move |media| {
+                    let app = media.url_info.app();
                     let stream = media.url_info.stream();
+                    log::info!("ZLM: media not found, app: {app}, stream: {stream}");
                     let Some(bridge) = crate::gb::bridge() else {
                         return true; // GB disabled: nothing to provide, but don't error
                     };
