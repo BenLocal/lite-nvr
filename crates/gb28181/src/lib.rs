@@ -4,7 +4,8 @@
 pub mod auth;
 pub mod client;
 pub mod encoding;
-pub mod endpoint;
+// Internal rsipstack plumbing — not part of the public surface.
+pub(crate) mod endpoint;
 pub mod error;
 pub mod event;
 pub mod gbcode;
@@ -20,5 +21,6 @@ pub use error::GbError;
 pub use event::GbEvent;
 pub use gbcode::SsrcKind;
 pub use manscdp::{Catalog, CatalogItem};
+pub use sdp::OfferSdp;
 pub use server::{GbServer, GbServerConfig, MediaSession};
 pub use types::{MediaSpec, RegisteredDevice, StreamType, Transport};
