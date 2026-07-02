@@ -96,6 +96,16 @@ impl SipEndpoint {
     }
 }
 
+impl Drop for SipEndpoint {
+    /// The detached `serve()` task holds its own `Arc` clones, so dropping the
+    /// `cancel` field alone would not stop it — cancel explicitly so a dropped
+    /// endpoint never leaks the serve task or its bound UDP port. `cancel()` is
+    /// idempotent, so an earlier explicit `shutdown()` stays safe.
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
 /// Send one out-of-dialog MANSCDP MESSAGE to `dest` and wait for the final
 /// response. `from`/`to` are `(user, domain)` pairs.
 // Only exercised by this module's test for now; `client.rs` (a later task,
