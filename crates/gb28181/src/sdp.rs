@@ -46,7 +46,7 @@ pub fn build_play_offer(
         sdp.push_str("a=connection:new\r\n");
     }
     sdp.push_str(&format!("y={ssrc_str}\r\n"));
-    // TODO(P1-2): emit the GB/T 28181 Annex B `f=` media-format line once validated against a real device
+    // TODO(P1-3/real-device): emit the GB/T 28181 Annex B `f=` (and `u=`) media-format line once validated against a real device
     sdp
 }
 

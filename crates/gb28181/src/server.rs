@@ -303,8 +303,29 @@ impl GbServer {
     }
 }
 
+impl Drop for GbServer {
+    /// The pump tasks each hold an `Arc<ServerInner>`, so dropping this handle
+    /// alone can't reclaim the endpoint. Fire the cancel token so the (now
+    /// cancel-aware) pump tasks exit and release their `Arc`, letting the
+    /// `SipEndpoint` — and its UDP socket — drop. `cancel()` is idempotent, so
+    /// an earlier explicit `shutdown()` stays safe.
+    fn drop(&mut self) {
+        self.inner.ep.shutdown();
+    }
+}
+
 async fn main_loop(inner: Arc<ServerInner>, mut incoming: TransactionReceiver) {
-    while let Some(mut tx) = incoming.recv().await {
+    loop {
+        // Cancel-aware: without this the task would block on recv() forever
+        // (its sender lives inside the Arc<ServerInner> this task holds), so
+        // the Arc — and the UDP socket it owns — could never be reclaimed.
+        let mut tx = tokio::select! {
+            _ = inner.ep.cancel.cancelled() => return,
+            msg = incoming.recv() => match msg {
+                Some(tx) => tx,
+                None => return,
+            },
+        };
         let has_to_tag = tx
             .original
             .to_header()
@@ -530,7 +551,15 @@ async fn state_loop(
     inner: Arc<ServerInner>,
     mut state_rx: rsipstack::dialog::dialog::DialogStateReceiver,
 ) {
-    while let Some(state) = state_rx.recv().await {
+    loop {
+        // Cancel-aware for the same reason as main_loop (see there).
+        let state = tokio::select! {
+            _ = inner.ep.cancel.cancelled() => return,
+            msg = state_rx.recv() => match msg {
+                Some(state) => state,
+                None => return,
+            },
+        };
         if let DialogState::Terminated(id, _reason) = state {
             let key = id.to_string();
             let owned = inner.sessions.lock().unwrap().remove(&key).is_some();

@@ -165,8 +165,27 @@ impl GbClient {
     }
 }
 
+impl Drop for GbClient {
+    /// Fire the cancel token so the cancel-aware pump tasks exit and release
+    /// their `Arc<ClientInner>`, letting the `SipEndpoint` (and its UDP socket)
+    /// drop. `cancel()` is idempotent, so an earlier `shutdown()` stays safe.
+    fn drop(&mut self) {
+        self.inner.ep.shutdown();
+    }
+}
+
 async fn main_loop(inner: Arc<ClientInner>, mut incoming: TransactionReceiver) {
-    while let Some(mut tx) = incoming.recv().await {
+    loop {
+        // Cancel-aware: the sender lives inside the Arc<ClientInner> this task
+        // holds, so a plain recv() loop would pin the endpoint's UDP socket
+        // open forever. Exit on cancel so the Arc can be reclaimed.
+        let mut tx = tokio::select! {
+            _ = inner.ep.cancel.cancelled() => return,
+            msg = incoming.recv() => match msg {
+                Some(tx) => tx,
+                None => return,
+            },
+        };
         let has_to_tag = tx
             .original
             .to_header()
@@ -256,7 +275,15 @@ async fn state_loop(
     inner: Arc<ClientInner>,
     mut state_rx: rsipstack::dialog::dialog::DialogStateReceiver,
 ) {
-    while let Some(state) = state_rx.recv().await {
+    loop {
+        // Cancel-aware for the same reason as main_loop (see there).
+        let state = tokio::select! {
+            _ = inner.ep.cancel.cancelled() => return,
+            msg = state_rx.recv() => match msg {
+                Some(state) => state,
+                None => return,
+            },
+        };
         match state {
             DialogState::Calling(id) => {
                 let Some(Dialog::ServerInvite(dialog)) = inner.ep.dialog_layer.get_dialog(&id)
