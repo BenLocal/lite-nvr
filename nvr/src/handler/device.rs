@@ -127,6 +127,21 @@ async fn update_device(
     };
     validate_device(&device)?;
     nvr_db::device::upsert(&device, &conn).await?;
+    // On an input_type change involving gb28181, clean up the old kind's
+    // resources first: leaving gb28181 must drop the stale pull mapping (+ any
+    // active pull), and entering gb28181 must remove the old pipe (the gb arm
+    // builds none, so `ensure_device_pipe` won't replace it). Both are
+    // idempotent no-ops otherwise; non-gb↔non-gb keeps its upsert-in-place path.
+    if existing.input_type != device.input_type {
+        if existing.input_type == "gb28181" {
+            if let Some(bridge) = crate::gb::bridge() {
+                bridge.unregister_mapping(&device.id).await;
+            }
+        }
+        if device.input_type == "gb28181" {
+            manager::remove_pipe(&device.id).await?;
+        }
+    }
     ensure_device_pipe(&device).await?;
     Ok(ok_json(device))
 }

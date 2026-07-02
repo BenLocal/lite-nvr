@@ -86,7 +86,8 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
             }
             None => {
                 log::warn!(
-                    "gb28181 device {} added but GB support is disabled (NVR_GB_ENABLE!=1)",
+                    "gb28181 device {} added but GB support is not active \
+                     (NVR_GB_ENABLE!=1, or the platform failed to bind — see startup logs)",
                     device.id
                 );
             }
