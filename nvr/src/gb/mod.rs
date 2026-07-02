@@ -2,6 +2,7 @@
 //! crate's GbServer, wired to ZLM's media hooks. See
 //! docs/superpowers/specs/2026-07-01-gb28181-crate-design.md row 11.
 
+pub mod api;
 pub mod bridge;
 pub mod config;
 pub mod receiver;
