@@ -62,6 +62,38 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
         return manager::upsert_xiaomi(&device.id, media, cfg, true).await;
     }
 
+    // GB28181 cameras have no always-on pipe: they only register a mapping so
+    // the on-demand bridge can INVITE-pull when a viewer opens the stream. The
+    // `input_value` carries `{ "device_id": "...", "channel_id": "..." }`.
+    if device.input_type == "gb28181" {
+        #[derive(serde::Deserialize)]
+        struct GbInput {
+            device_id: String,
+            channel_id: String,
+        }
+        let gb: GbInput = serde_json::from_str(&device.input_value)
+            .map_err(|e| anyhow::anyhow!("invalid gb28181 device config: {e}"))?;
+        match crate::gb::bridge() {
+            Some(bridge) => {
+                // stream id == nvr device id (the ZLM stream name we pull into).
+                bridge.register_mapping(&device.id, &gb.device_id, &gb.channel_id);
+                log::info!(
+                    "gb28181: registered mapping {} -> {}/{}",
+                    device.id,
+                    gb.device_id,
+                    gb.channel_id
+                );
+            }
+            None => {
+                log::warn!(
+                    "gb28181 device {} added but GB support is disabled (NVR_GB_ENABLE!=1)",
+                    device.id
+                );
+            }
+        }
+        return Ok(());
+    }
+
     let input = match device.input_type.as_str() {
         "net" | "rtsp" | "rtmp" => InputConfig::Network {
             url: device.input_value.clone(),
@@ -99,4 +131,10 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
 
 pub(crate) fn build_flv_url(device_id: &str) -> String {
     format!("http://127.0.0.1:8553/live/{}.live.flv", device_id)
+}
+
+/// GB28181 streams are published by ZLM's RtpServer under the `rtp` app (not
+/// `live`), so their playable URL differs from `build_flv_url`.
+pub(crate) fn build_gb_flv_url(device_id: &str) -> String {
+    format!("http://127.0.0.1:8553/rtp/{}.live.flv", device_id)
 }

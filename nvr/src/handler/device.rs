@@ -129,6 +129,9 @@ async fn remove_device(Path(id): Path<String>) -> ApiJsonResult<String> {
     let conn = app_db_conn()?;
     nvr_db::device::delete(&id, &conn).await?;
     manager::remove_pipe(&id).await?;
+    if let Some(bridge) = crate::gb::bridge() {
+        bridge.unregister_mapping(&id).await;
+    }
     Ok(ok_json("success".to_string()))
 }
 
