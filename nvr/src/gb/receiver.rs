@@ -5,8 +5,9 @@
 use gb28181::Transport;
 
 /// A live receiver ZLM opened for one stream. Kept alive for the session; drop
-/// releases the underlying port.
-pub trait ReceiverHandle: Send + Sync {
+/// releases the underlying port. Stored behind the bridge's `Mutex`, so `Send`
+/// (not `Sync`) is the only bound the bridge needs.
+pub trait ReceiverHandle: Send {
     /// UDP port the device must send its PS/RTP to.
     fn port(&self) -> u16;
 }
@@ -29,14 +30,14 @@ struct ZlmReceiverHandle {
     server: rszlm::server::RtpServer,
 }
 
-// SAFETY: `RtpServer` wraps a raw `mk_rtp_server` pointer, a shared_ptr handle
-// over ZLM's own thread-safe C API. We only call `new`, `bind_port`, and `Drop`
-// (mk_rtp_server_release) — all serialized internally by ZLM — and never alias
-// the pointer outside this handle. The bridge stores it in an Arc-shared map
-// touched from the ZLM hook thread and tokio, so it must be Send + Sync; rszlm
-// just declines to assert it. Sound for our usage.
+// SAFETY: `RtpServer` wraps a raw `mk_rtp_server` pointer (a ZLM shared_ptr
+// handle), which is why it is auto-!Send/!Sync. Sending it across threads is
+// sound: the handle is a shared_ptr with atomic refcounting, `bind_port` reads
+// a write-once value, and `Drop` (mk_rtp_server_release) is safe from any
+// thread. `ZlmReceiverHandle` is a private struct exposing only `port()`, so the
+// &self-mutating RtpServer methods (on_detach/connect) that would be unsound to
+// share are unreachable.
 unsafe impl Send for ZlmReceiverHandle {}
-unsafe impl Sync for ZlmReceiverHandle {}
 
 impl ReceiverHandle for ZlmReceiverHandle {
     fn port(&self) -> u16 {
