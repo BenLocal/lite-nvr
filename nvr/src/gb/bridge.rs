@@ -49,8 +49,14 @@ impl GbBridge {
     }
 
     /// ZLM `on_media_not_found`: pull the stream if it's a known gb mapping and
-    /// not already active. Idempotent — ZLM may fire this repeatedly. Returns
+    /// not already active. Idempotent for *sequential* re-fires (ZLM may fire
+    /// this repeatedly); *concurrent* duplicate fires can transiently double-pull
+    /// (a second INVITE + RtpServer port), but that self-heals — the losing
+    /// `ActiveSession` is dropped by the `insert` in `start_pull`, releasing its
+    /// port and sending a janitor-backed BYE via `MediaSession::drop`. Returns
     /// true iff this bridge recognizes and is handling the stream.
+    // TODO(P1-3+): close the concurrent double-pull window by reserving the slot
+    // under the lock (e.g. `enum Slot { Pulling, Active(ActiveSession) }`).
     pub async fn handle_media_not_found(&self, stream_id: &str) -> bool {
         let Some(mapping) = self.streams.get(stream_id) else {
             return false;
@@ -61,6 +67,9 @@ impl GbBridge {
         if let Err(e) = self.start_pull(stream_id, &mapping).await {
             log::error!("gb28181: pull for stream {stream_id} failed: {e:#}");
         }
+        // Return true even on a failed pull: we own this stream, so ZLM should
+        // keep waiting; nothing was inserted into `active`, so a ZLM re-fire
+        // naturally retries the pull.
         true
     }
 
