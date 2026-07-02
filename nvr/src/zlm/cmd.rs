@@ -157,12 +157,14 @@ pub(crate) fn handler_zlm_cmd(cmd: ZlmCmd, servers: &mut HashMap<String, RtpServ
             // port 0 = let ZLM pick a free port; bind_port() reports it.
             let server = RtpServer::new(0, mode, &stream_id);
             let port = server.bind_port();
+            if port == 0 {
+                // Don't retain a server that never bound a port (spec §6:
+                // "nothing inserted" on failure); `server` drops here.
+                let _ = reply.send(Err(anyhow::anyhow!("rtp server failed to bind a port")));
+                return;
+            }
             servers.insert(stream_id, server);
-            let _ = reply.send(if port == 0 {
-                Err(anyhow::anyhow!("rtp server failed to bind a port"))
-            } else {
-                Ok(port)
-            });
+            let _ = reply.send(Ok(port));
         }
         ZlmCmd::ConnectRtp {
             stream_id,
