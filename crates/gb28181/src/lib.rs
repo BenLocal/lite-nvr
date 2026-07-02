@@ -3,6 +3,7 @@
 
 pub mod auth;
 pub mod encoding;
+pub mod endpoint;
 pub mod error;
 pub mod event;
 pub mod gbcode;
