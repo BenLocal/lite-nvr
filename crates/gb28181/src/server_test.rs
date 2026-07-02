@@ -103,3 +103,53 @@ async fn expires_zero_unregisters() {
     assert!(server.devices().is_empty());
     server.shutdown();
 }
+
+#[tokio::test]
+async fn shared_password_register_succeeds_via_digest() {
+    let mut cfg = GbServerConfig::new(PLATFORM, DOMAIN, "127.0.0.1:0".parse().unwrap());
+    cfg.auth = crate::auth::AuthConfig::Shared("s3cret".into());
+    let (server, mut events) = GbServer::bind(cfg).await.unwrap();
+
+    // rsipstack answers the 401 challenge internally.
+    let resp = raw_register(
+        DEVICE,
+        "s3cret",
+        DOMAIN,
+        PLATFORM,
+        server.local_addr(),
+        3600,
+    )
+    .await;
+    assert_eq!(resp.status_code, rsip::StatusCode::OK);
+    wait_for(&mut events, |e| matches!(e, GbEvent::Registered { .. })).await;
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn wrong_password_is_rejected() {
+    let mut cfg = GbServerConfig::new(PLATFORM, DOMAIN, "127.0.0.1:0".parse().unwrap());
+    cfg.auth = crate::auth::AuthConfig::Shared("s3cret".into());
+    let (server, _events) = GbServer::bind(cfg).await.unwrap();
+
+    // The client answers the challenge with a bad digest; the server
+    // re-challenges; rsipstack gives up after one auth attempt and returns
+    // the final 401.
+    let resp = raw_register(DEVICE, "WRONG", DOMAIN, PLATFORM, server.local_addr(), 3600).await;
+    assert_ne!(resp.status_code, rsip::StatusCode::OK);
+    assert!(server.devices().is_empty());
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn provider_unknown_device_is_forbidden() {
+    let mut cfg = GbServerConfig::new(PLATFORM, DOMAIN, "127.0.0.1:0".parse().unwrap());
+    cfg.auth = crate::auth::AuthConfig::Provider(Box::new(|id| {
+        (id == "known-device").then(|| "pw".to_string())
+    }));
+    let (server, _events) = GbServer::bind(cfg).await.unwrap();
+
+    let resp = raw_register(DEVICE, "pw", DOMAIN, PLATFORM, server.local_addr(), 3600).await;
+    assert_eq!(resp.status_code, rsip::StatusCode::Forbidden);
+    assert!(server.devices().is_empty());
+    server.shutdown();
+}
