@@ -5,17 +5,23 @@ an NVR / GB28181 platform. It:
 
 - **REGISTERs** to the platform with digest auth and keeps the registration alive
   (periodic Keepalive), retrying until the platform is up.
-- Answers **Catalog** queries by advertising its channel(s).
-- On **INVITE (Play)**, pushes a looping H.264 clip as **PS-over-RTP** to the
-  address the platform asked to receive on — over **UDP**, **TCP-passive**, or
-  **TCP-active**, whichever the platform's SDP offer selects.
+- Answers **Catalog** (channel list), **DeviceInfo** (manufacturer / model /
+  firmware), and **RecordInfo** (录像文件查询 — advertised recordings) queries.
+- On **INVITE (Play)**, pushes H.264 as **PS-over-RTP** to the address the platform
+  asked to receive on — over **UDP**, **TCP-passive**, or **TCP-active**, whichever
+  the SDP offer selects. The video is either the bundled clip or, with
+  `--source-file`, any local file streamed live via **ffmpeg** (looped).
+- On **INVITE (Playback / Download)**, streams a recorded file (`--record-file`)
+  seeked to the requested time window (设备历史视频回放).
 - Logs **DeviceControl (PTZ)** commands (a real camera would move its motors).
-- BYEs / stops streaming cleanly when the platform tears the session down.
+- **Unregisters** (设备注销, REGISTER `Expires: 0`) on Ctrl-C, and BYEs / stops
+  streaming cleanly when the platform tears a session down.
 
 All SIP signaling is handled by the workspace's `gb28181` crate (`GbClient`); this
-binary adds the media plane: an Annex-B H.264 parser (`h264.rs`), a GB28181
-MPEG-2 Program Stream muxer (`ps.rs`), and an RTP packetizer + transport
-(`rtp.rs`).
+binary adds the media plane: an Annex-B H.264 parser (`h264.rs`, with an
+incremental `AnnexBParser` for ffmpeg's byte stream), a GB28181 MPEG-2 Program
+Stream muxer (`ps.rs`), and an RTP packetizer + transport with an ffmpeg
+file-source streamer (`rtp.rs`).
 
 ## Run
 
@@ -36,6 +42,10 @@ Key options (`--help` for all):
 | `--device-id` | Our device 20-digit GB code | *required* |
 | `--domain` | SIP domain / digest realm | first 10 digits of `--server-id` |
 | `--channel-id` | Advertised channel (the entry the NVR pulls) | `= --device-id` |
+| `--source-file` | Local video file to stream live via ffmpeg (else the bundled clip) | *(none)* |
+| `--record-file` | File advertised as a recording + served on Playback | `= --source-file` |
+| `--record-start` / `--record-end` | Advertised recording window (ISO 8601) — also the Playback seek origin | `2024-01-01T00:00:00` / `…T01:00:00` |
+| `--manufacturer` / `--model` / `--firmware` | DeviceInfo fields | `lite-nvr` / `dummy-camera` / `0.1` |
 | `--media-ip` | IP advertised as our media source | `127.0.0.1` |
 | `--fps` | Playback frame rate (paces RTP + 90 kHz clock) | `25` |
 | `--listen` | Local SIP listen address | `0.0.0.0:5061` |
@@ -81,6 +91,34 @@ Then:
    looping test pattern).
 5. **Teardown:** stop viewing → the NVR BYEs → the dummy logs the session close
    and stops streaming.
+6. **Unregister:** press Ctrl-C → the dummy sends `REGISTER Expires: 0` (设备注销)
+   and exits; the platform drops the device.
+
+> This flow was validated end-to-end against this NVR with `--source-file`: the
+> pulled `.live.flv` decoded cleanly as 640×360 H.264 (the ffmpeg source), and
+> Ctrl-C logged `unregistering (设备注销) → unregistered`.
+
+## Live file source & history playback
+
+`--source-file <path>` makes the camera stream a **real local video** (any format
+ffmpeg reads) instead of the bundled clip. ffmpeg transcodes it to baseline H.264
+and loops it in real time (`-re -stream_loop -1`); the incremental `AnnexBParser`
+turns ffmpeg's byte stream into access units fed to the same PS/RTP path.
+
+```bash
+cargo run -p dummy-camera -- \
+  --server-addr 172.17.0.1:5060 --server-id 34020000002000000001 \
+  --device-id 34020000001320000001 --password 12345678 \
+  --source-file /path/to/clip.mp4
+```
+
+The same file is advertised as a **recording** (RecordInfo) and served on a
+**Playback / Download INVITE** (设备历史视频回放): ffmpeg seeks it to the requested
+time window (offset from `--record-start`) and plays that segment once. Pass an
+explicit `--record-file` to serve a different file for playback than the live
+source. `--record-start` / `--record-end` set the advertised recording window and
+the seek origin. (This NVR pulls live only; drive Playback from a platform such as
+WVP, or exercise it with the crate's unit tests.)
 
 ## Diagnostics
 
