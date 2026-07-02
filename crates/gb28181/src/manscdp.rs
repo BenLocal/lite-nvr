@@ -14,6 +14,7 @@ pub enum CmdType {
     Keepalive,
     Catalog,
     DeviceInfo,
+    DeviceControl,
     Other(String),
 }
 
@@ -23,6 +24,7 @@ impl CmdType {
             "Keepalive" => CmdType::Keepalive,
             "Catalog" => CmdType::Catalog,
             "DeviceInfo" => CmdType::DeviceInfo,
+            "DeviceControl" => CmdType::DeviceControl,
             other => CmdType::Other(other.to_string()),
         }
     }
@@ -535,5 +537,74 @@ mod p1_2_encode_tests {
         let (sn, dev) = decode_sn_device(q.as_bytes()).unwrap();
         assert_eq!(sn, 42);
         assert_eq!(dev, "34020000001110000001");
+    }
+}
+
+// --- P2 Task 2: DeviceControl (PTZ) encode + decode ---
+
+/// A `DeviceControl` `<Control>` we SEND to a device (PTZ). Strict UTF-8 encode.
+///
+/// # Safety / injection contract
+/// `device_id` MUST be a plain GB code (digits only) and `ptz_cmd` plain hex —
+/// both are interpolated into the XML without escaping.
+pub fn encode_device_control(sn: u64, device_id: &str, ptz_cmd: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n\
+<Control>\r\n<CmdType>DeviceControl</CmdType>\r\n<SN>{sn}</SN>\r\n\
+<DeviceID>{device_id}</DeviceID>\r\n<PTZCmd>{ptz_cmd}</PTZCmd>\r\n</Control>\r\n"
+    )
+}
+
+/// A decoded inbound `DeviceControl` (device-role view).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceControl {
+    pub sn: u64,
+    pub device_id: String,
+    pub ptz_cmd: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawControl {
+    #[serde(rename = "SN", default)]
+    sn: u64,
+    #[serde(rename = "DeviceID", default)]
+    device_id: String,
+    #[serde(rename = "PTZCmd", default)]
+    ptz_cmd: String,
+}
+
+/// Decode a `<Control>` PTZ body (lenient; missing fields default).
+pub fn decode_device_control(body: &[u8]) -> Result<DeviceControl> {
+    let xml = decode_xml(body)?;
+    let raw: RawControl =
+        quick_xml::de::from_str(&xml).map_err(|e| GbError::XmlDecode(e.to_string()))?;
+    Ok(DeviceControl {
+        sn: raw.sn,
+        device_id: raw.device_id,
+        ptz_cmd: raw.ptz_cmd,
+    })
+}
+
+#[cfg(test)]
+mod device_control_tests {
+    #[test]
+    fn device_control_round_trips_cmd_type() {
+        let body =
+            crate::manscdp::encode_device_control(7, "34020000001320000001", "A50F0108002000DD");
+        assert!(body.contains("<CmdType>DeviceControl</CmdType>"));
+        assert!(body.contains("<PTZCmd>A50F0108002000DD</PTZCmd>"));
+        assert_eq!(
+            crate::manscdp::peek_cmd_type(body.as_bytes()).unwrap(),
+            crate::manscdp::CmdType::DeviceControl
+        );
+    }
+
+    #[test]
+    fn decode_device_control_extracts_ptz() {
+        let body = br#"<Control><CmdType>DeviceControl</CmdType><SN>9</SN><DeviceID>34020000001320000001</DeviceID><PTZCmd>A50F01820005003C</PTZCmd></Control>"#;
+        let dc = crate::manscdp::decode_device_control(body).unwrap();
+        assert_eq!(dc.sn, 9);
+        assert_eq!(dc.device_id, "34020000001320000001");
+        assert_eq!(dc.ptz_cmd, "A50F01820005003C");
     }
 }
