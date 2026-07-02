@@ -22,7 +22,7 @@ use crate::error::Result;
 use crate::event::GbEvent;
 use crate::gbcode::{SsrcGenerator, SsrcKind};
 use crate::manscdp::{self, CmdType};
-use crate::registrar::{Registrar, RegistrarChange};
+use crate::registrar::{Registrar, RegistrarChange, SweepOutcome};
 use crate::types::{RegisteredDevice, Transport};
 
 // NOTE: Task 9 extends these imports with `Catalog`, `CatalogAccumulator` and
@@ -396,17 +396,27 @@ async fn sweep_loop(inner: Arc<ServerInner>) {
             _ = inner.ep.cancel.cancelled() => return,
             _ = tick.tick() => {}
         }
+        let now = now_unix();
+        // Prune expired digest nonces here too, so a REGISTER flood that never
+        // completes auth can't grow the nonce map without bound.
+        inner
+            .nonces
+            .lock()
+            .unwrap()
+            .retain(|_, issued| now - *issued < 300);
+        // sweep() decides Offline vs Dropped atomically under its own lock, so
+        // no racy follow-up get() is needed to classify each change.
         let changed = {
             let mut r = inner.registrar.lock().unwrap();
-            r.sweep(now_unix())
+            r.sweep(now)
         };
-        for device_id in changed {
-            let still_there = inner.registrar.lock().unwrap().get(&device_id).is_some();
-            let event = if still_there {
-                GbEvent::Offline { device_id }
-            } else {
-                inner.dests.lock().unwrap().remove(&device_id);
-                GbEvent::Unregistered { device_id }
+        for (device_id, outcome) in changed {
+            let event = match outcome {
+                SweepOutcome::WentOffline => GbEvent::Offline { device_id },
+                SweepOutcome::Dropped => {
+                    inner.dests.lock().unwrap().remove(&device_id);
+                    GbEvent::Unregistered { device_id }
+                }
             };
             inner.events.send(event).ok();
         }

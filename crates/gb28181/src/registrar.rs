@@ -20,6 +20,16 @@ pub enum RegistrarChange {
     NoChange,
 }
 
+/// What a sweep did to one device — decided atomically inside `sweep` so the
+/// caller emits the right event without a racy follow-up `get()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SweepOutcome {
+    /// Still registered, but keepalive overdue — now marked offline.
+    WentOffline,
+    /// Registration expired and was removed from the table.
+    Dropped,
+}
+
 impl Registrar {
     pub fn new(keepalive_grace: i64) -> Self {
         Self {
@@ -76,21 +86,19 @@ impl Registrar {
 
     /// Mark devices offline if keepalive is stale, and drop expired registrations.
     ///
-    /// Returns the device ids whose state changed — a mix of two cases:
-    /// - **Just went OFFLINE** (still registered, keepalive overdue): `get()` returns `Some` with `online == false`.
-    /// - **DROPPED** (registration expired): `get()` returns `None`.
-    ///
-    /// Callers distinguish the two by checking `get()` after the sweep.
-    pub fn sweep(&mut self, now: i64) -> Vec<String> {
+    /// Returns each changed device id paired with what happened to it, decided
+    /// atomically under the same borrow as the mutation — so callers never have
+    /// to re-query (which would race a concurrent register/unregister).
+    pub fn sweep(&mut self, now: i64) -> Vec<(String, SweepOutcome)> {
         let mut changed = Vec::new();
         self.devices.retain(|id, d| {
             if now >= d.expires_at {
-                changed.push(id.clone());
+                changed.push((id.clone(), SweepOutcome::Dropped));
                 return false; // drop expired
             }
             if d.online && now - d.last_keepalive > self.keepalive_grace {
                 d.online = false;
-                changed.push(id.clone());
+                changed.push((id.clone(), SweepOutcome::WentOffline));
             }
             true
         });
@@ -141,7 +149,7 @@ mod tests {
         r.register("d", "c", Transport::Udp, 3600, 0);
         // no keepalive; at t=100 (>90) it should go offline but stay registered
         let changed = r.sweep(100);
-        assert_eq!(changed, vec!["d".to_string()]);
+        assert_eq!(changed, vec![("d".to_string(), SweepOutcome::WentOffline)]);
         assert!(!r.get("d").unwrap().online);
     }
 
@@ -150,7 +158,7 @@ mod tests {
         let mut r = Registrar::new(90);
         r.register("d", "c", Transport::Udp, 60, 0); // expires at 60
         let changed = r.sweep(61);
-        assert_eq!(changed, vec!["d".to_string()]);
+        assert_eq!(changed, vec![("d".to_string(), SweepOutcome::Dropped)]);
         assert!(r.get("d").is_none());
     }
 }

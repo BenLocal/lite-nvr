@@ -152,6 +152,13 @@ pub(crate) async fn send_out_of_dialog_message(
             if matches!(resp.status_code.kind(), rsip::StatusCodeKind::Provisional) {
                 continue;
             }
+            // rsipstack delivers a locally-synthesized 408 Request Timeout via
+            // the receive stream when TimerB/TimerC expires (no peer answer), so
+            // a real timeout arrives as Ok(408), not stream-end. Surface it as
+            // `Timeout` so callers (e.g. catalog_query's retry-once) can react.
+            if resp.status_code == rsip::StatusCode::RequestTimeout {
+                return Err(GbError::Timeout);
+            }
             return Ok(resp);
         }
     }
