@@ -3,3 +3,4 @@
 //! docs/superpowers/specs/2026-07-01-gb28181-crate-design.md row 11.
 
 pub mod config;
+pub mod stream_map;
