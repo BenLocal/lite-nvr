@@ -984,6 +984,7 @@ name = "dummy-camera"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "gb28181",
  "tokio",
