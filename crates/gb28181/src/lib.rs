@@ -10,7 +10,9 @@ pub mod gbcode;
 pub mod manscdp;
 pub mod registrar;
 pub mod sdp;
+pub mod server;
 pub mod types;
 
 pub use error::GbError;
 pub use event::GbEvent;
+pub use server::{GbServer, GbServerConfig};
