@@ -43,7 +43,8 @@ pub async fn init(cfg: GbConfig) -> anyhow::Result<()> {
     let bridge = Arc::new(GbBridge::new(
         server,
         cfg.media_ip.clone(),
-        Box::new(ZlmRtpReceiver::new(control)),
+        Box::new(ZlmRtpReceiver::new(control.clone())),
+        control,
     ));
     let _ = BRIDGE.set(bridge);
     Ok(())

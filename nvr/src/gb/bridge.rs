@@ -8,6 +8,7 @@ use gb28181::{GbServer, MediaSession, MediaSpec, SsrcKind, StreamType, Transport
 
 use crate::gb::receiver::{MediaReceiver, ReceiverHandle};
 use crate::gb::stream_map::StreamMap;
+use crate::zlm::cmd::ZlmControl;
 use crate::zlm::media_cache::MediaCache;
 
 /// A live pull: the ZLM receiver (kept alive) plus the GB media dialog.
@@ -23,10 +24,27 @@ pub struct GbBridge {
     streams: StreamMap,
     active: Mutex<HashMap<String, ActiveSession>>,
     media_cache: MediaCache,
+    control: ZlmControl,
+}
+
+/// One row of `GET /gb/streams`: a gb stream mapping plus its live status and
+/// (when live) RTP receive detail.
+pub struct GbStreamStatus {
+    pub stream_id: String,
+    pub device_id: String,
+    pub channel_id: String,
+    pub transport: gb28181::Transport,
+    pub live: bool,
+    pub rtp: Option<rszlm::server::RtpInfo>,
 }
 
 impl GbBridge {
-    pub fn new(server: GbServer, media_ip: String, receiver: Box<dyn MediaReceiver>) -> Self {
+    pub fn new(
+        server: GbServer,
+        media_ip: String,
+        receiver: Box<dyn MediaReceiver>,
+        control: ZlmControl,
+    ) -> Self {
         Self {
             server,
             media_ip,
@@ -34,6 +52,7 @@ impl GbBridge {
             streams: StreamMap::new(),
             active: Mutex::new(HashMap::new()),
             media_cache: MediaCache::new(),
+            control,
         }
     }
 
@@ -44,6 +63,30 @@ impl GbBridge {
     /// The live-stream cache (fed by ZLM's `on_media_changed` hook).
     pub fn media_cache(&self) -> &MediaCache {
         &self.media_cache
+    }
+
+    /// Snapshot of every gb stream mapping with its live flag and, for live
+    /// streams, RTP receive detail.
+    pub async fn stream_status(&self) -> Vec<GbStreamStatus> {
+        let mappings = self.streams.list();
+        let mut out = Vec::with_capacity(mappings.len());
+        for (stream_id, m) in mappings {
+            let live = self.media_cache.is_live("rtp", &stream_id);
+            let rtp = if live {
+                self.control.rtp_info("rtp", &stream_id).await
+            } else {
+                None
+            };
+            out.push(GbStreamStatus {
+                stream_id,
+                device_id: m.device_id,
+                channel_id: m.channel_id,
+                transport: m.transport,
+                live,
+                rtp,
+            });
+        }
+        out
     }
 
     pub fn register_mapping(

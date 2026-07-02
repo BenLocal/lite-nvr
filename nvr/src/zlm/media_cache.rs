@@ -38,6 +38,9 @@ impl MediaCache {
             .contains(&(app.to_string(), stream.to_string()))
     }
 
+    // Reserved for a future aggregate consumer; no caller yet (P4b Task 3 only
+    // consumes `is_live` via `GbBridge::stream_status`).
+    #[allow(dead_code)]
     pub fn live_streams(&self) -> Vec<(String, String)> {
         self.live.lock().unwrap().iter().cloned().collect()
     }

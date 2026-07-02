@@ -57,6 +57,7 @@ async fn pull_on_not_found_then_release_on_no_reader() {
         server,
         "127.0.0.1".into(),
         Box::new(FakeReceiver::default()),
+        crate::zlm::cmd::ZlmControl::spawn(),
     );
 
     // a lower device registers + answers
@@ -102,6 +103,7 @@ async fn media_cache_tracks_regist_through_bridge() {
         server,
         "127.0.0.1".into(),
         Box::new(FakeReceiver::default()),
+        crate::zlm::cmd::ZlmControl::spawn(),
     );
     assert!(!bridge.media_cache().is_live("rtp", "cam1"));
     bridge.media_cache().on_regist("rtp", "cam1");
@@ -115,7 +117,12 @@ async fn pull_uses_udp_transport_and_skips_connect() {
     let server_addr = server.local_addr();
     let fake = FakeReceiver::default();
     let probe = fake.clone();
-    let bridge = GbBridge::new(server, "127.0.0.1".into(), Box::new(fake));
+    let bridge = GbBridge::new(
+        server,
+        "127.0.0.1".into(),
+        Box::new(fake),
+        crate::zlm::cmd::ZlmControl::spawn(),
+    );
 
     let (client, answerer) = spawn_answering_client(server_addr).await;
     wait_registered(&mut server_events).await;
@@ -131,13 +138,41 @@ async fn pull_uses_udp_transport_and_skips_connect() {
 }
 
 #[tokio::test]
+async fn stream_status_reports_mappings_with_live_flag() {
+    let scfg = GbServerConfig::new(PLATFORM, DOMAIN, "127.0.0.1:0".parse().unwrap());
+    let (server, _ev) = GbServer::bind(scfg).await.unwrap();
+    let control = crate::zlm::cmd::ZlmControl::spawn();
+    let bridge = GbBridge::new(
+        server,
+        "127.0.0.1".into(),
+        Box::new(FakeReceiver::default()),
+        control,
+    );
+    bridge.register_mapping("cam1", DEVICE, CHANNEL, gb28181::Transport::TcpActive);
+    let status = bridge.stream_status().await;
+    assert_eq!(status.len(), 1);
+    let s = &status[0];
+    assert_eq!(s.stream_id, "cam1");
+    assert_eq!(s.device_id, DEVICE);
+    assert_eq!(s.channel_id, CHANNEL);
+    assert_eq!(s.transport, gb28181::Transport::TcpActive);
+    assert!(!s.live);
+    assert!(s.rtp.is_none()); // not live -> no rtp query
+}
+
+#[tokio::test]
 async fn pull_active_does_two_phase_connect() {
     let scfg = GbServerConfig::new(PLATFORM, DOMAIN, "127.0.0.1:0".parse().unwrap());
     let (server, mut server_events) = GbServer::bind(scfg).await.unwrap();
     let server_addr = server.local_addr();
     let fake = FakeReceiver::default();
     let probe = fake.clone();
-    let bridge = GbBridge::new(server, "127.0.0.1".into(), Box::new(fake));
+    let bridge = GbBridge::new(
+        server,
+        "127.0.0.1".into(),
+        Box::new(fake),
+        crate::zlm::cmd::ZlmControl::spawn(),
+    );
 
     let (client, answerer) = spawn_answering_client(server_addr).await;
     wait_registered(&mut server_events).await;

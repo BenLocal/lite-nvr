@@ -16,6 +16,7 @@ pub fn gb_router() -> Router {
         .route("/catalog/{device_id}", get(catalog))
         .route("/ptz", post(ptz))
         .route("/play", post(play))
+        .route("/streams", get(streams))
 }
 
 #[derive(Serialize)]
@@ -174,6 +175,60 @@ async fn play(Json(req): Json<PlayRequest>) -> ApiJsonResult<PlayResponse> {
         stream_id: req.device_id.clone(),
         url: crate::init::device::build_gb_flv_url(&req.device_id),
     }))
+}
+
+#[derive(Serialize)]
+struct StreamStatusDto {
+    stream_id: String,
+    device_id: String,
+    channel_id: String,
+    transport: String,
+    live: bool,
+    rtp: Option<RtpInfoDto>,
+}
+
+#[derive(Serialize)]
+struct RtpInfoDto {
+    exist: bool,
+    peer_ip: String,
+    peer_port: u16,
+    local_port: u16,
+    identifier: String,
+}
+
+fn transport_str(t: gb28181::Transport) -> &'static str {
+    match t {
+        gb28181::Transport::Udp => "udp",
+        gb28181::Transport::TcpPassive => "tcp_passive",
+        gb28181::Transport::TcpActive => "tcp_active",
+    }
+}
+
+/// Live status of every gb stream mapping (empty list when GB is disabled).
+async fn streams() -> ApiJsonResult<Vec<StreamStatusDto>> {
+    let Some(bridge) = crate::gb::bridge() else {
+        return Ok(ok_json(Vec::new()));
+    };
+    let items = bridge
+        .stream_status()
+        .await
+        .into_iter()
+        .map(|s| StreamStatusDto {
+            stream_id: s.stream_id,
+            device_id: s.device_id,
+            channel_id: s.channel_id,
+            transport: transport_str(s.transport).to_string(),
+            live: s.live,
+            rtp: s.rtp.map(|r| RtpInfoDto {
+                exist: r.exist,
+                peer_ip: r.peer_ip,
+                peer_port: r.peer_port,
+                local_port: r.local_port,
+                identifier: r.identifier,
+            }),
+        })
+        .collect();
+    Ok(ok_json(items))
 }
 
 #[cfg(test)]
