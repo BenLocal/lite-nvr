@@ -38,8 +38,15 @@ impl GbBridge {
         &self.server
     }
 
-    pub fn register_mapping(&self, stream_id: &str, device_id: &str, channel_id: &str) {
-        self.streams.register(stream_id, device_id, channel_id);
+    pub fn register_mapping(
+        &self,
+        stream_id: &str,
+        device_id: &str,
+        channel_id: &str,
+        transport: gb28181::Transport,
+    ) {
+        self.streams
+            .register(stream_id, device_id, channel_id, transport);
     }
 
     /// Remove the mapping and tear down any live session for it.

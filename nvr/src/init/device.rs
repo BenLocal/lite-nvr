@@ -76,7 +76,12 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
         match crate::gb::bridge() {
             Some(bridge) => {
                 // stream id == nvr device id (the ZLM stream name we pull into).
-                bridge.register_mapping(&device.id, &gb.device_id, &gb.channel_id);
+                bridge.register_mapping(
+                    &device.id,
+                    &gb.device_id,
+                    &gb.channel_id,
+                    gb28181::Transport::Udp,
+                );
                 log::info!(
                     "gb28181: registered mapping {} -> {}/{}",
                     device.id,

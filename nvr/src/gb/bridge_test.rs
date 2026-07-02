@@ -64,7 +64,7 @@ async fn pull_on_not_found_then_release_on_no_reader() {
     wait_registered(&mut server_events).await;
 
     // map the ZLM stream "cam1" -> this device/channel
-    bridge.register_mapping("cam1", DEVICE, CHANNEL);
+    bridge.register_mapping("cam1", DEVICE, CHANNEL, gb28181::Transport::Udp);
 
     // unknown stream is ignored
     assert!(!bridge.handle_media_not_found("nope").await);
@@ -83,7 +83,7 @@ async fn pull_on_not_found_then_release_on_no_reader() {
     assert!(!bridge.is_active("cam1"));
 
     // unregister also tears down (register + pull again, then unregister)
-    bridge.register_mapping("cam1", DEVICE, CHANNEL);
+    bridge.register_mapping("cam1", DEVICE, CHANNEL, gb28181::Transport::Udp);
     assert!(bridge.handle_media_not_found("cam1").await);
     assert!(bridge.is_active("cam1"));
     bridge.unregister_mapping("cam1").await;
