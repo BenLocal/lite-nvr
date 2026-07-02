@@ -28,7 +28,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Parser;
 use gb28181::client::InviteNegotiation;
-use gb28181::manscdp::CatalogItem;
+use gb28181::manscdp::{CatalogItem, RecordItem};
 use gb28181::{GbClient, GbClientConfig, GbEvent};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -95,6 +95,36 @@ struct Args {
     #[arg(long, default_value_t = 60)]
     keepalive: u64,
 
+    /// Local video file to stream live on a Play INVITE (read by ffmpeg, looped)
+    /// instead of the bundled clip. Any format ffmpeg reads; transcoded to H.264.
+    #[arg(long)]
+    source_file: Option<String>,
+
+    /// Video file to advertise as a recording and serve on a Playback INVITE.
+    /// Defaults to --source-file when unset (no recording advertised if neither).
+    #[arg(long)]
+    record_file: Option<String>,
+
+    /// Advertised recording start time (ISO 8601) for RecordInfo + Playback seek.
+    #[arg(long, default_value = "2024-01-01T00:00:00")]
+    record_start: String,
+
+    /// Advertised recording end time (ISO 8601).
+    #[arg(long, default_value = "2024-01-01T01:00:00")]
+    record_end: String,
+
+    /// DeviceInfo manufacturer reported to the platform.
+    #[arg(long, default_value = "lite-nvr")]
+    manufacturer: String,
+
+    /// DeviceInfo model reported to the platform.
+    #[arg(long, default_value = "dummy-camera")]
+    model: String,
+
+    /// DeviceInfo firmware version reported to the platform.
+    #[arg(long, default_value = "0.1")]
+    firmware: String,
+
     /// Diagnostic: mux the bundled clip to a Program Stream file and exit (no
     /// SIP). Inspect with `ffprobe <file>` to confirm the PS/H.264 framing.
     #[arg(long)]
@@ -111,13 +141,7 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-    tokio::select! {
-        r = run(args) => r,
-        _ = tokio::signal::ctrl_c() => {
-            info!("interrupted — shutting down");
-            Ok(())
-        }
-    }
+    run(args).await
 }
 
 async fn run(args: Args) -> Result<()> {
@@ -176,6 +200,25 @@ async fn run(args: Args) -> Result<()> {
         name: args.channel_name.clone(),
         status: "ON".into(),
     }];
+    cfg.device_name = args.channel_name.clone();
+    cfg.manufacturer = args.manufacturer.clone();
+    cfg.model = args.model.clone();
+    cfg.firmware = args.firmware.clone();
+    // A recording we can serve for Playback: explicit --record-file, else the
+    // live --source-file. Advertised as one RecordInfo entry if present.
+    let record_file = args
+        .record_file
+        .clone()
+        .or_else(|| args.source_file.clone());
+    if let Some(file) = &record_file {
+        cfg.records = vec![RecordItem {
+            device_id: channel_id.clone(),
+            name: args.channel_name.clone(),
+            file_path: file.clone(),
+            start_time: args.record_start.clone(),
+            end_time: args.record_end.clone(),
+        }];
+    }
 
     let (client, mut events) = GbClient::bind(cfg).await.context("bind SIP client")?;
     info!(
@@ -187,39 +230,91 @@ async fn run(args: Args) -> Result<()> {
         args.server_addr
     );
 
-    register_with_retry(&client, &args.device_id).await?;
+    // Register, but let Ctrl-C during the (retrying) registration exit cleanly.
+    tokio::select! {
+        r = register_with_retry(&client, &args.device_id) => r?,
+        _ = tokio::signal::ctrl_c() => {
+            info!("interrupted before registration — exiting");
+            client.shutdown();
+            return Ok(());
+        }
+    }
+
+    let media = MediaCfg {
+        media_ip: args.media_ip,
+        media_port: args.media_port,
+        fps: args.fps,
+        source_file: args.source_file.clone(),
+        record_file,
+        record_start_unix: iso_to_unix(&args.record_start).unwrap_or(0),
+        aus,
+    };
 
     // dialog_id -> (streaming task, media handle). Keeps the pull alive until BYE.
     let mut streams: HashMap<String, (JoinHandle<()>, gb28181::ClientMediaHandle)> = HashMap::new();
 
-    while let Some(ev) = events.recv().await {
-        match ev {
-            GbEvent::InviteReceived(neg) => {
-                match handle_invite(neg, aus.clone(), args.media_ip, args.media_port, args.fps)
-                    .await
-                {
-                    Ok((dialog_id, task, handle)) => {
-                        streams.insert(dialog_id, (task, handle));
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!("interrupted — unregistering (设备注销)");
+                match client.unregister().await {
+                    Ok(()) => info!("unregistered — bye"),
+                    Err(e) => warn!(error = %e, "unregister failed"),
+                }
+                break;
+            }
+            ev = events.recv() => {
+                let Some(ev) = ev else { break };
+                match ev {
+                    GbEvent::InviteReceived(neg) => match handle_invite(neg, &media).await {
+                        Ok(Some((dialog_id, task, handle))) => {
+                            streams.insert(dialog_id, (task, handle));
+                        }
+                        Ok(None) => {} // rejected (e.g. Playback with no recording)
+                        Err(e) => {
+                            warn!(error = %format!("{e:#}"), "failed to start media for INVITE")
+                        }
+                    },
+                    GbEvent::SessionClosed { dialog_id } => {
+                        if let Some((task, _handle)) = streams.remove(&dialog_id) {
+                            task.abort();
+                            info!("session {dialog_id} closed — stopped streaming");
+                        }
                     }
-                    Err(e) => warn!(error = %format!("{e:#}"), "failed to start media for INVITE"),
+                    GbEvent::DeviceControlReceived { device_id, ptz_cmd } => {
+                        // A real camera would drive its motors; we just log it.
+                        info!("PTZ command for {device_id}: {ptz_cmd}");
+                    }
+                    other => info!("event: {other:?}"),
                 }
             }
-            GbEvent::SessionClosed { dialog_id } => {
-                if let Some((task, _handle)) = streams.remove(&dialog_id) {
-                    task.abort();
-                    info!("session {dialog_id} closed — stopped streaming");
-                }
-            }
-            GbEvent::DeviceControlReceived { device_id, ptz_cmd } => {
-                // A real camera would drive its motors; we just log it.
-                info!("PTZ command for {device_id}: {ptz_cmd}");
-            }
-            other => info!("event: {other:?}"),
         }
     }
 
     client.shutdown();
     Ok(())
+}
+
+/// Media-plane configuration threaded into each INVITE handler.
+struct MediaCfg {
+    media_ip: IpAddr,
+    media_port: u16,
+    fps: u32,
+    /// Live Play source (ffmpeg, looped); `None` uses the bundled clip.
+    source_file: Option<String>,
+    /// Playback source (ffmpeg, seeked); `None` rejects Playback INVITEs.
+    record_file: Option<String>,
+    /// Unix seconds of `record_start`, to offset the Playback seek.
+    record_start_unix: u64,
+    /// The bundled clip's access units (live fallback).
+    aus: Arc<Vec<h264::AccessUnit>>,
+}
+
+/// Parse an ISO-8601 `YYYY-MM-DDTHH:MM:SS` timestamp to Unix seconds (UTC).
+fn iso_to_unix(s: &str) -> Option<u64> {
+    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
+        .ok()
+        .map(|dt| dt.and_utc().timestamp().max(0) as u64)
 }
 
 /// Register, retrying every 5s until the platform accepts (like a real camera
@@ -239,16 +334,29 @@ async fn register_with_retry(client: &GbClient, device_id: &str) -> Result<()> {
     }
 }
 
+/// What to stream for an INVITE, decided before answering so a Playback with no
+/// recording can be rejected cleanly.
+enum StreamAction {
+    /// Loop the bundled clip (live Play, no --source-file).
+    Bundled,
+    /// ffmpeg-loop a local file forever (live Play with --source-file).
+    LiveFile(String),
+    /// ffmpeg a local file once, seeked to a window (Playback / Download).
+    Playback {
+        file: String,
+        seek: u64,
+        dur: Option<u64>,
+    },
+}
+
 /// Set up the media wire, answer the INVITE naming our source address, and spawn
-/// the paced streaming task. Returns the dialog id so the caller can stop it on
-/// session close.
+/// the paced streaming task. Returns `None` when the INVITE was rejected (e.g. a
+/// Playback with no configured recording); otherwise the dialog id + task so the
+/// caller can stop it on session close.
 async fn handle_invite(
     neg: InviteNegotiation,
-    aus: Arc<Vec<h264::AccessUnit>>,
-    media_ip: IpAddr,
-    media_port: u16,
-    fps: u32,
-) -> Result<(String, JoinHandle<()>, gb28181::ClientMediaHandle)> {
+    mc: &MediaCfg,
+) -> Result<Option<(String, JoinHandle<()>, gb28181::ClientMediaHandle)>> {
     let transport = neg.remote.transport;
     let dst = neg.remote.media_addr;
     let ssrc = neg
@@ -257,19 +365,59 @@ async fn handle_invite(
         .as_deref()
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(0);
+    let session = neg.remote.session.clone();
+    let (start, stop) = (neg.remote.start, neg.remote.stop);
     let dialog_id = neg.dialog_id();
+    let is_playback =
+        session.eq_ignore_ascii_case("Playback") || session.eq_ignore_ascii_case("Download");
 
-    let (wire, advertised) = rtp::setup_wire(transport, dst, media_ip, media_port).await?;
+    let action = if is_playback {
+        match &mc.record_file {
+            Some(file) => StreamAction::Playback {
+                file: file.clone(),
+                // Offset into the file for the requested window start.
+                seek: start.saturating_sub(mc.record_start_unix),
+                dur: (stop > start).then(|| stop - start),
+            },
+            None => {
+                info!("Playback INVITE {dialog_id} but no recording configured — rejecting");
+                neg.reject().ok();
+                return Ok(None);
+            }
+        }
+    } else if let Some(file) = &mc.source_file {
+        StreamAction::LiveFile(file.clone())
+    } else {
+        StreamAction::Bundled
+    };
+
+    let (wire, advertised) = rtp::setup_wire(transport, dst, mc.media_ip, mc.media_port).await?;
     info!(
-        "INVITE {dialog_id}: {transport:?}, pushing PS/RTP to {dst} (ssrc {ssrc}), \
-         answering as {advertised}"
+        "INVITE {dialog_id}: {session} {transport:?} -> {dst} (ssrc {ssrc}), answering as {advertised}"
     );
     let handle = neg.answer(advertised).context("answer INVITE")?;
 
+    let (fps, aus) = (mc.fps, mc.aus.clone());
     let task = tokio::spawn(async move {
-        if let Err(e) = rtp::stream_access_units(wire, aus, ssrc, fps).await {
+        let r = match action {
+            StreamAction::Bundled => rtp::stream_access_units(wire, aus, ssrc, fps).await,
+            StreamAction::LiveFile(file) => {
+                rtp::stream_ffmpeg_file(wire, &file, ssrc, fps, rtp::PlayMode::LiveLoop).await
+            }
+            StreamAction::Playback { file, seek, dur } => {
+                rtp::stream_ffmpeg_file(
+                    wire,
+                    &file,
+                    ssrc,
+                    fps,
+                    rtp::PlayMode::Segment { seek, dur },
+                )
+                .await
+            }
+        };
+        if let Err(e) = r {
             warn!(error = %format!("{e:#}"), "media stream ended with error");
         }
     });
-    Ok((dialog_id, task, handle))
+    Ok(Some((dialog_id, task, handle)))
 }

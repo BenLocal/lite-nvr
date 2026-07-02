@@ -82,9 +82,96 @@ pub fn parse_access_units(buf: &[u8]) -> Vec<AccessUnit> {
     aus
 }
 
+/// Incremental Annex-B parser for a streaming source (e.g. ffmpeg stdout). Feed
+/// bytes with `push`; it returns whole access units as they complete. A NAL is
+/// only emitted once the *next* start code proves it is complete, so the final
+/// buffered NAL stays pending until `flush`.
+#[derive(Default)]
+pub struct AnnexBParser {
+    buf: Vec<u8>,
+    cur: Vec<Vec<u8>>,
+    cur_key: bool,
+}
+
+impl AnnexBParser {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Append `data`, returning any access units that became complete.
+    pub fn push(&mut self, data: &[u8]) -> Vec<AccessUnit> {
+        self.buf.extend_from_slice(data);
+        let mut positions = Vec::new();
+        let mut from = 0;
+        while let Some(p) = find_start_code(&self.buf, from) {
+            positions.push(p);
+            from = p + 3;
+        }
+        let mut out = Vec::new();
+        if positions.len() < 2 {
+            return out; // need a following start code to bound a NAL
+        }
+        // Every NAL except the last (still open) is complete; collect them
+        // before draining so we don't borrow `buf` across the mutation.
+        let mut nals: Vec<Vec<u8>> = Vec::new();
+        for i in 0..positions.len() - 1 {
+            let start = positions[i] + 3;
+            let mut end = positions[i + 1];
+            while end > start && self.buf[end - 1] == 0 {
+                end -= 1;
+            }
+            if end > start {
+                nals.push(self.buf[start..end].to_vec());
+            }
+        }
+        self.buf.drain(..positions[positions.len() - 1]);
+        for nal in nals {
+            self.feed_nal(nal, &mut out);
+        }
+        out
+    }
+
+    fn feed_nal(&mut self, nal: Vec<u8>, out: &mut Vec<AccessUnit>) {
+        let t = nal_type(&nal);
+        self.cur.push(nal);
+        self.cur_key |= is_idr(t);
+        if is_vcl(t) {
+            out.push(AccessUnit {
+                nals: std::mem::take(&mut self.cur),
+                keyframe: self.cur_key,
+            });
+            self.cur_key = false;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incremental_parser_across_chunk_boundaries() {
+        let stream = [
+            0, 0, 0, 1, 0x67, 0xAA, // SPS
+            0, 0, 0, 1, 0x68, 0xBB, // PPS
+            0, 0, 0, 1, 0x65, 0x11, // IDR
+            0, 0, 0, 1, 0x41, 0x22, // non-IDR
+            0, 0, 0, 1, 0x41, 0x33, // non-IDR (bounds the previous one)
+        ];
+        let mut p = AnnexBParser::new();
+        let mut aus = Vec::new();
+        // Feed one byte at a time to stress boundary handling.
+        for b in stream {
+            aus.extend(p.push(&[b]));
+        }
+        // IDR AU + first non-IDR AU emit; the last non-IDR stays pending (no
+        // following start code has bounded it yet).
+        assert_eq!(aus.len(), 2);
+        assert!(aus[0].keyframe);
+        assert_eq!(aus[0].nals.len(), 3); // SPS+PPS+IDR
+        assert!(!aus[1].keyframe);
+        assert_eq!(aus[0].nals[0], vec![0x67, 0xAA]);
+    }
 
     #[test]
     fn splits_and_groups_access_units() {

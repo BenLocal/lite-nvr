@@ -447,8 +447,7 @@ impl InviteNegotiation {
             &ssrc,
             self.remote.transport,
             &self.remote.session,
-            self.remote.start,
-            self.remote.stop,
+            (self.remote.start, self.remote.stop),
         );
         self.dialog
             .accept(

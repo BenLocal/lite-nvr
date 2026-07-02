@@ -113,8 +113,38 @@ impl Sink {
     }
 }
 
-/// Loop the access units forever — muxed to PS, packetized as RTP — paced at
-/// `fps`, until the task is aborted (on session close).
+/// Muxes access units to PS/RTP over a finalized wire, tracking sequence and the
+/// 90 kHz timestamp across calls.
+pub struct RtpStreamer {
+    sink: Sink,
+    ssrc: u32,
+    seq: u16,
+    ts: u32,
+    step: u32,
+}
+
+impl RtpStreamer {
+    pub async fn new(wire: PreparedWire, ssrc: u32, fps: u32) -> Result<Self> {
+        Ok(Self {
+            sink: Sink::finalize(wire).await?,
+            ssrc,
+            seq: 0,
+            ts: 0,
+            step: (CLOCK_HZ / fps.max(1) as u64) as u32,
+        })
+    }
+
+    /// Mux one access unit to PS and send it as RTP (marker on the last frag).
+    pub async fn send_au(&mut self, au: &AccessUnit) -> Result<()> {
+        let ps = ps::mux_access_unit(au, self.ts as u64);
+        send_rtp(&mut self.sink, &ps, self.ssrc, self.ts, &mut self.seq).await?;
+        self.ts = self.ts.wrapping_add(self.step);
+        Ok(())
+    }
+}
+
+/// Loop the bundled access units forever, muxed to PS/RTP, paced at `fps`, until
+/// the task is aborted (on session close).
 pub async fn stream_access_units(
     wire: PreparedWire,
     aus: Arc<Vec<AccessUnit>>,
@@ -124,20 +154,86 @@ pub async fn stream_access_units(
     if aus.is_empty() {
         anyhow::bail!("no access units to stream");
     }
-    let mut sink = Sink::finalize(wire).await?;
-    let fps = fps.max(1) as u64;
-    let step = (CLOCK_HZ / fps) as u32;
-    let mut ticker = tokio::time::interval(Duration::from_micros(1_000_000 / fps));
-    let mut seq: u16 = 0;
-    let mut ts: u32 = 0;
+    let mut streamer = RtpStreamer::new(wire, ssrc, fps).await?;
+    let mut ticker = tokio::time::interval(Duration::from_micros(1_000_000 / fps.max(1) as u64));
     loop {
         for au in aus.iter() {
             ticker.tick().await;
-            let ps = ps::mux_access_unit(au, ts as u64);
-            send_rtp(&mut sink, &ps, ssrc, ts, &mut seq).await?;
-            ts = ts.wrapping_add(step);
+            streamer.send_au(au).await?;
         }
     }
+}
+
+/// How ffmpeg should read the source file.
+pub enum PlayMode {
+    /// Loop the whole file forever (live `--source-file`).
+    LiveLoop,
+    /// Play once, seeked `seek` seconds in, for `dur` seconds (`None` = to end).
+    /// Used for Playback / Download of a recorded window.
+    Segment { seek: u64, dur: Option<u64> },
+}
+
+/// Stream a local video file via ffmpeg: transcode to Annex-B H.264 (real-time
+/// paced with `-re`), parse access units incrementally, and push them as PS/RTP.
+/// Returns when ffmpeg ends (segment/file done) or on error.
+pub async fn stream_ffmpeg_file(
+    wire: PreparedWire,
+    file: &str,
+    ssrc: u32,
+    fps: u32,
+    mode: PlayMode,
+) -> Result<()> {
+    use tokio::io::AsyncReadExt;
+    use tokio::process::Command;
+
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-hide_banner", "-loglevel", "error", "-re"]);
+    if matches!(mode, PlayMode::LiveLoop) {
+        cmd.args(["-stream_loop", "-1"]);
+    }
+    if let PlayMode::Segment { seek, .. } = &mode
+        && *seek > 0
+    {
+        cmd.args(["-ss", &seek.to_string()]);
+    }
+    cmd.args(["-i", file]);
+    if let PlayMode::Segment { dur: Some(t), .. } = &mode {
+        cmd.args(["-t", &t.to_string()]);
+    }
+    cmd.args([
+        "-an",
+        "-c:v",
+        "libx264",
+        "-profile:v",
+        "baseline",
+        "-pix_fmt",
+        "yuv420p",
+    ]);
+    cmd.args([
+        "-x264-params",
+        &format!("keyint={fps}:scenecut=0:repeat-headers=1"),
+    ]);
+    cmd.args(["-f", "h264", "pipe:1"]);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::null());
+
+    let mut child = cmd.spawn().context("spawn ffmpeg (is it on PATH?)")?;
+    let mut stdout = child.stdout.take().expect("piped stdout");
+
+    let mut streamer = RtpStreamer::new(wire, ssrc, fps).await?;
+    let mut parser = crate::h264::AnnexBParser::new();
+    let mut buf = vec![0u8; 65536];
+    loop {
+        let n = stdout.read(&mut buf).await.context("read ffmpeg stdout")?;
+        if n == 0 {
+            break; // ffmpeg finished (playback range done, or file end)
+        }
+        for au in parser.push(&buf[..n]) {
+            streamer.send_au(&au).await?;
+        }
+    }
+    let _ = child.kill().await;
+    Ok(())
 }
 
 /// Fragment a PS buffer into RTP packets (marker bit on the last) and send them.

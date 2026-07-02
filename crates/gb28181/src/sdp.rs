@@ -205,8 +205,7 @@ pub fn build_answer(
     ssrc_str: &str,
     transport: Transport,
     session: &str,
-    start: u64,
-    stop: u64,
+    time_range: (u64, u64),
 ) -> String {
     let proto = match transport {
         Transport::Udp => "RTP/AVP",
@@ -217,7 +216,7 @@ pub fn build_answer(
     sdp.push_str(&format!("o={local_id} 0 0 IN IP4 {media_ip}\r\n"));
     sdp.push_str(&format!("s={session}\r\n"));
     sdp.push_str(&format!("c=IN IP4 {media_ip}\r\n"));
-    sdp.push_str(&format!("t={start} {stop}\r\n"));
+    sdp.push_str(&format!("t={} {}\r\n", time_range.0, time_range.1));
     sdp.push_str(&format!("m=video {media_port} {proto} 96\r\n"));
     sdp.push_str("a=sendonly\r\n");
     sdp.push_str("a=rtpmap:96 PS/90000\r\n");
@@ -268,8 +267,7 @@ mod p1_2_sdp_tests {
             "0200000001",
             Transport::Udp,
             "Play",
-            0,
-            0,
+            (0, 0),
         );
         let a = parse_answer(&ans).unwrap();
         assert_eq!(a.media_addr, "127.0.0.1:40002".parse().unwrap());
@@ -295,8 +293,7 @@ m=video 40000 RTP/AVP 96\r\ny=0200000001\r\n";
             "0200000001",
             Transport::Udp,
             &o.session,
-            o.start,
-            o.stop,
+            (o.start, o.stop),
         );
         assert!(ans.contains("s=Playback\r\n"));
         assert!(ans.contains("t=1704067200 1704070800\r\n"));
