@@ -1,9 +1,10 @@
 //! GbClient — the UAC / 下级设备 facade. Registers up to a platform, answers
 //! Catalog queries and INVITEs. Media is the caller's job (spec §3 row 7).
 
+use std::collections::HashSet;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rsipstack::dialog::authenticate::Credential;
@@ -70,6 +71,9 @@ struct ClientInner {
     events: mpsc::UnboundedSender<GbEvent>,
     sn: AtomicU64,
     keepalive_running: AtomicBool,
+    /// Dialog ids for INVITEs we actually answered (accepted). Only these get
+    /// a `SessionClosed` when they terminate; rejected INVITEs stay silent.
+    accepted: Arc<Mutex<HashSet<String>>>,
 }
 
 pub struct GbClient {
@@ -86,6 +90,7 @@ impl GbClient {
             events: events_tx,
             sn: AtomicU64::new(1),
             keepalive_running: AtomicBool::new(false),
+            accepted: Arc::new(Mutex::new(HashSet::new())),
         });
         tokio::spawn(main_loop(inner.clone(), streams.incoming));
         tokio::spawn(state_loop(inner.clone(), streams.state_receiver));
@@ -139,7 +144,7 @@ impl GbClient {
                 let sn = inner.sn.fetch_add(1, Ordering::Relaxed);
                 let body = manscdp::encode_keepalive_notify(sn, &inner.cfg.device_id);
                 let dest = SipAddr::from(inner.cfg.server_addr);
-                send_out_of_dialog_message(
+                if let Err(e) = send_out_of_dialog_message(
                     &inner.ep.inner(),
                     (&inner.cfg.device_id, &inner.cfg.domain),
                     (&inner.cfg.server_id, &inner.cfg.domain),
@@ -148,7 +153,9 @@ impl GbClient {
                     body,
                 )
                 .await
-                .ok();
+                {
+                    tracing::warn!(error = %e, "gb28181 client: keepalive send failed");
+                }
             }
         });
     }
@@ -260,8 +267,8 @@ async fn state_loop(
                 let offer_text = String::from_utf8_lossy(&req.body).to_string();
                 match sdp::parse_offer(&offer_text) {
                     Ok(remote) => {
-                        // InviteReceived is added to GbEvent in Task 10;
-                        // until then this arm only rejects.
+                        // Hand the INVITE to the event consumer; it answers or
+                        // rejects via the negotiation.
                         emit_invite(inner.clone(), dialog, remote);
                     }
                     Err(_) => {
@@ -270,12 +277,15 @@ async fn state_loop(
                 }
             }
             DialogState::Terminated(id, _reason) => {
-                inner
-                    .events
-                    .send(GbEvent::SessionClosed {
-                        dialog_id: id.to_string(),
-                    })
-                    .ok();
+                // Only surface SessionClosed for INVITEs we actually accepted;
+                // rejected dialogs (e.g. bad-SDP 4xx) terminate silently.
+                let key = id.to_string();
+                if inner.accepted.lock().unwrap().remove(&key) {
+                    inner
+                        .events
+                        .send(GbEvent::SessionClosed { dialog_id: key })
+                        .ok();
+                }
                 inner.ep.dialog_layer.remove_dialog(&id);
             }
             _ => {}
@@ -283,12 +293,89 @@ async fn state_loop(
     }
 }
 
-/// Task 8 placeholder-free stub: reject INVITEs until negotiation lands in
-/// Task 10 (which replaces this function body with the InviteReceived emit).
-fn emit_invite(_inner: Arc<ClientInner>, dialog: ServerInviteDialog, _remote: sdp::OfferSdp) {
-    dialog
-        .reject(Some(rsip::StatusCode::NotImplemented), None)
-        .ok();
+fn emit_invite(inner: Arc<ClientInner>, dialog: ServerInviteDialog, remote: sdp::OfferSdp) {
+    let negotiation = InviteNegotiation {
+        dialog,
+        device_id: inner.cfg.device_id.clone(),
+        accepted: inner.accepted.clone(),
+        remote,
+    };
+    inner.events.send(GbEvent::InviteReceived(negotiation)).ok();
+}
+
+/// An incoming INVITE pending an answer. Media is the consumer's job: open
+/// your sender first, then `answer(...)` with where you'll send FROM.
+pub struct InviteNegotiation {
+    dialog: ServerInviteDialog,
+    device_id: String,
+    /// Accepted-dialog registry shared with the client's state loop: the
+    /// dialog id is recorded here on `answer` so its termination surfaces a
+    /// `SessionClosed` event (rejected dialogs stay out of it).
+    accepted: Arc<Mutex<HashSet<String>>>,
+    /// The offerer's parsed SDP: where IT wants to receive, its SSRC, transport.
+    pub remote: sdp::OfferSdp,
+}
+
+impl std::fmt::Debug for InviteNegotiation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InviteNegotiation")
+            .field("device_id", &self.device_id)
+            .field("remote", &self.remote)
+            .finish_non_exhaustive()
+    }
+}
+
+impl InviteNegotiation {
+    pub fn dialog_id(&self) -> String {
+        self.dialog.id().to_string()
+    }
+
+    /// Accept: send 200 with an answer SDP naming `media_addr` as our RTP
+    /// source. Echoes the offer's SSRC (`y=`).
+    pub fn answer(self, media_addr: SocketAddr) -> Result<ClientMediaHandle> {
+        let ssrc = self.remote.ssrc.clone().unwrap_or_default();
+        let body = sdp::build_answer(
+            &self.device_id,
+            &media_addr.ip().to_string(),
+            media_addr.port(),
+            &ssrc,
+            self.remote.transport,
+        );
+        self.dialog
+            .accept(
+                Some(vec![rsip::Header::ContentType("application/sdp".into())]),
+                Some(body.into_bytes()),
+            )
+            .map_err(sip_err)?;
+        // Track only after a successful accept, so the state loop emits
+        // SessionClosed for this dialog when it later terminates.
+        self.accepted
+            .lock()
+            .unwrap()
+            .insert(self.dialog.id().to_string());
+        Ok(ClientMediaHandle {
+            dialog: self.dialog,
+        })
+    }
+
+    pub fn reject(self) -> Result<()> {
+        self.dialog.reject(None, None).map_err(sip_err)
+    }
+}
+
+/// The accepted media dialog, client side. BYE it when the stream stops.
+pub struct ClientMediaHandle {
+    dialog: ServerInviteDialog,
+}
+
+impl ClientMediaHandle {
+    pub fn dialog_id(&self) -> String {
+        self.dialog.id().to_string()
+    }
+
+    pub async fn bye(&self) -> Result<()> {
+        self.dialog.bye().await.map_err(sip_err)
+    }
 }
 
 #[cfg(test)]

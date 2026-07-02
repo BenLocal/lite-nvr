@@ -2,8 +2,10 @@ use std::time::Duration;
 
 use super::*;
 use crate::event::GbEvent;
+use crate::gbcode::SsrcKind;
 use crate::server::server_test::wait_for;
 use crate::server::{GbServer, GbServerConfig};
+use crate::types::{MediaSpec, StreamType, Transport};
 
 const PLATFORM: &str = "34020000002000000001";
 const DOMAIN: &str = "3402000000";
@@ -111,6 +113,85 @@ async fn catalog_query_for_unknown_device_is_offline_error() {
     let (server, _se, client, _ce) = bound_pair(None).await;
     let err = server.catalog_query("99999999999999999999").await;
     assert!(matches!(err, Err(crate::error::GbError::DeviceOffline(_))));
+    client.shutdown();
+    server.shutdown();
+}
+
+const CHANNEL: &str = "34020000001320000001";
+
+fn play_spec(server: &GbServer) -> MediaSpec {
+    let (ssrc, ssrc_str) = server.next_ssrc(SsrcKind::Live);
+    MediaSpec {
+        ssrc,
+        ssrc_str,
+        transport: Transport::Udp,
+        media_addr: "127.0.0.1:30000".parse().unwrap(),
+        stream_type: StreamType::Play,
+        negotiated_remote: None,
+    }
+}
+
+#[tokio::test]
+async fn invite_play_negotiates_matching_specs() {
+    let (server, mut server_events, client, mut client_events) = bound_pair(None).await;
+    client.register().await.unwrap();
+    wait_for(&mut server_events, |e| {
+        matches!(e, GbEvent::Registered { .. })
+    })
+    .await;
+
+    let spec = play_spec(&server);
+    let offer_ssrc = spec.ssrc_str.clone();
+
+    // Answer the INVITE from a spawned consumer of the client's events.
+    let answerer = tokio::spawn(async move {
+        let e = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let e = client_events.recv().await.expect("client events closed");
+                if matches!(e, GbEvent::InviteReceived(_)) {
+                    return e;
+                }
+            }
+        })
+        .await
+        .expect("no InviteReceived");
+        let GbEvent::InviteReceived(negotiation) = e else {
+            unreachable!()
+        };
+        // The offer must carry the server's receive addr + ssrc.
+        assert_eq!(
+            negotiation.remote.media_addr,
+            "127.0.0.1:30000".parse().unwrap()
+        );
+        assert_eq!(
+            negotiation.remote.ssrc.as_deref(),
+            Some(offer_ssrc.as_str())
+        );
+        assert_eq!(negotiation.remote.transport, Transport::Udp);
+        let handle = negotiation
+            .answer("127.0.0.1:40002".parse().unwrap())
+            .unwrap();
+        (handle, client_events)
+    });
+
+    let session = tokio::time::timeout(
+        Duration::from_secs(10),
+        server.invite_play(DEVICE, CHANNEL, spec),
+    )
+    .await
+    .expect("invite timed out")
+    .expect("invite failed");
+
+    // The answer's media addr must land in negotiated_remote.
+    assert_eq!(
+        session.spec.negotiated_remote,
+        Some("127.0.0.1:40002".parse().unwrap())
+    );
+
+    let (handle, client_events) = answerer.await.unwrap();
+    drop(handle);
+    drop(client_events);
+    let _ = session.stop().await; // BYE (asserted in Task 11's tests)
     client.shutdown();
     server.shutdown();
 }

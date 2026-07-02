@@ -75,12 +75,7 @@ async fn open_auth_register_emits_registered_and_lists_device() {
     assert_eq!(resp.status_code, rsip::StatusCode::OK);
 
     let e = wait_for(&mut events, |e| matches!(e, GbEvent::Registered { .. })).await;
-    assert_eq!(
-        e,
-        GbEvent::Registered {
-            device_id: DEVICE.into()
-        }
-    );
+    assert!(matches!(e, GbEvent::Registered { device_id } if device_id == DEVICE));
 
     let devices = server.devices();
     assert_eq!(devices.len(), 1);
@@ -222,12 +217,7 @@ async fn missed_keepalive_marks_offline() {
 
     // No keepalive for >1s -> sweep flips it offline (registration not expired).
     let e = wait_for(&mut events, |e| matches!(e, GbEvent::Offline { .. })).await;
-    assert_eq!(
-        e,
-        GbEvent::Offline {
-            device_id: DEVICE.into()
-        }
-    );
+    assert!(matches!(e, GbEvent::Offline { device_id } if device_id == DEVICE));
     let devices = server.devices();
     assert_eq!(devices.len(), 1);
     assert!(!devices[0].online);

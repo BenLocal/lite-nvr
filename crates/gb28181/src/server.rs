@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use md5::{Digest, Md5};
 use rsipstack::dialog::client_dialog::ClientInviteDialog;
 use rsipstack::dialog::dialog::DialogState;
+use rsipstack::dialog::invitation::InviteOption;
 use rsipstack::sip as rsip;
 use rsipstack::sip::prelude::{HeadersExt, ToTypedHeader};
 use rsipstack::transaction::TransactionReceiver;
@@ -23,10 +24,8 @@ use crate::event::GbEvent;
 use crate::gbcode::{SsrcGenerator, SsrcKind};
 use crate::manscdp::{self, Catalog, CatalogAccumulator, CmdType};
 use crate::registrar::{Registrar, RegistrarChange, SweepOutcome};
-use crate::types::{RegisteredDevice, Transport};
-
-// NOTE: Task 10 extends these imports with `InviteOption`, `sdp`, `MediaSpec`.
-// Do NOT add them now — clippy runs with -D warnings (unused imports fail).
+use crate::sdp;
+use crate::types::{MediaSpec, RegisteredDevice, Transport};
 
 pub struct GbServerConfig {
     /// Our 20-digit platform GB code (e.g. "34020000002000000001").
@@ -88,14 +87,41 @@ struct ServerInner {
     sn: AtomicU64,
     nonce_seq: AtomicU64,
     ssrc: SsrcGenerator,
-    /// Dropped-but-not-stopped sessions get their dialog sent here for BYE.
-    // Read by Task 10 (invite_play drop path); no reader yet.
-    #[allow(dead_code)]
+    /// Dropped-but-not-stopped sessions get their dialog sent here for BYE
+    /// (see `MediaSession::drop`).
     janitor: mpsc::UnboundedSender<ClientInviteDialog>,
 }
 
 pub struct GbServer {
     inner: Arc<ServerInner>,
+}
+
+/// An owned outbound media dialog (RAII, spec §3 row 5): `stop()` sends BYE;
+/// dropping without `stop()` enqueues a best-effort BYE via the janitor.
+pub struct MediaSession {
+    dialog: ClientInviteDialog,
+    pub spec: MediaSpec,
+    stopped: bool,
+    janitor: mpsc::UnboundedSender<ClientInviteDialog>,
+}
+
+impl MediaSession {
+    pub fn dialog_id(&self) -> String {
+        self.dialog.id().to_string()
+    }
+
+    pub async fn stop(mut self) -> Result<()> {
+        self.stopped = true;
+        self.dialog.bye().await.map_err(sip_err)
+    }
+}
+
+impl Drop for MediaSession {
+    fn drop(&mut self) {
+        if !self.stopped {
+            self.janitor.send(self.dialog.clone()).ok();
+        }
+    }
 }
 
 impl GbServer {
@@ -191,6 +217,85 @@ impl GbServer {
         }
         inner.pending_catalog.lock().unwrap().remove(&sn);
         Ok(acc.finish())
+    }
+
+    /// INVITE `channel_id` on `device_id` to start pushing media to
+    /// `spec.media_addr` (the caller's already-open receiver). On 200 OK the
+    /// answer's media address lands in `spec.negotiated_remote` (needed for
+    /// TcpActive connect).
+    pub async fn invite_play(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        mut spec: MediaSpec,
+    ) -> Result<MediaSession> {
+        let inner = &self.inner;
+        let dest = inner
+            .dests
+            .lock()
+            .unwrap()
+            .get(device_id)
+            .cloned()
+            .ok_or_else(|| GbError::DeviceOffline(device_id.to_string()))?;
+
+        let offer = sdp::build_play_offer(
+            &inner.cfg.sip_id,
+            &spec.media_addr.ip().to_string(),
+            spec.media_addr.port(),
+            &spec.ssrc_str,
+            spec.transport,
+            &spec.stream_type,
+        );
+        let caller: rsip::Uri = format!("sip:{}@{}", inner.cfg.sip_id, inner.cfg.domain)
+            .try_into()
+            .map_err(sip_err)?;
+        let callee: rsip::Uri = format!("sip:{}@{}", channel_id, inner.cfg.domain)
+            .try_into()
+            .map_err(sip_err)?;
+        let contact: rsip::Uri = format!("sip:{}@{}", inner.cfg.sip_id, inner.ep.local_addr)
+            .try_into()
+            .map_err(sip_err)?;
+        // GB/T 28181 Subject: 发送者媒体流序列号,接收者标识 — channel:ssrc,platform:0
+        let subject = format!("{}:{},{}:0", channel_id, spec.ssrc_str, inner.cfg.sip_id);
+        let opt = InviteOption {
+            caller,
+            callee,
+            contact,
+            content_type: Some("application/sdp".to_string()),
+            offer: Some(offer.into_bytes()),
+            destination: Some(dest),
+            headers: Some(vec![rsip::Header::Subject(subject.into())]),
+            credential: None,
+            ..Default::default()
+        };
+        let (dialog, resp) = inner
+            .ep
+            .dialog_layer
+            .do_invite(opt, inner.ep.state_sender.clone())
+            .await
+            .map_err(sip_err)?;
+        let resp = resp.ok_or_else(|| GbError::Negotiation("no INVITE response".into()))?;
+        if resp.status_code != rsip::StatusCode::OK {
+            return Err(GbError::Negotiation(format!(
+                "INVITE rejected: {}",
+                resp.status_code
+            )));
+        }
+        let answer_text = String::from_utf8_lossy(resp.body()).to_string();
+        let answer = sdp::parse_answer(&answer_text)?;
+        spec.negotiated_remote = Some(answer.media_addr);
+
+        inner
+            .sessions
+            .lock()
+            .unwrap()
+            .insert(dialog.id().to_string(), ());
+        Ok(MediaSession {
+            dialog,
+            spec,
+            stopped: false,
+            janitor: inner.janitor.clone(),
+        })
     }
 
     pub fn shutdown(&self) {
