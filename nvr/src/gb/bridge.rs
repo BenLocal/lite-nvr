@@ -8,6 +8,7 @@ use gb28181::{GbServer, MediaSession, MediaSpec, SsrcKind, StreamType, Transport
 
 use crate::gb::receiver::{MediaReceiver, ReceiverHandle};
 use crate::gb::stream_map::StreamMap;
+use crate::zlm::media_cache::MediaCache;
 
 /// A live pull: the ZLM receiver (kept alive) plus the GB media dialog.
 struct ActiveSession {
@@ -21,6 +22,7 @@ pub struct GbBridge {
     receiver: Box<dyn MediaReceiver>,
     streams: StreamMap,
     active: Mutex<HashMap<String, ActiveSession>>,
+    media_cache: MediaCache,
 }
 
 impl GbBridge {
@@ -31,11 +33,17 @@ impl GbBridge {
             receiver,
             streams: StreamMap::new(),
             active: Mutex::new(HashMap::new()),
+            media_cache: MediaCache::new(),
         }
     }
 
     pub fn server(&self) -> &GbServer {
         &self.server
+    }
+
+    /// The live-stream cache (fed by ZLM's `on_media_changed` hook).
+    pub fn media_cache(&self) -> &MediaCache {
+        &self.media_cache
     }
 
     pub fn register_mapping(
