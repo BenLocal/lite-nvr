@@ -49,6 +49,11 @@ impl GbBridge {
             .register(stream_id, device_id, channel_id, transport);
     }
 
+    /// Update the transport of an existing stream mapping. False if absent.
+    pub fn set_transport(&self, stream_id: &str, transport: gb28181::Transport) -> bool {
+        self.streams.set_transport(stream_id, transport)
+    }
+
     /// Remove the mapping and tear down any live session for it.
     pub async fn unregister_mapping(&self, stream_id: &str) {
         self.streams.unregister(stream_id);

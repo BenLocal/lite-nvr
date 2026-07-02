@@ -64,6 +64,8 @@ impl StreamMap {
     }
 
     /// Snapshot of all (stream_id, mapping) pairs.
+    // Consumed by P4b (GET /gb/streams); no caller in P4a yet.
+    #[allow(dead_code)]
     pub fn list(&self) -> Vec<(String, Mapping)> {
         self.inner
             .lock()

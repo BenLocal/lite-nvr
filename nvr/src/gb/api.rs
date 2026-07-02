@@ -15,6 +15,7 @@ pub fn gb_router() -> Router {
         .route("/devices", get(list_devices))
         .route("/catalog/{device_id}", get(catalog))
         .route("/ptz", post(ptz))
+        .route("/play", post(play))
 }
 
 #[derive(Serialize)]
@@ -129,4 +130,68 @@ async fn ptz(Json(req): Json<PtzRequest>) -> ApiJsonResult<()> {
         .device_control(&req.device_id, &req.channel_id, cmd)
         .await?;
     Ok(ok_empty())
+}
+
+#[derive(Deserialize)]
+struct PlayRequest {
+    /// The nvr device id (== ZLM stream id).
+    device_id: String,
+    /// "udp" | "tcp_passive" | "tcp_active"; defaults to "udp" when omitted.
+    #[serde(default)]
+    transport: Option<String>,
+}
+
+#[derive(Serialize)]
+struct PlayResponse {
+    stream_id: String,
+    url: String,
+}
+
+/// Parse the transport string; `None` (missing) defaults to Udp; an unknown
+/// value yields `None` (rejected by the handler).
+fn parse_transport(s: Option<&str>) -> Option<gb28181::Transport> {
+    match s {
+        None | Some("udp") => Some(gb28181::Transport::Udp),
+        Some("tcp_passive") => Some(gb28181::Transport::TcpPassive),
+        Some("tcp_active") => Some(gb28181::Transport::TcpActive),
+        Some(_) => None,
+    }
+}
+
+/// Set the transport for a configured gb stream and return its playable URL.
+/// `device_id` is the nvr device id (== stream id); the mapping must already
+/// exist (registered from the gb device config at startup).
+async fn play(Json(req): Json<PlayRequest>) -> ApiJsonResult<PlayResponse> {
+    let Some(bridge) = crate::gb::bridge() else {
+        return Err(anyhow::anyhow!("GB support is not enabled").into());
+    };
+    let transport = parse_transport(req.transport.as_deref())
+        .ok_or_else(|| anyhow::anyhow!("unknown transport: {:?}", req.transport))?;
+    if !bridge.set_transport(&req.device_id, transport) {
+        return Err(anyhow::anyhow!("no gb stream mapping for device {}", req.device_id).into());
+    }
+    Ok(ok_json(PlayResponse {
+        stream_id: req.device_id.clone(),
+        url: crate::init::device::build_gb_flv_url(&req.device_id),
+    }))
+}
+
+#[cfg(test)]
+mod play_tests {
+    use super::*;
+
+    #[test]
+    fn parse_transport_maps_known_values_and_defaults() {
+        assert_eq!(parse_transport(None), Some(gb28181::Transport::Udp));
+        assert_eq!(parse_transport(Some("udp")), Some(gb28181::Transport::Udp));
+        assert_eq!(
+            parse_transport(Some("tcp_passive")),
+            Some(gb28181::Transport::TcpPassive)
+        );
+        assert_eq!(
+            parse_transport(Some("tcp_active")),
+            Some(gb28181::Transport::TcpActive)
+        );
+        assert_eq!(parse_transport(Some("bogus")), None);
+    }
 }
