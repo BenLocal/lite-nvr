@@ -1,11 +1,15 @@
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
+use crate::gb::config::GbConfig;
+
 pub struct NvrConfig {
     db_url: String,
     /// Optional override for the recording archive directory. `None` falls back
     /// to the default `<cwd>/data/records`.
     record_dir: Option<String>,
+    /// GB28181 platform config, or `None` when disabled (`NVR_GB_ENABLE != 1`).
+    gb: Option<GbConfig>,
 }
 
 impl NvrConfig {
@@ -16,11 +20,17 @@ impl NvrConfig {
                 .ok()
                 .map(|dir| dir.trim().to_string())
                 .filter(|dir| !dir.is_empty()),
+            gb: GbConfig::from_env(),
         }
     }
 
     pub fn db_url(&self) -> &str {
         &self.db_url
+    }
+
+    /// GB28181 platform config, or `None` when disabled (`NVR_GB_ENABLE != 1`).
+    pub fn gb(&self) -> Option<&GbConfig> {
+        self.gb.as_ref()
     }
 
     /// Root directory where recordings are archived. Set via `NVR_RECORD_DIR`;
