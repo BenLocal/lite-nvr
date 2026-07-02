@@ -251,9 +251,13 @@ impl GbServer {
                 body.clone(),
             )
         };
-        // Retry once on transport/transaction failure (spec §3 row 9).
+        // Retry once on transport/transaction failure (spec §3 row 9) — but ONLY
+        // for non-motion commands. Retrying a continuous Move whose response was
+        // lost would restart motion ~32s later, after the operator released and
+        // STOP already landed; Stop and presets are idempotent/desirable to retry.
         match send().await {
             Ok(_) => Ok(()),
+            Err(e) if cmd.is_motion() => Err(e),
             Err(_) => send().await.map(|_| ()),
         }
     }

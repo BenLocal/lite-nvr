@@ -270,14 +270,17 @@ async fn handle_client_message(inner: &Arc<ClientInner>, tx: &mut Transaction) -
         Ok(CmdType::DeviceControl) => {
             // Device role: ack, then surface the raw PTZCmd for the consumer.
             tx.reply(rsip::StatusCode::OK).await.map_err(sip_err)?;
-            if let Ok(dc) = manscdp::decode_device_control(&body) {
-                inner
-                    .events
-                    .send(GbEvent::DeviceControlReceived {
-                        device_id: dc.device_id,
-                        ptz_cmd: dc.ptz_cmd,
-                    })
-                    .ok();
+            match manscdp::decode_device_control(&body) {
+                Ok(dc) => {
+                    inner
+                        .events
+                        .send(GbEvent::DeviceControlReceived {
+                            device_id: dc.device_id,
+                            ptz_cmd: dc.ptz_cmd,
+                        })
+                        .ok();
+                }
+                Err(e) => tracing::debug!(error = %e, "gb28181 client: undecodable DeviceControl"),
             }
             Ok(())
         }

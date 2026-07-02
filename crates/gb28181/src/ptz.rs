@@ -59,6 +59,18 @@ impl PtzCommand {
             zoom_speed: 0,
         }
     }
+
+    /// True for a continuous move that actually sets motion (any direction or
+    /// zoom bit). Stop and presets are NOT motion. Used to decide whether a
+    /// dropped-response retry is safe: retrying a live motion could restart it
+    /// after the operator already released.
+    pub fn is_motion(&self) -> bool {
+        matches!(
+            self,
+            PtzCommand::Move { up, down, left, right, zoom_in, zoom_out, .. }
+                if *up || *down || *left || *right || *zoom_in || *zoom_out
+        )
+    }
 }
 
 /// Encode a command into the 16-hex-char GB `<PTZCmd>` string.
@@ -208,5 +220,37 @@ mod tests {
         let hex = encode_ptz_cmd(&PtzCommand::PresetCall(255), 1);
         // sum = 0xA5+0x0F+0x01+0x82+0x00+0xFF+0x00 = 0x236 -> &0xFF = 0x36.
         assert_eq!(&hex[14..16], "36");
+    }
+
+    #[test]
+    fn is_motion_true_only_for_moving() {
+        assert!(!PtzCommand::stop().is_motion());
+        assert!(!PtzCommand::PresetCall(3).is_motion());
+        assert!(!PtzCommand::PresetSet(3).is_motion());
+        assert!(!PtzCommand::PresetDelete(3).is_motion());
+        let up = PtzCommand::Move {
+            up: true,
+            down: false,
+            left: false,
+            right: false,
+            zoom_in: false,
+            zoom_out: false,
+            pan_speed: 0,
+            tilt_speed: 0x20,
+            zoom_speed: 0,
+        };
+        assert!(up.is_motion());
+        let zoom = PtzCommand::Move {
+            up: false,
+            down: false,
+            left: false,
+            right: false,
+            zoom_in: true,
+            zoom_out: false,
+            pan_speed: 0,
+            tilt_speed: 0,
+            zoom_speed: 4,
+        };
+        assert!(zoom.is_motion());
     }
 }
