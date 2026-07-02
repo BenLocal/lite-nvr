@@ -8,7 +8,7 @@ use axum::{
 use gb28181::PtzCommand;
 use serde::{Deserialize, Serialize};
 
-use crate::handler::{ApiJsonResult, ok_json};
+use crate::handler::{ApiJsonResult, ok_empty, ok_json};
 
 pub fn gb_router() -> Router {
     Router::new()
@@ -84,7 +84,9 @@ struct PtzRequest {
 /// Map a request into a `PtzCommand`, or `None` for an unknown command.
 fn to_ptz(req: &PtzRequest) -> Option<PtzCommand> {
     let speed = req.speed.unwrap_or(128);
-    let zoom_speed = speed >> 4; // 0..=15
+    // A set zoom bit must carry a non-zero speed, else the lens won't move —
+    // clamp to 1 so a low slider value still zooms (it already pans/tilts).
+    let zoom_speed = (speed >> 4).max(1); // 1..=15
     let mv = |up, down, left, right, zoom_in, zoom_out| PtzCommand::Move {
         up,
         down,
@@ -126,5 +128,5 @@ async fn ptz(Json(req): Json<PtzRequest>) -> ApiJsonResult<()> {
         .server()
         .device_control(&req.device_id, &req.channel_id, cmd)
         .await?;
-    Ok(ok_json(()))
+    Ok(ok_empty())
 }
