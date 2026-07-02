@@ -47,18 +47,30 @@ pub(crate) fn start_zlm_server(
                     );
                     log::info!("ZLM: media publish, url: {}", url_info);
                 });
-                events.on_media_not_found(|media| {
-                    let url_info = format!(
-                        "{}://{}:{}/{}/{}/{}",
-                        media.url_info.schema(),
-                        media.url_info.host(),
-                        media.url_info.port(),
-                        media.url_info.vhost(),
-                        media.url_info.app(),
-                        media.url_info.stream()
-                    );
-                    log::info!("ZLM: media not found, url: {}", url_info);
+                let runtime_nf = runtime.clone();
+                events.on_media_not_found(move |media| {
+                    let stream = media.url_info.stream();
+                    let Some(bridge) = crate::gb::bridge() else {
+                        return true; // GB disabled: nothing to provide, but don't error
+                    };
+                    let runtime_inner = runtime_nf.clone();
+                    // The hook is synchronous; do the async pull on the runtime
+                    // and return true so ZLM keeps the request open.
+                    runtime_inner.spawn(async move {
+                        bridge.handle_media_not_found(&stream).await;
+                    });
                     true
+                });
+                let runtime_nr = runtime.clone();
+                events.on_media_no_reader(move |media| {
+                    let stream = media.sender.stream();
+                    let Some(bridge) = crate::gb::bridge() else {
+                        return;
+                    };
+                    let runtime_inner = runtime_nr.clone();
+                    runtime_inner.spawn(async move {
+                        bridge.handle_media_no_reader(&stream).await;
+                    });
                 });
                 let runtime_clone = runtime.clone();
                 events.on_record_ts(move |record| {
