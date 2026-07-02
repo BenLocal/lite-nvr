@@ -6,13 +6,10 @@ use std::path::{Path, PathBuf};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use crate::zlm::cmd::{handler_zlm_cmd, init_zlm_cmd_sender};
-
 pub(crate) fn start_zlm_server(
     cancel: CancellationToken,
     ready_tx: oneshot::Sender<()>,
 ) -> anyhow::Result<()> {
-    let mut rx = init_zlm_cmd_sender()?;
     tokio::spawn(async move {
         let cancel_clone = cancel.clone();
         let runtime = tokio::runtime::Handle::current();
@@ -115,19 +112,8 @@ pub(crate) fn start_zlm_server(
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
         });
-        loop {
-            tokio::select! {
-                _ = cancel.cancelled() => {
-                    log::info!("ZLM: server cancelled");
-                    break;
-                }
-                Some(cmd) = rx.recv() => {
-                   if let Err(e) = handler_zlm_cmd(cmd) {
-                        log::error!("ZLM: handler_zlm_cmd error: {:?}", e);
-                   }
-                }
-            }
-        }
+        cancel.cancelled().await;
+        log::info!("ZLM: server cancelled");
 
         let _ = handle.await;
         log::info!("ZLM: server finished");
