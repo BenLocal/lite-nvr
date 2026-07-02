@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     db::app_db_conn,
     handler::{ApiJsonResult, ok_json},
-    init::device::{build_flv_url, ensure_device_pipe},
+    init::device::{build_flv_url, build_gb_flv_url, ensure_device_pipe},
     manager,
 };
 
@@ -72,7 +72,13 @@ async fn list_devices() -> ApiJsonResult<Vec<DeviceListItem>> {
         devices
             .into_iter()
             .map(|device| DeviceListItem {
-                flv_url: build_flv_url(&device.id),
+                // GB28181 streams are published by ZLM's RtpServer under the
+                // `rtp` app, so they need a different FLV url than pipe streams.
+                flv_url: if device.input_type == "gb28181" {
+                    build_gb_flv_url(&device.id)
+                } else {
+                    build_flv_url(&device.id)
+                },
                 device,
             })
             .collect(),
