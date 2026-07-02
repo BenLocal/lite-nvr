@@ -195,3 +195,86 @@ async fn invite_play_negotiates_matching_specs() {
     client.shutdown();
     server.shutdown();
 }
+
+/// Register + invite + answer; returns everything needed to exercise teardown.
+#[allow(clippy::type_complexity)] // test fixture bundle, not API
+async fn established_session() -> (
+    GbServer,
+    tokio::sync::mpsc::UnboundedReceiver<GbEvent>,
+    GbClient,
+    crate::server::MediaSession,
+    ClientMediaHandle,
+    tokio::sync::mpsc::UnboundedReceiver<GbEvent>,
+) {
+    let (server, mut server_events, client, mut client_events) = bound_pair(None).await;
+    client.register().await.unwrap();
+    wait_for(&mut server_events, |e| {
+        matches!(e, GbEvent::Registered { .. })
+    })
+    .await;
+
+    let spec = play_spec(&server);
+    let answerer = tokio::spawn(async move {
+        loop {
+            let e = client_events.recv().await.expect("client events closed");
+            if let GbEvent::InviteReceived(negotiation) = e {
+                let handle = negotiation
+                    .answer("127.0.0.1:40002".parse().unwrap())
+                    .unwrap();
+                return (handle, client_events);
+            }
+        }
+    });
+    let session = server.invite_play(DEVICE, CHANNEL, spec).await.unwrap();
+    let (handle, client_events) = tokio::time::timeout(Duration::from_secs(5), answerer)
+        .await
+        .unwrap()
+        .unwrap();
+    (
+        server,
+        server_events,
+        client,
+        session,
+        handle,
+        client_events,
+    )
+}
+
+#[tokio::test]
+async fn server_stop_sends_bye_and_client_sees_session_closed() {
+    let (server, _se, client, session, _handle, mut client_events) = established_session().await;
+    session.stop().await.unwrap();
+    wait_for(&mut client_events, |e| {
+        matches!(e, GbEvent::SessionClosed { .. })
+    })
+    .await;
+    client.shutdown();
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn client_bye_surfaces_session_closed_on_server() {
+    let (server, mut server_events, client, session, handle, _ce) = established_session().await;
+    let id = session.dialog_id();
+    handle.bye().await.unwrap();
+    let e = wait_for(&mut server_events, |e| {
+        matches!(e, GbEvent::SessionClosed { .. })
+    })
+    .await;
+    assert!(matches!(e, GbEvent::SessionClosed { dialog_id } if dialog_id == id));
+    drop(session); // already terminated; janitor BYE is a no-op
+    client.shutdown();
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn dropping_session_sends_janitor_bye() {
+    let (server, _se, client, session, _handle, mut client_events) = established_session().await;
+    drop(session); // no stop() — the janitor must BYE
+    wait_for(&mut client_events, |e| {
+        matches!(e, GbEvent::SessionClosed { .. })
+    })
+    .await;
+    client.shutdown();
+    server.shutdown();
+}
