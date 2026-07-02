@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 use crate::endpoint::{SipEndpoint, send_out_of_dialog_message, sip_err};
 use crate::error::{GbError, Result};
 use crate::event::GbEvent;
-use crate::manscdp::{self, CatalogItem, CmdType};
+use crate::manscdp::{self, CatalogItem, CmdType, RecordItem};
 use crate::sdp;
 
 pub struct GbClientConfig {
@@ -41,6 +41,13 @@ pub struct GbClientConfig {
     pub expires: u32,
     pub keepalive_interval: Duration,
     pub user_agent: String,
+    /// Device metadata reported in DeviceInfo responses.
+    pub device_name: String,
+    pub manufacturer: String,
+    pub model: String,
+    pub firmware: String,
+    /// Recordings advertised in RecordInfo responses (设备录像文件).
+    pub records: Vec<RecordItem>,
 }
 
 impl GbClientConfig {
@@ -61,6 +68,11 @@ impl GbClientConfig {
             expires: 3600,
             keepalive_interval: Duration::from_secs(60),
             user_agent: "lite-nvr-gb28181-client".into(),
+            device_name: "lite-nvr device".into(),
+            manufacturer: "lite-nvr".into(),
+            model: "gb28181-client".into(),
+            firmware: "0.1".into(),
+            records: Vec::new(),
         }
     }
 }
@@ -262,19 +274,45 @@ async fn handle_client_message(inner: &Arc<ClientInner>, tx: &mut Transaction) -
             // channel list back as a separate MESSAGE.
             let (sn, _target) = manscdp::decode_sn_device(&body)?;
             tx.reply(rsip::StatusCode::OK).await.map_err(sip_err)?;
-            let resp_body =
+            let resp =
                 manscdp::encode_catalog_response(sn, &inner.cfg.device_id, &inner.cfg.channels);
-            let dest = SipAddr::from(inner.cfg.server_addr);
-            send_out_of_dialog_message(
-                &inner.ep.inner(),
-                (&inner.cfg.device_id, &inner.cfg.domain),
-                (&inner.cfg.server_id, &inner.cfg.domain),
-                dest,
-                inner.ep.next_cseq(),
-                resp_body,
-            )
-            .await?;
-            Ok(())
+            send_platform_message(inner, resp).await
+        }
+        Ok(CmdType::DeviceInfo) => {
+            // DeviceInfo QUERY: ack, then answer with our device metadata.
+            let (sn, target) = manscdp::decode_sn_device(&body)?;
+            tx.reply(rsip::StatusCode::OK).await.map_err(sip_err)?;
+            let device_id = if target.is_empty() {
+                &inner.cfg.device_id
+            } else {
+                &target
+            };
+            let resp = manscdp::encode_deviceinfo_response(
+                sn,
+                device_id,
+                &inner.cfg.device_name,
+                &inner.cfg.manufacturer,
+                &inner.cfg.model,
+                &inner.cfg.firmware,
+            );
+            send_platform_message(inner, resp).await
+        }
+        Ok(CmdType::RecordInfo) => {
+            // RecordInfo QUERY (设备录像文件查询): ack, then list our recordings.
+            let q = manscdp::decode_recordinfo_query(&body)?;
+            tx.reply(rsip::StatusCode::OK).await.map_err(sip_err)?;
+            let device_id = if q.device_id.is_empty() {
+                &inner.cfg.device_id
+            } else {
+                &q.device_id
+            };
+            let resp = manscdp::encode_recordinfo_response(
+                q.sn,
+                device_id,
+                &inner.cfg.device_name,
+                &inner.cfg.records,
+            );
+            send_platform_message(inner, resp).await
         }
         Ok(CmdType::DeviceControl) => {
             // Device role: ack, then surface the raw PTZCmd for the consumer.
@@ -295,6 +333,21 @@ async fn handle_client_message(inner: &Arc<ClientInner>, tx: &mut Transaction) -
         }
         _ => tx.reply(rsip::StatusCode::OK).await.map_err(sip_err),
     }
+}
+
+/// Send a MANSCDP MESSAGE (a query response) up to the platform, out of dialog.
+async fn send_platform_message(inner: &Arc<ClientInner>, body: String) -> Result<()> {
+    let dest = SipAddr::from(inner.cfg.server_addr);
+    send_out_of_dialog_message(
+        &inner.ep.inner(),
+        (&inner.cfg.device_id, &inner.cfg.domain),
+        (&inner.cfg.server_id, &inner.cfg.domain),
+        dest,
+        inner.ep.next_cseq(),
+        body,
+    )
+    .await
+    .map(|_| ())
 }
 
 async fn state_loop(
