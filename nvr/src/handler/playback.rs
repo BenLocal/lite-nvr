@@ -540,7 +540,16 @@ async fn playback_playlist(Path(device_id): Path<String>) -> ApiResult<Response>
         "#EXT-X-PLAYLIST-TYPE:VOD".to_string(),
     ];
 
-    for record in segments {
+    for (index, record) in segments.iter().enumerate() {
+        // Each recorded .ts is an independent capture (a new ZLM publish resets
+        // the PTS to ~0), so consecutive segments have overlapping timestamps.
+        // Without an explicit discontinuity hls.js tries to stitch them into one
+        // monotonic timeline, fails to append the second segment, and the whole
+        // day playlist stops playing. Marking every boundary discontinuous makes
+        // the player re-baseline each segment's PTS and lay them out by EXTINF.
+        if index > 0 {
+            lines.push("#EXT-X-DISCONTINUITY".to_string());
+        }
         lines.push(format!("#EXTINF:{:.3},", record.duration));
         lines.push(format!(
             "#EXT-X-PROGRAM-DATE-TIME:{}",
