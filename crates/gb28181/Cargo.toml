@@ -10,3 +10,7 @@ encoding_rs = { workspace = true }
 md-5 = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
+rsipstack = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }

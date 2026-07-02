@@ -4,6 +4,7 @@
 pub mod auth;
 pub mod encoding;
 pub mod error;
+pub mod event;
 pub mod gbcode;
 pub mod manscdp;
 pub mod registrar;
@@ -11,3 +12,4 @@ pub mod sdp;
 pub mod types;
 
 pub use error::GbError;
+pub use event::GbEvent;

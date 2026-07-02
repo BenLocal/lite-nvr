@@ -55,3 +55,5 @@ sha2 = "0.10"
 thiserror = "2"
 quick-xml = { version = "0.37", features = ["serialize"] }
 encoding_rs = "0.8"
+tracing = "0.1"
+rsipstack = "0.5"
