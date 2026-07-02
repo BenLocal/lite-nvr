@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import Form from "@primevue/forms/form";
 import Button from "primevue/button";
 import Card from "primevue/card";
@@ -28,9 +28,11 @@ import {
 import {
   getGbCatalog,
   getGbDevices,
+  getGbStreams,
   ptzControl,
   type GbChannel,
   type GbDevice,
+  type GbStream,
 } from "../api/gb";
 import { useAppToast } from "../utils/toast";
 
@@ -59,6 +61,21 @@ async function loadGbDevices() {
     gbDevices.value = [];
   }
 }
+
+// Live-status polling for gb28181 device rows: maps stream_id (== device id)
+// to its current ZLM publishing status, refreshed every 5s while this view is mounted.
+const gbStreamStatus = ref<Record<string, GbStream>>({});
+async function loadGbStreams() {
+  try {
+    const list = await getGbStreams();
+    const map: Record<string, GbStream> = {};
+    for (const s of list) map[s.stream_id] = s;
+    gbStreamStatus.value = map;
+  } catch {
+    gbStreamStatus.value = {};
+  }
+}
+let gbTimer: ReturnType<typeof setInterval> | undefined;
 
 async function onGbDeviceChange(deviceId: string) {
   gbDeviceId.value = deviceId;
@@ -206,6 +223,12 @@ const formInitialValues = computed(() => {
 
 onMounted(() => {
   void loadDevices();
+  loadGbStreams();
+  gbTimer = setInterval(loadGbStreams, 5000);
+});
+
+onUnmounted(() => {
+  if (gbTimer) clearInterval(gbTimer);
 });
 
 function resolver({ values }: { values: Record<string, unknown> }) {
@@ -545,6 +568,15 @@ async function copyText(value: string, label: string) {
           <Column field="updated_at" header="更新时间" style="width: 12rem; min-width: 12rem">
             <template #body="{ data }">
               {{ formatTime(data.updated_at) }}
+            </template>
+          </Column>
+          <Column header="状态" style="width: 6rem">
+            <template #body="{ data }">
+              <Tag
+                v-if="data.input_type === 'gb28181'"
+                :value="gbStreamStatus[data.id]?.live ? '拉流中' : '空闲'"
+                :severity="gbStreamStatus[data.id]?.live ? 'success' : 'secondary'"
+              />
             </template>
           </Column>
           <Column

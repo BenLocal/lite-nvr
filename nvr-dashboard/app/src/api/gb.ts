@@ -33,3 +33,24 @@ export function ptzControl(payload: PtzRequest) {
     body: payload,
   })
 }
+
+export interface GbStreamRtp {
+  exist: boolean
+  peer_ip: string
+  peer_port: number
+  local_port: number
+  identifier: string
+}
+
+export interface GbStream {
+  stream_id: string
+  device_id: string
+  channel_id: string
+  transport: string
+  live: boolean
+  rtp: GbStreamRtp | null
+}
+
+export function getGbStreams() {
+  return request<GbStream[]>('/gb/streams')
+}
