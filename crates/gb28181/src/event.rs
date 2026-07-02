@@ -18,6 +18,8 @@ pub enum GbEvent {
     KeepaliveReceived { device_id: String },
     /// An INVITE arrived (client role): answer or reject via the negotiation.
     InviteReceived(InviteNegotiation),
+    /// A `DeviceControl` (PTZ) was received from the platform (device role).
+    DeviceControlReceived { device_id: String, ptz_cmd: String },
     /// A media dialog ended (BYE from either side, or error). Both roles.
     SessionClosed { dialog_id: String },
 }
