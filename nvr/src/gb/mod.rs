@@ -63,6 +63,10 @@ fn spawn_event_logger(mut events: tokio::sync::mpsc::UnboundedReceiver<GbEvent>)
                 }
                 GbEvent::KeepaliveReceived { .. } => {}
                 GbEvent::InviteReceived(_) => {} // server role never receives INVITE
+                GbEvent::DeviceControlReceived { device_id, .. } => {
+                    // Platform role never receives this (device role only); log defensively.
+                    log::debug!("gb28181: unexpected DeviceControl from {device_id}")
+                }
                 GbEvent::SessionClosed { dialog_id } => {
                     log::info!("gb28181: session closed: {dialog_id}")
                 }
