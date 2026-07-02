@@ -104,6 +104,19 @@ impl GbClient {
     /// REGISTER to the platform (rsipstack auto-answers the digest challenge)
     /// and start the keepalive loop on success.
     pub async fn register(&self) -> Result<()> {
+        self.send_register(self.inner.cfg.expires, "register")
+            .await?;
+        self.start_keepalive();
+        Ok(())
+    }
+
+    /// Unregister from the platform: REGISTER with `Expires: 0` (设备注销).
+    /// Best-effort; call before dropping the client on shutdown.
+    pub async fn unregister(&self) -> Result<()> {
+        self.send_register(0, "unregister").await
+    }
+
+    async fn send_register(&self, expires: u32, what: &str) -> Result<()> {
         let cfg = &self.inner.cfg;
         let credential = Credential {
             username: cfg.device_id.clone(),
@@ -114,17 +127,13 @@ impl GbClient {
         let uri: rsip::Uri = format!("sip:{}@{}", cfg.server_id, cfg.server_addr)
             .try_into()
             .map_err(sip_err)?;
-        let resp = reg
-            .register(uri, Some(cfg.expires))
-            .await
-            .map_err(sip_err)?;
+        let resp = reg.register(uri, Some(expires)).await.map_err(sip_err)?;
         if resp.status_code != rsip::StatusCode::OK {
             return Err(GbError::Auth(format!(
-                "register rejected: {}",
+                "{what} rejected: {}",
                 resp.status_code
             )));
         }
-        self.start_keepalive();
         Ok(())
     }
 
@@ -384,6 +393,9 @@ impl InviteNegotiation {
             media_addr.port(),
             &ssrc,
             self.remote.transport,
+            &self.remote.session,
+            self.remote.start,
+            self.remote.stop,
         );
         self.dialog
             .accept(

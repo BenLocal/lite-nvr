@@ -15,6 +15,7 @@ pub enum CmdType {
     Catalog,
     DeviceInfo,
     DeviceControl,
+    RecordInfo,
     Other(String),
 }
 
@@ -25,6 +26,7 @@ impl CmdType {
             "Catalog" => CmdType::Catalog,
             "DeviceInfo" => CmdType::DeviceInfo,
             "DeviceControl" => CmdType::DeviceControl,
+            "RecordInfo" => CmdType::RecordInfo,
             other => CmdType::Other(other.to_string()),
         }
     }
@@ -481,6 +483,229 @@ pub fn decode_sn_device(body: &[u8]) -> Result<(u64, String)> {
     let raw: RawNotify =
         quick_xml::de::from_str(&xml).map_err(|e| GbError::XmlDecode(e.to_string()))?;
     Ok((raw.sn, raw.device_id))
+}
+
+/// DeviceInfo `<Response>` a device SENDS answering a DeviceInfo query.
+///
+/// # Safety / injection contract
+/// `device_id` MUST be a plain GB code (digits only). Free-text fields are escaped.
+pub fn encode_deviceinfo_response(
+    sn: u64,
+    device_id: &str,
+    name: &str,
+    manufacturer: &str,
+    model: &str,
+    firmware: &str,
+) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<Response>\r\n\
+<CmdType>DeviceInfo</CmdType>\r\n<SN>{sn}</SN>\r\n<DeviceID>{device_id}</DeviceID>\r\n\
+<Result>OK</Result>\r\n<DeviceName>{}</DeviceName>\r\n<Manufacturer>{}</Manufacturer>\r\n\
+<Model>{}</Model>\r\n<Firmware>{}</Firmware>\r\n<Channel>1</Channel>\r\n</Response>\r\n",
+        xml_escape(name),
+        xml_escape(manufacturer),
+        xml_escape(model),
+        xml_escape(firmware),
+    )
+}
+
+/// One recorded file advertised in a RecordInfo response. Times are GB-style
+/// local ISO 8601, e.g. `2024-01-01T00:00:00`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordItem {
+    pub device_id: String,
+    pub name: String,
+    pub file_path: String,
+    pub start_time: String,
+    pub end_time: String,
+}
+
+/// A decoded RecordInfo `<Query>` (the platform asking what recordings exist in
+/// `[start_time, end_time]`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordInfoQuery {
+    pub sn: u64,
+    pub device_id: String,
+    pub start_time: String,
+    pub end_time: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRecordInfoQuery {
+    #[serde(rename = "SN", default)]
+    sn: u64,
+    #[serde(rename = "DeviceID", default)]
+    device_id: String,
+    #[serde(rename = "StartTime", default)]
+    start_time: String,
+    #[serde(rename = "EndTime", default)]
+    end_time: String,
+}
+
+pub fn decode_recordinfo_query(body: &[u8]) -> Result<RecordInfoQuery> {
+    let xml = decode_xml(body)?;
+    let raw: RawRecordInfoQuery =
+        quick_xml::de::from_str(&xml).map_err(|e| GbError::XmlDecode(e.to_string()))?;
+    Ok(RecordInfoQuery {
+        sn: raw.sn,
+        device_id: raw.device_id,
+        start_time: raw.start_time,
+        end_time: raw.end_time,
+    })
+}
+
+/// RecordInfo `<Response>` a device SENDS listing recordings. Single chunk:
+/// `SumNum` == `records.len()`.
+///
+/// # Safety / injection contract
+/// `device_id` and each `item.device_id` MUST be plain GB codes (digits only).
+pub fn encode_recordinfo_response(
+    sn: u64,
+    device_id: &str,
+    name: &str,
+    records: &[RecordItem],
+) -> String {
+    let mut s = String::new();
+    s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<Response>\r\n<CmdType>RecordInfo</CmdType>\r\n");
+    s.push_str(&format!(
+        "<SN>{sn}</SN>\r\n<DeviceID>{device_id}</DeviceID>\r\n<Name>{}</Name>\r\n",
+        xml_escape(name)
+    ));
+    s.push_str(&format!(
+        "<SumNum>{}</SumNum>\r\n<RecordList Num=\"{}\">\r\n",
+        records.len(),
+        records.len()
+    ));
+    for it in records {
+        s.push_str(&format!(
+            "<Item>\r\n<DeviceID>{}</DeviceID>\r\n<Name>{}</Name>\r\n<FilePath>{}</FilePath>\r\n\
+<StartTime>{}</StartTime>\r\n<EndTime>{}</EndTime>\r\n<Type>time</Type>\r\n</Item>\r\n",
+            it.device_id,
+            xml_escape(&it.name),
+            xml_escape(&it.file_path),
+            xml_escape(&it.start_time),
+            xml_escape(&it.end_time),
+        ));
+    }
+    s.push_str("</RecordList>\r\n</Response>\r\n");
+    s
+}
+
+/// A decoded RecordInfo `<Response>` (for round-trip tests / platform side).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordInfoResponse {
+    pub sn: u64,
+    pub device_id: String,
+    pub sum_num: u32,
+    pub items: Vec<RecordItem>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawRecordList {
+    #[serde(rename = "Item", default)]
+    items: Vec<RawRecordItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRecordItem {
+    #[serde(rename = "DeviceID", default)]
+    device_id: String,
+    #[serde(rename = "Name", default)]
+    name: String,
+    #[serde(rename = "FilePath", default)]
+    file_path: String,
+    #[serde(rename = "StartTime", default)]
+    start_time: String,
+    #[serde(rename = "EndTime", default)]
+    end_time: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRecordInfoResponse {
+    #[serde(rename = "SN", default)]
+    sn: u64,
+    #[serde(rename = "DeviceID", default)]
+    device_id: String,
+    #[serde(rename = "SumNum", default)]
+    sum_num: u32,
+    #[serde(rename = "RecordList", default)]
+    record_list: RawRecordList,
+}
+
+pub fn decode_recordinfo_response(body: &[u8]) -> Result<RecordInfoResponse> {
+    let xml = decode_xml(body)?;
+    let raw: RawRecordInfoResponse =
+        quick_xml::de::from_str(&xml).map_err(|e| GbError::XmlDecode(e.to_string()))?;
+    Ok(RecordInfoResponse {
+        sn: raw.sn,
+        device_id: raw.device_id,
+        sum_num: raw.sum_num,
+        items: raw
+            .record_list
+            .items
+            .into_iter()
+            .map(|it| RecordItem {
+                device_id: it.device_id,
+                name: it.name,
+                file_path: it.file_path,
+                start_time: it.start_time,
+                end_time: it.end_time,
+            })
+            .collect(),
+    })
+}
+
+#[cfg(test)]
+mod record_deviceinfo_tests {
+    use super::*;
+
+    #[test]
+    fn deviceinfo_response_decodes() {
+        let body = encode_deviceinfo_response(
+            5,
+            "34020000001320000001",
+            "Dummy Cam",
+            "lite-nvr",
+            "dummy-camera",
+            "0.1",
+        );
+        assert_eq!(peek_cmd_type(body.as_bytes()).unwrap(), CmdType::DeviceInfo);
+        let info = decode_deviceinfo(body.as_bytes()).unwrap();
+        assert_eq!(info.sn, 5);
+        assert_eq!(info.device_id, "34020000001320000001");
+        assert_eq!(info.manufacturer, "lite-nvr");
+        assert_eq!(info.model, "dummy-camera");
+    }
+
+    #[test]
+    fn recordinfo_query_decodes() {
+        let q = br#"<?xml version="1.0"?><Query><CmdType>RecordInfo</CmdType>
+<SN>17</SN><DeviceID>34020000001320000001</DeviceID>
+<StartTime>2024-01-01T00:00:00</StartTime><EndTime>2024-01-01T23:59:59</EndTime></Query>"#;
+        assert_eq!(peek_cmd_type(q).unwrap(), CmdType::RecordInfo);
+        let parsed = decode_recordinfo_query(q).unwrap();
+        assert_eq!(parsed.sn, 17);
+        assert_eq!(parsed.start_time, "2024-01-01T00:00:00");
+        assert_eq!(parsed.end_time, "2024-01-01T23:59:59");
+    }
+
+    #[test]
+    fn recordinfo_response_round_trips() {
+        let records = vec![RecordItem {
+            device_id: "34020000001320000001".into(),
+            name: "clip<1>".into(),
+            file_path: "/rec/clip1.mp4".into(),
+            start_time: "2024-01-01T08:00:00".into(),
+            end_time: "2024-01-01T08:05:00".into(),
+        }];
+        let body = encode_recordinfo_response(3, "34020000001320000001", "Dummy Cam", &records);
+        assert_eq!(peek_cmd_type(body.as_bytes()).unwrap(), CmdType::RecordInfo);
+        assert!(body.contains("<Name>clip&lt;1&gt;</Name>")); // escaped
+        let r = decode_recordinfo_response(body.as_bytes()).unwrap();
+        assert_eq!(r.sn, 3);
+        assert_eq!(r.sum_num, 1);
+        assert_eq!(r.items, records); // unescaped on decode
+    }
 }
 
 #[cfg(test)]

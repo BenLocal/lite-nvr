@@ -134,6 +134,10 @@ pub struct OfferSdp {
     pub media_addr: SocketAddr,
     pub ssrc: Option<String>,
     pub transport: Transport,
+    /// Playback/Download time window from the `t=` line (Unix seconds); `0 0`
+    /// for live Play.
+    pub start: u64,
+    pub stop: u64,
 }
 
 /// Parse `s=`, `c=`, `m=video`, `y=` and `a=setup:` from an offer.
@@ -144,10 +148,16 @@ pub fn parse_offer(sdp: &str) -> Result<OfferSdp> {
     let mut ssrc: Option<String> = None;
     let mut tcp = false;
     let mut setup_active = false;
+    let mut start: u64 = 0;
+    let mut stop: u64 = 0;
     for line in sdp.lines() {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("s=") {
             session = rest.trim().to_string();
+        } else if let Some(rest) = line.strip_prefix("t=") {
+            let mut parts = rest.split_whitespace();
+            start = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            stop = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
         } else if let Some(rest) = line.strip_prefix("c=IN IP4 ") {
             ip = Some(rest.trim());
         } else if let Some(rest) = line.strip_prefix("m=video ") {
@@ -180,6 +190,8 @@ pub fn parse_offer(sdp: &str) -> Result<OfferSdp> {
         media_addr,
         ssrc,
         transport,
+        start,
+        stop,
     })
 }
 
@@ -192,6 +204,9 @@ pub fn build_answer(
     media_port: u16,
     ssrc_str: &str,
     transport: Transport,
+    session: &str,
+    start: u64,
+    stop: u64,
 ) -> String {
     let proto = match transport {
         Transport::Udp => "RTP/AVP",
@@ -200,9 +215,9 @@ pub fn build_answer(
     let mut sdp = String::new();
     sdp.push_str("v=0\r\n");
     sdp.push_str(&format!("o={local_id} 0 0 IN IP4 {media_ip}\r\n"));
-    sdp.push_str("s=Play\r\n");
+    sdp.push_str(&format!("s={session}\r\n"));
     sdp.push_str(&format!("c=IN IP4 {media_ip}\r\n"));
-    sdp.push_str("t=0 0\r\n");
+    sdp.push_str(&format!("t={start} {stop}\r\n"));
     sdp.push_str(&format!("m=video {media_port} {proto} 96\r\n"));
     sdp.push_str("a=sendonly\r\n");
     sdp.push_str("a=rtpmap:96 PS/90000\r\n");
@@ -252,10 +267,38 @@ mod p1_2_sdp_tests {
             40002,
             "0200000001",
             Transport::Udp,
+            "Play",
+            0,
+            0,
         );
         let a = parse_answer(&ans).unwrap();
         assert_eq!(a.media_addr, "127.0.0.1:40002".parse().unwrap());
         assert_eq!(a.ssrc.as_deref(), Some("0200000001"));
         assert!(ans.contains("a=sendonly\r\n"));
+        assert!(ans.contains("s=Play\r\n"));
+    }
+
+    #[test]
+    fn parse_offer_reads_playback_time_range() {
+        let offer = "v=0\r\no=34020000001320000001 0 0 IN IP4 127.0.0.1\r\n\
+s=Playback\r\nc=IN IP4 127.0.0.1\r\nt=1704067200 1704070800\r\n\
+m=video 40000 RTP/AVP 96\r\ny=0200000001\r\n";
+        let o = parse_offer(offer).unwrap();
+        assert_eq!(o.session, "Playback");
+        assert_eq!(o.start, 1704067200);
+        assert_eq!(o.stop, 1704070800);
+        // A Playback answer echoes the session + range.
+        let ans = build_answer(
+            "dev",
+            "127.0.0.1",
+            40002,
+            "0200000001",
+            Transport::Udp,
+            &o.session,
+            o.start,
+            o.stop,
+        );
+        assert!(ans.contains("s=Playback\r\n"));
+        assert!(ans.contains("t=1704067200 1704070800\r\n"));
     }
 }
