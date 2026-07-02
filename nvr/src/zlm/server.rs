@@ -43,6 +43,13 @@ pub(crate) fn start_zlm_server(
                         media.url_info.stream()
                     );
                     log::info!("ZLM: media publish, url: {}", url_info);
+                    // Authorize the publish (empty err = OK). Required for external
+                    // pushes such as a GB28181 pull's RtpProcess — without it ZLM
+                    // buffers frames waiting on this hook, then times out and
+                    // detaches, so the stream never goes live.
+                    if let Err(e) = media.auth_invoker.call("", false, false) {
+                        log::warn!("ZLM: publish auth invoke failed: {e:#}");
+                    }
                 });
                 let runtime_nf = runtime.clone();
                 events.on_media_not_found(move |media| {
