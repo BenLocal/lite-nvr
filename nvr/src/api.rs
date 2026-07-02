@@ -10,7 +10,8 @@ pub(crate) fn start_api_server(cancel: CancellationToken, port: u16) {
             .nest("/user", crate::handler::user::user_router())
             .nest("/pipe", crate::handler::media_pipe::media_pipe_router())
             .nest("/system", crate::handler::system::system_router())
-            .nest("/gb", crate::gb::api::gb_router());
+            .nest("/gb", crate::gb::api::gb_router())
+            .nest("/transport", crate::transport::api::transport_router());
 
         let app = Router::new()
             .nest("/api", api)

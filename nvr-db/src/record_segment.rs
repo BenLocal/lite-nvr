@@ -275,6 +275,37 @@ pub async fn count_by_streams(
     Ok(result)
 }
 
+/// Record segments that still need copying to `target_id`: either no transport
+/// job exists yet, or the last attempt failed and is still under `max_attempts`.
+/// Oldest first (transport in recording order), capped at `limit`.
+pub async fn list_needing_transport(
+    target_id: &str,
+    max_attempts: i64,
+    limit: usize,
+    conn: &Connection,
+) -> anyhow::Result<Vec<RecordSegment>> {
+    let sql = format!(
+        r#"
+        SELECT
+            rs.id, rs.record_type, rs.start_time, rs.duration, rs.file_size, rs.file_name, rs.file_path, rs.folder, rs.app, rs.stream, rs.vhost,
+            rs.video_codec, rs.video_width, rs.video_height, rs.video_fps, rs.video_bit_rate,
+            rs.audio_codec, rs.audio_sample_rate, rs.audio_channels, rs.audio_bit_rate,
+            rs.reserve_text1, rs.reserve_text2, rs.reserve_text3, rs.reserve_int1, rs.reserve_int2, rs.create_time, rs.update_time
+        FROM record_segments rs
+        LEFT JOIN transport_jobs tj ON tj.segment_id = rs.id AND tj.target_id = ?1
+        WHERE tj.id IS NULL OR (tj.status = 2 AND tj.attempts < {max_attempts})
+        ORDER BY rs.start_time ASC
+        LIMIT {limit}
+        "#,
+    );
+    let mut rows = conn.query(&sql, [target_id]).await?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next().await? {
+        records.push(record_from_row(&row)?);
+    }
+    Ok(records)
+}
+
 pub async fn get(id: &str, conn: &Connection) -> anyhow::Result<Option<RecordSegment>> {
     let mut rows = conn
         .query(

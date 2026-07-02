@@ -10,6 +10,7 @@ mod gb;
 mod handler;
 mod init;
 mod manager;
+mod transport;
 mod xiaomi;
 mod zlm;
 
@@ -61,6 +62,10 @@ async fn main() -> ! {
     // init device pipes
     let cancel_clone = cancel.clone();
     crate::init::device::init_device_pipes(ready_rx, cancel_clone).unwrap();
+
+    // start the record-segment transport worker (copies segments to remote
+    // storage targets configured via the API)
+    transport::spawn_worker(cancel.clone());
 
     // start api server
     let cancel_clone = cancel.clone();

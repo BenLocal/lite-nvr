@@ -35,6 +35,9 @@ turso = { workspace = true }
 argon2 = { workspace = true }
 harsh = { workspace = true }
 md5 = { workspace = true }
+# Record-segment transport backends (blocking clients, driven via spawn_blocking).
+suppaftp = "6"
+pavao = "0.2"
 
 # Only built when target is Linux (see also build.rs for feature "linux" cfg)
 [target.'cfg(target_os = "linux")'.dependencies]
