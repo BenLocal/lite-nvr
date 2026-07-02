@@ -6,6 +6,7 @@ use crate::db::init_app_db;
 mod api;
 mod config;
 mod db;
+mod gb;
 mod handler;
 mod init;
 mod manager;

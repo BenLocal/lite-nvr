@@ -27,6 +27,7 @@ nvr-dashboard = { path = "../nvr-dashboard" }
 media-pipe-core = { path = "../crates/media-pipe-core" }
 media-pipe-zlm = { path = "../crates/media-pipe-zlm" }
 xiaomi = { path = "../crates/xiaomi" }
+gb28181 = { path = "../crates/gb28181" }
 rszlm = { workspace = true }
 uuid = { workspace = true }
 turso = { workspace = true }

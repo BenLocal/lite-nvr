@@ -2436,6 +2436,7 @@ dependencies = [
  "env_logger",
  "ffmpeg-bus",
  "futures",
+ "gb28181",
  "harsh",
  "log",
  "md5",
