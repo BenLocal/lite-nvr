@@ -219,6 +219,45 @@ impl GbServer {
         Ok(acc.finish())
     }
 
+    /// Send a PTZ / front-end `DeviceControl` to `channel_id` on `device_id`.
+    /// The SIP MESSAGE goes to the device's registered contact; the MANSCDP
+    /// `<DeviceID>` is the camera channel being controlled. Signaling-only.
+    pub async fn device_control(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        cmd: crate::ptz::PtzCommand,
+    ) -> Result<()> {
+        let inner = &self.inner;
+        let dest = inner
+            .dests
+            .lock()
+            .unwrap()
+            .get(device_id)
+            .cloned()
+            .ok_or_else(|| GbError::DeviceOffline(device_id.to_string()))?;
+        let sn = inner.sn.fetch_add(1, Ordering::Relaxed);
+        let ptz_hex = crate::ptz::encode_ptz_cmd(&cmd, 1);
+        let body = manscdp::encode_device_control(sn, channel_id, &ptz_hex);
+        // Hoist the endpoint ref (rsipstack 0.5.3 E0515 — see catalog_query).
+        let ep = inner.ep.inner();
+        let send = || {
+            send_out_of_dialog_message(
+                &ep,
+                (&inner.cfg.sip_id, &inner.cfg.domain),
+                (device_id, &inner.cfg.domain),
+                dest.clone(),
+                inner.ep.next_cseq(),
+                body.clone(),
+            )
+        };
+        // Retry once on transport/transaction failure (spec §3 row 9).
+        match send().await {
+            Ok(_) => Ok(()),
+            Err(_) => send().await.map(|_| ()),
+        }
+    }
+
     /// INVITE `channel_id` on `device_id` to start pushing media to
     /// `spec.media_addr` (the caller's already-open receiver). On 200 OK the
     /// answer's media address lands in `spec.negotiated_remote` (needed for
