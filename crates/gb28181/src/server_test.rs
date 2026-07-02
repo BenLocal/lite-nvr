@@ -153,3 +153,83 @@ async fn provider_unknown_device_is_forbidden() {
     assert!(server.devices().is_empty());
     server.shutdown();
 }
+
+/// Send one MANSCDP body as a MESSAGE from a throwaway endpoint.
+pub(crate) async fn raw_message(
+    server_addr: std::net::SocketAddr,
+    from_id: &str,
+    to_id: &str,
+    body: String,
+) -> rsip::Response {
+    let (ep, _streams) =
+        crate::endpoint::SipEndpoint::bind_udp("127.0.0.1:0".parse().unwrap(), "raw-test-client")
+            .await
+            .unwrap();
+    let dest = rsipstack::transport::SipAddr::from(server_addr);
+    let resp = tokio::time::timeout(
+        Duration::from_secs(5),
+        crate::endpoint::send_out_of_dialog_message(
+            &ep.inner(),
+            (from_id, DOMAIN),
+            (to_id, DOMAIN),
+            dest,
+            ep.next_cseq(),
+            body,
+        ),
+    )
+    .await
+    .expect("message timed out")
+    .expect("message failed");
+    ep.shutdown();
+    resp
+}
+
+#[tokio::test]
+async fn keepalive_refreshes_and_emits_event() {
+    let cfg = GbServerConfig::new(PLATFORM, DOMAIN, "127.0.0.1:0".parse().unwrap());
+    let (server, mut events) = GbServer::bind(cfg).await.unwrap();
+    raw_register(DEVICE, "x", DOMAIN, PLATFORM, server.local_addr(), 3600).await;
+    wait_for(&mut events, |e| matches!(e, GbEvent::Registered { .. })).await;
+
+    let body = crate::manscdp::encode_keepalive_notify(1, DEVICE);
+    let resp = raw_message(server.local_addr(), DEVICE, PLATFORM, body).await;
+    assert_eq!(resp.status_code, rsip::StatusCode::OK);
+    wait_for(&mut events, |e| {
+        matches!(e, GbEvent::KeepaliveReceived { .. })
+    })
+    .await;
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn keepalive_from_unknown_device_is_not_found() {
+    let cfg = GbServerConfig::new(PLATFORM, DOMAIN, "127.0.0.1:0".parse().unwrap());
+    let (server, _events) = GbServer::bind(cfg).await.unwrap();
+    let body = crate::manscdp::encode_keepalive_notify(1, "99999999999999999999");
+    let resp = raw_message(server.local_addr(), "99999999999999999999", PLATFORM, body).await;
+    assert_eq!(resp.status_code, rsip::StatusCode::NotFound);
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn missed_keepalive_marks_offline() {
+    let mut cfg = GbServerConfig::new(PLATFORM, DOMAIN, "127.0.0.1:0".parse().unwrap());
+    cfg.keepalive_grace = 1; // offline after 1s without keepalive
+    cfg.sweep_interval = Duration::from_millis(100);
+    let (server, mut events) = GbServer::bind(cfg).await.unwrap();
+    raw_register(DEVICE, "x", DOMAIN, PLATFORM, server.local_addr(), 3600).await;
+    wait_for(&mut events, |e| matches!(e, GbEvent::Registered { .. })).await;
+
+    // No keepalive for >1s -> sweep flips it offline (registration not expired).
+    let e = wait_for(&mut events, |e| matches!(e, GbEvent::Offline { .. })).await;
+    assert_eq!(
+        e,
+        GbEvent::Offline {
+            device_id: DEVICE.into()
+        }
+    );
+    let devices = server.devices();
+    assert_eq!(devices.len(), 1);
+    assert!(!devices[0].online);
+    server.shutdown();
+}
