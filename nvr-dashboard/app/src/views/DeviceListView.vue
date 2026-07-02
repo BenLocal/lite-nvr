@@ -72,7 +72,8 @@ async function loadGbStreams() {
     for (const s of list) map[s.stream_id] = s;
     gbStreamStatus.value = map;
   } catch {
-    gbStreamStatus.value = {};
+    // Keep the last-known status on a transient poll failure instead of
+    // flashing every row to 空闲; the next successful poll reconciles.
   }
 }
 let gbTimer: ReturnType<typeof setInterval> | undefined;
