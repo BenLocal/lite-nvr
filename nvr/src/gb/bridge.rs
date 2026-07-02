@@ -114,7 +114,14 @@ impl GbBridge {
             let remote = session.spec.negotiated_remote.ok_or_else(|| {
                 anyhow::anyhow!("gb28181: tcp-active pull for {stream_id} got no negotiated remote")
             })?;
-            handle.connect(remote).await?;
+            // Bound the active connect: if ZLM's connect callback never fires,
+            // don't pin the RtpServer + this task forever. On timeout the error
+            // propagates and `handle` drops -> CloseRtp releases the port.
+            tokio::time::timeout(std::time::Duration::from_secs(5), handle.connect(remote))
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!("gb28181: tcp-active connect timed out for {stream_id}")
+                })??;
         }
         self.active.lock().unwrap().insert(
             stream_id.to_string(),
