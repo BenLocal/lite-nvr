@@ -873,6 +873,7 @@ async function copyText(value: string, label: string) {
       modal
       header="云台控制"
       :style="{ width: 'min(22rem, calc(100vw - 2rem))' }"
+      @hide="ptzRelease"
     >
       <div class="ptz-pad">
         <span />

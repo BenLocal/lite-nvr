@@ -15,7 +15,11 @@ moves the wrong way or nothing happens, fix the bit map in
 4. **Speed:** raise the 速度 slider → the same direction moves faster.
 5. **Presets:** point the camera somewhere, set 预置位 = 1, click 设置; move away;
    click 调用 → the camera returns to the saved position; click 删除 to remove it.
-6. **Offline device:** stop the camera; a PTZ press returns an error (HTTP 500,
+6. **Stop-on-close safety:** hold a direction (camera moving), then press **Esc**
+   (or click outside) to close the dialog WITHOUT releasing → the camera must
+   STOP (the dialog's `@hide` sends a stop). A camera that keeps moving after the
+   dialog closes is a regression of the `@hide="ptzRelease"` net.
+7. **Offline device:** stop the camera; a PTZ press returns an error (HTTP 500,
    "device offline") and the UI stays usable.
 7. **GB disabled:** with `NVR_GB_ENABLE` unset, `POST /api/gb/ptz` returns the
    "GB support is not enabled" error (the 云台 button only shows for gb devices).
