@@ -8,6 +8,7 @@ members = [
     "crates/media-pipe-core",
     "crates/media-pipe-zlm",
     "crates/xiaomi",
+    "examples/dummy-camera",
 ]
 resolver = "1"
 

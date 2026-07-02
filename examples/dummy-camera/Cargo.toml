@@ -1,0 +1,14 @@
+[package]
+name = "dummy-camera"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "A GB28181 device (下级设备) emulator: registers to an NVR/platform like a real Hikvision IPC, answers Catalog/INVITE, and pushes looping PS/RTP H.264."
+
+[dependencies]
+gb28181 = { path = "../../crates/gb28181" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
