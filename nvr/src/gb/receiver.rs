@@ -52,7 +52,7 @@ impl MediaReceiver for ZlmRtpReceiver {
         transport: Transport,
     ) -> anyhow::Result<Box<dyn ReceiverHandle>> {
         let tcp_mode = match transport {
-            Transport::Udp => 0,
+            Transport::Udp => rszlm::server::RtpServerTcpMode::Disabled,
             // TCP media is deferred (P1-3 is UDP-only); reject explicitly rather
             // than silently mis-binding.
             Transport::TcpPassive | Transport::TcpActive => {
