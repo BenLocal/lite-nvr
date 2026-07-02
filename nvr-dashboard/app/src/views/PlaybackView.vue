@@ -27,7 +27,7 @@ import {
 import { useAppToast } from '../utils/toast'
 
 const DAY_SECONDS = 24 * 60 * 60
-const TIMELINE_TICKS = [0, 6, 12, 18, 24]
+const TIMELINE_MAX_ZOOM = 48
 
 type PlaybackMode = 'segment' | 'playlist'
 type HlsErrorData = { fatal?: boolean; type?: string; details?: string }
@@ -58,6 +58,8 @@ const devices = ref<DevicePlaybackItem[]>([])
 const activeDeviceId = ref('')
 const playerRef = ref<HTMLVideoElement | null>(null)
 const timelineTrackRef = ref<HTMLDivElement | null>(null)
+const timelineScrollRef = ref<HTMLDivElement | null>(null)
+const timelineZoom = ref(1)
 const hlsPlayerRef = ref<HlsPlayer | null>(null)
 const currentSegmentId = ref('')
 const currentPlayerUrl = ref('')
@@ -139,6 +141,23 @@ const currentSegmentElapsed = computed(() => {
 
 const timelineBackground = computed(() => buildTimelineBackground(todaySegments.value))
 
+// The zoomed timeline content is `zoom * 100%` wide inside a horizontally
+// scrollable viewport, so 1× fills the track and higher zooms spread the day
+// across more pixels for precise seeking.
+const timelineContentStyle = computed(() => ({ width: `${timelineZoom.value * 100}%` }))
+
+const timelineTicks = computed(() => {
+  const step = tickStepSeconds(timelineZoom.value)
+  const ticks: { second: number; leftPct: number; label: string; transform: string }[] = []
+  for (let second = 0; second <= DAY_SECONDS; second += step) {
+    const leftPct = (second / DAY_SECONDS) * 100
+    const transform =
+      second === 0 ? 'translateX(0)' : leftPct >= 100 ? 'translateX(-100%)' : 'translateX(-50%)'
+    ticks.push({ second, leftPct, label: formatTickLabel(second, step), transform })
+  }
+  return ticks
+})
+
 onMounted(() => {
   void loadPlayback()
 })
@@ -169,6 +188,23 @@ watch(
     await attachPlayerSource()
   },
 )
+
+// While zoomed in, keep the moving playback marker within the scrolled viewport.
+watch(timelineSecond, (second) => {
+  if (timelineZoom.value <= 1 || isDraggingTimeline.value) {
+    return
+  }
+  const scroll = timelineScrollRef.value
+  if (!scroll) {
+    return
+  }
+  const x = (second / DAY_SECONDS) * scroll.scrollWidth
+  const viewLeft = scroll.scrollLeft
+  const viewRight = viewLeft + scroll.clientWidth
+  if (x < viewLeft + 40 || x > viewRight - 40) {
+    scroll.scrollLeft = x - scroll.clientWidth / 2
+  }
+})
 
 async function loadPlayback() {
   loading.value = true
@@ -519,9 +555,92 @@ function updateTimelineFromPointer(clientX: number) {
   if (!track) {
     return
   }
+  // `track` spans the full (possibly zoomed) day width; its rect already
+  // accounts for horizontal scroll, so this maps a click to a day-second.
   const rect = track.getBoundingClientRect()
   const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
   timelineSecond.value = Math.round(ratio * DAY_SECONDS)
+}
+
+// Coarser ticks when zoomed out, finer as the day widens, so labels stay legible.
+function tickStepSeconds(zoom: number) {
+  if (zoom >= 32) return 60
+  if (zoom >= 16) return 300
+  if (zoom >= 8) return 900
+  if (zoom >= 4) return 1800
+  if (zoom >= 2) return 3600
+  return 7200
+}
+
+function formatTickLabel(second: number, step: number) {
+  const clamped = Math.min(DAY_SECONDS, second)
+  const hours = String(Math.floor(clamped / 3600)).padStart(2, '0')
+  const minutes = String(Math.floor((clamped % 3600) / 60)).padStart(2, '0')
+  return step >= 3600 ? `${hours}:00` : `${hours}:${minutes}`
+}
+
+function clampZoom(zoom: number) {
+  return Math.min(TIMELINE_MAX_ZOOM, Math.max(1, zoom))
+}
+
+function centerTimelineOn(second: number) {
+  const scroll = timelineScrollRef.value
+  if (!scroll) {
+    return
+  }
+  const ratio = Math.max(0, Math.min(1, second / DAY_SECONDS))
+  scroll.scrollLeft = ratio * scroll.scrollWidth - scroll.clientWidth / 2
+}
+
+async function applyTimelineZoom(nextZoom: number, anchorSecond: number) {
+  const zoom = clampZoom(nextZoom)
+  if (zoom === timelineZoom.value) {
+    return
+  }
+  timelineZoom.value = zoom
+  await nextTick()
+  centerTimelineOn(anchorSecond)
+}
+
+function zoomInTimeline() {
+  void applyTimelineZoom(timelineZoom.value * 2, timelineSecond.value)
+}
+
+function zoomOutTimeline() {
+  void applyTimelineZoom(timelineZoom.value / 2, timelineSecond.value)
+}
+
+function resetTimelineZoom() {
+  timelineZoom.value = 1
+  void nextTick(() => {
+    if (timelineScrollRef.value) {
+      timelineScrollRef.value.scrollLeft = 0
+    }
+  })
+}
+
+// Wheel over the timeline zooms in/out, anchored on the cursor so the second
+// under the pointer stays put. `@wheel.prevent` keeps the page from scrolling.
+function onTimelineWheel(event: WheelEvent) {
+  const scroll = timelineScrollRef.value
+  if (!scroll) {
+    return
+  }
+  const rect = scroll.getBoundingClientRect()
+  const anchorSecond =
+    ((event.clientX - rect.left + scroll.scrollLeft) / scroll.scrollWidth) * DAY_SECONDS
+  const zoom = clampZoom(timelineZoom.value * (event.deltaY < 0 ? 1.3 : 1 / 1.3))
+  if (zoom === timelineZoom.value) {
+    return
+  }
+  timelineZoom.value = zoom
+  void nextTick(() => {
+    const el = timelineScrollRef.value
+    if (!el) {
+      return
+    }
+    el.scrollLeft = (anchorSecond / DAY_SECONDS) * el.scrollWidth - (event.clientX - rect.left)
+  })
 }
 
 function resolveTimelineTarget(targetSecond: number) {
@@ -683,6 +802,7 @@ function resetPlayback(resetTimeline: boolean) {
   currentSegmentId.value = ''
   currentPlayerUrl.value = ''
   pendingSeekSecond.value = null
+  timelineZoom.value = 1
   if (resetTimeline) {
     timelineSecond.value = 0
   }
@@ -999,23 +1119,63 @@ function formatDaySecond(second: number) {
           </div>
 
           <div class="timeline-track-shell">
-            <div class="timeline-scale">
-              <span v-for="tick in TIMELINE_TICKS" :key="tick">
-                {{ String(tick).padStart(2, '0') }}:00
+            <div class="timeline-zoom-controls">
+              <span class="timeline-zoom-label">
+                刻度 {{ timelineZoom < 10 ? timelineZoom.toFixed(1) : Math.round(timelineZoom) }}×
               </span>
+              <Button
+                icon="pi pi-search-minus"
+                text
+                rounded
+                size="small"
+                aria-label="缩小刻度"
+                :disabled="timelineZoom <= 1"
+                @click="zoomOutTimeline"
+              />
+              <Button
+                icon="pi pi-search-plus"
+                text
+                rounded
+                size="small"
+                aria-label="放大刻度"
+                :disabled="timelineZoom >= TIMELINE_MAX_ZOOM"
+                @click="zoomInTimeline"
+              />
+              <Button
+                icon="pi pi-refresh"
+                label="刻度还原"
+                text
+                size="small"
+                :disabled="timelineZoom === 1"
+                @click="resetTimelineZoom"
+              />
             </div>
-            <div
-              ref="timelineTrackRef"
-              class="timeline-track"
-              @pointerdown="startTimelineDrag"
-            >
-              <div class="timeline-track-background" :style="{ background: timelineBackground }" />
-              <div
-                class="timeline-marker"
-                :style="{ left: `${(timelineSecond / DAY_SECONDS) * 100}%` }"
-              >
-                <span class="timeline-marker-line" />
-                <span class="timeline-marker-dot" />
+            <div ref="timelineScrollRef" class="timeline-scroll" @wheel.prevent="onTimelineWheel">
+              <div class="timeline-content" :style="timelineContentStyle">
+                <div class="timeline-scale">
+                  <span
+                    v-for="tick in timelineTicks"
+                    :key="tick.second"
+                    class="timeline-tick"
+                    :style="{ left: `${tick.leftPct}%`, transform: tick.transform }"
+                  >
+                    {{ tick.label }}
+                  </span>
+                </div>
+                <div
+                  ref="timelineTrackRef"
+                  class="timeline-track"
+                  @pointerdown="startTimelineDrag"
+                >
+                  <div class="timeline-track-background" :style="{ background: timelineBackground }" />
+                  <div
+                    class="timeline-marker"
+                    :style="{ left: `${(timelineSecond / DAY_SECONDS) * 100}%` }"
+                  >
+                    <span class="timeline-marker-line" />
+                    <span class="timeline-marker-dot" />
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -1023,6 +1183,7 @@ function formatDaySecond(second: number) {
           <div class="timeline-hint-row">
             <Tag severity="secondary" value="灰色: 无片段" />
             <Tag severity="info" value="蓝色: 有片段" />
+            <Tag severity="contrast" value="滚轮/按钮缩放刻度" />
             <Button
               icon="pi pi-history"
               label="使用当天连续回放"
@@ -1565,18 +1726,61 @@ function formatDaySecond(second: number) {
   gap: 0.6rem;
 }
 
-.timeline-scale {
+.timeline-zoom-controls {
   display: flex;
-  justify-content: space-between;
-  gap: 0.5rem;
+  align-items: center;
+  gap: 0.35rem;
+  justify-content: flex-end;
+}
+
+.timeline-zoom-label {
+  margin-right: auto;
+  color: #94a3b8;
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-scroll {
+  padding-bottom: 0.35rem;
+  overflow: auto hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(96 165 250 / 55%) transparent;
+}
+
+.timeline-scroll::-webkit-scrollbar {
+  height: 0.4rem;
+}
+
+.timeline-scroll::-webkit-scrollbar-thumb {
+  background: rgb(96 165 250 / 55%);
+  border-radius: 999px;
+}
+
+.timeline-content {
+  position: relative;
+  min-width: 100%;
+}
+
+.timeline-scale {
+  position: relative;
+  height: 1rem;
+  margin-bottom: 0.3rem;
   color: #64748b;
   font-size: 0.6875rem;
   font-weight: 500;
 }
 
+.timeline-tick {
+  position: absolute;
+  top: 0;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 .timeline-track {
   position: relative;
-  height: 2.75rem;
+  height: 3.25rem;
   cursor: pointer;
 }
 
@@ -1584,8 +1788,8 @@ function formatDaySecond(second: number) {
   position: absolute;
   left: 0;
   right: 0;
-  top: 1.25rem;
-  height: 0.5rem;
+  top: 1.35rem;
+  height: 0.95rem;
   border-radius: 999px;
   border: 1px solid rgb(148 163 184 / 20%);
   overflow: hidden;
@@ -1601,7 +1805,7 @@ function formatDaySecond(second: number) {
 .timeline-marker-line {
   display: block;
   width: 2px;
-  height: 2.1rem;
+  height: 2.85rem;
   margin: 0 auto;
   background: #3b82f6;
   box-shadow: 0 0 8px rgb(59 130 246 / 60%);
@@ -1609,8 +1813,8 @@ function formatDaySecond(second: number) {
 
 .timeline-marker-dot {
   display: block;
-  width: 0.75rem;
-  height: 0.75rem;
+  width: 0.85rem;
+  height: 0.85rem;
   margin: -0.15rem auto 0;
   border-radius: 999px;
   background: #3b82f6;
