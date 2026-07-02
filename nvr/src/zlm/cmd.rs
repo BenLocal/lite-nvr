@@ -29,6 +29,8 @@ pub enum ZlmCmd {
     /// Drop the `RtpServer` for `stream_id` (releases the port). Fire-and-forget.
     CloseRtp { stream_id: String },
     /// Query live RTP receive info for `app`/`stream`.
+    // Consumed by P4b (GET /gb/streams); no caller in P4a yet.
+    #[allow(dead_code)]
     GetRtpInfo {
         app: String,
         stream: String,
@@ -123,6 +125,8 @@ impl ZlmControl {
         }
     }
 
+    // Consumed by P4b (GET /gb/streams); no caller in P4a yet.
+    #[allow(dead_code)]
     pub async fn rtp_info(&self, app: &str, stream: &str) -> Option<RtpInfo> {
         let (reply, rx) = oneshot::channel();
         if self
