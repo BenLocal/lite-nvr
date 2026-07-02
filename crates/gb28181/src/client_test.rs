@@ -85,3 +85,32 @@ async fn client_register_fails_with_wrong_password() {
     client.shutdown();
     server.shutdown();
 }
+
+#[tokio::test]
+async fn catalog_query_returns_client_channels() {
+    let (server, mut server_events, client, _client_events) = bound_pair(None).await;
+    client.register().await.unwrap();
+    wait_for(&mut server_events, |e| {
+        matches!(e, GbEvent::Registered { .. })
+    })
+    .await;
+
+    let catalog = tokio::time::timeout(Duration::from_secs(10), server.catalog_query(DEVICE))
+        .await
+        .expect("catalog query timed out")
+        .expect("catalog query failed");
+    assert!(!catalog.incomplete);
+    assert_eq!(catalog.items, test_channels());
+
+    client.shutdown();
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn catalog_query_for_unknown_device_is_offline_error() {
+    let (server, _se, client, _ce) = bound_pair(None).await;
+    let err = server.catalog_query("99999999999999999999").await;
+    assert!(matches!(err, Err(crate::error::GbError::DeviceOffline(_))));
+    client.shutdown();
+    server.shutdown();
+}

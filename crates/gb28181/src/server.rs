@@ -17,16 +17,15 @@ use rsipstack::transport::SipAddr;
 use tokio::sync::mpsc;
 
 use crate::auth::{AuthConfig, AuthDecision};
-use crate::endpoint::{SipEndpoint, sip_err};
-use crate::error::Result;
+use crate::endpoint::{SipEndpoint, send_out_of_dialog_message, sip_err};
+use crate::error::{GbError, Result};
 use crate::event::GbEvent;
 use crate::gbcode::{SsrcGenerator, SsrcKind};
-use crate::manscdp::{self, CmdType};
+use crate::manscdp::{self, Catalog, CatalogAccumulator, CmdType};
 use crate::registrar::{Registrar, RegistrarChange, SweepOutcome};
 use crate::types::{RegisteredDevice, Transport};
 
-// NOTE: Task 9 extends these imports with `Catalog`, `CatalogAccumulator` and
-// `send_out_of_dialog_message`; Task 10 adds `InviteOption`, `sdp`, `MediaSpec`.
+// NOTE: Task 10 extends these imports with `InviteOption`, `sdp`, `MediaSpec`.
 // Do NOT add them now — clippy runs with -D warnings (unused imports fail).
 
 pub struct GbServerConfig {
@@ -85,8 +84,7 @@ struct ServerInner {
     /// Confirmed media dialog ids we own (for SessionClosed events).
     sessions: Mutex<HashMap<String, ()>>,
     events: mpsc::UnboundedSender<GbEvent>,
-    // Read by Task 9 (Catalog/DeviceInfo query SN counter); no reader yet.
-    #[allow(dead_code)]
+    /// Query SN counter (Catalog/DeviceInfo).
     sn: AtomicU64,
     nonce_seq: AtomicU64,
     ssrc: SsrcGenerator,
@@ -140,6 +138,59 @@ impl GbServer {
     /// Allocate the next GB-format SSRC for a caller building a MediaSpec.
     pub fn next_ssrc(&self, kind: SsrcKind) -> (u32, String) {
         self.inner.ssrc.next(kind)
+    }
+
+    /// MANSCDP Catalog query: send, then aggregate response chunks by SN
+    /// until SumNum is reached or `query_timeout` elapses. Partial results
+    /// come back with `incomplete = true` (spec §3 row 9).
+    pub async fn catalog_query(&self, device_id: &str) -> Result<Catalog> {
+        let inner = &self.inner;
+        let dest = inner
+            .dests
+            .lock()
+            .unwrap()
+            .get(device_id)
+            .cloned()
+            .ok_or_else(|| GbError::DeviceOffline(device_id.to_string()))?;
+        let sn = inner.sn.fetch_add(1, Ordering::Relaxed);
+        let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel();
+        inner.pending_catalog.lock().unwrap().insert(sn, chunk_tx);
+
+        let body = manscdp::encode_catalog_query(sn, device_id);
+        // Hoist the endpoint ref: `&inner.ep.inner()` inline would create a
+        // temporary that the returned future outlives (rsipstack 0.5.3 E0515).
+        let ep = inner.ep.inner();
+        let send = || {
+            send_out_of_dialog_message(
+                &ep,
+                (&inner.cfg.sip_id, &inner.cfg.domain),
+                (device_id, &inner.cfg.domain),
+                dest.clone(),
+                inner.ep.next_cseq(),
+                body.clone(),
+            )
+        };
+        // Auto-retry once on transport/transaction failure (spec §3 row 9).
+        let sent = match send().await {
+            Ok(resp) => Ok(resp),
+            Err(_) => send().await,
+        };
+        if let Err(e) = sent {
+            inner.pending_catalog.lock().unwrap().remove(&sn);
+            return Err(e);
+        }
+
+        let mut acc = CatalogAccumulator::new(sn);
+        let deadline = tokio::time::Instant::now() + inner.cfg.query_timeout;
+        // A non-`Ok(Some)` (channel closed or `query_timeout` elapsed) ends the loop.
+        while let Ok(Some(chunk)) = tokio::time::timeout_at(deadline, chunk_rx.recv()).await {
+            acc.push(chunk);
+            if acc.is_complete() {
+                break;
+            }
+        }
+        inner.pending_catalog.lock().unwrap().remove(&sn);
+        Ok(acc.finish())
     }
 
     pub fn shutdown(&self) {
