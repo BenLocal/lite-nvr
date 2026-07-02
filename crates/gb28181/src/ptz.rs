@@ -1,6 +1,23 @@
 //! GB/T 28181 front-end control (`<PTZCmd>`) — the 8-byte pan/tilt/zoom/preset
 //! command. Pure + media-agnostic: this only builds the hex string that goes
 //! into a MANSCDP `DeviceControl` message.
+//!
+//! The 8 bytes (emitted as 16 uppercase hex chars):
+//!
+//! | Byte | Meaning |
+//! |------|---------|
+//! | B0 | `0xA5` fixed leading magic |
+//! | B1 | `0x0F` = version `0` (high nibble) + checkbit `(0xA+0x5+0)&0xF` (low) |
+//! | B2 | address low byte (single-camera default `0x01`) |
+//! | B3 | command byte — movement bits OR preset opcode (below) |
+//! | B4 | pan (horizontal) speed `0x00–0xFF` (0 for presets) |
+//! | B5 | tilt (vertical) speed `0x00–0xFF` (preset **number** for presets) |
+//! | B6 | high nibble = zoom speed `0x0–0xF`; low nibble = address high bits (0) |
+//! | B7 | checksum = `(B0+B1+B2+B3+B4+B5+B6) & 0xFF` |
+//!
+//! B3 movement bits (combinable): `0x01` zoom-out, `0x02` zoom-in, `0x04` down,
+//! `0x08` up, `0x10` left, `0x20` right; all-zero = stop.
+//! B3 preset opcodes: `0x81` set, `0x82` call, `0x83` delete (number in B5).
 
 /// A front-end control command. `Move` carries independent direction + zoom
 /// bits (any combination; all-false = stop); presets carry a 1..=255 number.
@@ -103,7 +120,7 @@ pub fn encode_ptz_cmd(cmd: &PtzCommand, address: u8) -> String {
         }
     }
     // B7: checksum = sum of the first 7 bytes, mod 256.
-    b[7] = b[..7].iter().fold(0u16, |acc, &x| acc + x as u16) as u8;
+    b[7] = b[..7].iter().fold(0u8, |acc, &x| acc.wrapping_add(x));
     b.iter().map(|x| format!("{x:02X}")).collect()
 }
 

@@ -587,22 +587,23 @@ pub fn decode_device_control(body: &[u8]) -> Result<DeviceControl> {
 
 #[cfg(test)]
 mod device_control_tests {
+    use super::*;
+
     #[test]
     fn device_control_round_trips_cmd_type() {
-        let body =
-            crate::manscdp::encode_device_control(7, "34020000001320000001", "A50F0108002000DD");
+        let body = encode_device_control(7, "34020000001320000001", "A50F0108002000DD");
         assert!(body.contains("<CmdType>DeviceControl</CmdType>"));
         assert!(body.contains("<PTZCmd>A50F0108002000DD</PTZCmd>"));
         assert_eq!(
-            crate::manscdp::peek_cmd_type(body.as_bytes()).unwrap(),
-            crate::manscdp::CmdType::DeviceControl
+            peek_cmd_type(body.as_bytes()).unwrap(),
+            CmdType::DeviceControl
         );
     }
 
     #[test]
     fn decode_device_control_extracts_ptz() {
         let body = br#"<Control><CmdType>DeviceControl</CmdType><SN>9</SN><DeviceID>34020000001320000001</DeviceID><PTZCmd>A50F01820005003C</PTZCmd></Control>"#;
-        let dc = crate::manscdp::decode_device_control(body).unwrap();
+        let dc = decode_device_control(body).unwrap();
         assert_eq!(dc.sn, 9);
         assert_eq!(dc.device_id, "34020000001320000001");
         assert_eq!(dc.ptz_cmd, "A50F01820005003C");
