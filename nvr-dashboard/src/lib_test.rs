@@ -18,7 +18,7 @@ async fn serves_index_with_no_cache() {
     );
     assert_eq!(
         res.headers().get(header::CACHE_CONTROL).unwrap(),
-        "no-cache"
+        "no-store, no-cache, must-revalidate"
     );
 }
 
