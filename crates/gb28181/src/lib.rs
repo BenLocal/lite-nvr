@@ -14,7 +14,11 @@ pub mod sdp;
 pub mod server;
 pub mod types;
 
-pub use client::{GbClient, GbClientConfig};
+pub use auth::AuthConfig;
+pub use client::{ClientMediaHandle, GbClient, GbClientConfig, InviteNegotiation};
 pub use error::GbError;
 pub use event::GbEvent;
-pub use server::{GbServer, GbServerConfig};
+pub use gbcode::SsrcKind;
+pub use manscdp::{Catalog, CatalogItem};
+pub use server::{GbServer, GbServerConfig, MediaSession};
+pub use types::{MediaSpec, RegisteredDevice, StreamType, Transport};
