@@ -428,7 +428,9 @@ mod deviceinfo_tests {
 
 /// Escape XML text content (NOT attribute-safe; we only emit text nodes).
 fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Keepalive `<Notify>` a device SENDS to its platform. Strict UTF-8 encode.
@@ -451,7 +453,9 @@ pub fn encode_keepalive_notify(sn: u64, device_id: &str) -> String {
 pub fn encode_catalog_response(sn: u64, device_id: &str, items: &[CatalogItem]) -> String {
     let mut s = String::new();
     s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<Response>\r\n<CmdType>Catalog</CmdType>\r\n");
-    s.push_str(&format!("<SN>{sn}</SN>\r\n<DeviceID>{device_id}</DeviceID>\r\n"));
+    s.push_str(&format!(
+        "<SN>{sn}</SN>\r\n<DeviceID>{device_id}</DeviceID>\r\n"
+    ));
     s.push_str(&format!(
         "<SumNum>{}</SumNum>\r\n<DeviceList Num=\"{}\">\r\n",
         items.len(),

@@ -98,6 +98,9 @@ impl SipEndpoint {
 
 /// Send one out-of-dialog MANSCDP MESSAGE to `dest` and wait for the final
 /// response. `from`/`to` are `(user, domain)` pairs.
+// Only exercised by this module's test for now; `client.rs` (a later task,
+// out of P1-2 Tasks 1-4 scope) becomes the real caller.
+#[allow(dead_code)]
 pub(crate) async fn send_out_of_dialog_message(
     endpoint: &EndpointInnerRef,
     from: (&str, &str),

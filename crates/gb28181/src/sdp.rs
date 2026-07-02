@@ -153,7 +153,10 @@ pub fn parse_offer(sdp: &str) -> Result<OfferSdp> {
         } else if let Some(rest) = line.strip_prefix("m=video ") {
             let mut parts = rest.split_whitespace();
             port = parts.next().and_then(|p| p.parse().ok());
-            tcp = parts.next().map(|proto| proto.contains("TCP")).unwrap_or(false);
+            tcp = parts
+                .next()
+                .map(|proto| proto.contains("TCP"))
+                .unwrap_or(false);
         } else if let Some(rest) = line.strip_prefix("y=") {
             ssrc = Some(rest.trim().to_string());
         } else if line == "a=setup:active" {
@@ -243,7 +246,13 @@ mod p1_2_sdp_tests {
 
     #[test]
     fn answer_parses_with_existing_parse_answer() {
-        let ans = build_answer("34020000001320000001", "127.0.0.1", 40002, "0200000001", Transport::Udp);
+        let ans = build_answer(
+            "34020000001320000001",
+            "127.0.0.1",
+            40002,
+            "0200000001",
+            Transport::Udp,
+        );
         let a = parse_answer(&ans).unwrap();
         assert_eq!(a.media_addr, "127.0.0.1:40002".parse().unwrap());
         assert_eq!(a.ssrc.as_deref(), Some("0200000001"));
