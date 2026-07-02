@@ -10,6 +10,7 @@ import InputText from "primevue/inputtext";
 import Message from "primevue/message";
 import Password from "primevue/password";
 import Select from "primevue/select";
+import Tag from "primevue/tag";
 import Textarea from "primevue/textarea";
 import ToggleSwitch from "primevue/toggleswitch";
 import { useConfirm } from "primevue/useconfirm";
@@ -57,8 +58,13 @@ async function onGbDeviceChange(deviceId: string) {
   gbChannels.value = [];
   if (!deviceId) return;
   try {
-    gbChannels.value = await getGbCatalog(deviceId);
+    const channels = await getGbCatalog(deviceId);
+    // Guard against a stale response: if the user switched devices while this
+    // catalog was loading, drop it so we don't show device A's channels under B.
+    if (gbDeviceId.value !== deviceId) return;
+    gbChannels.value = channels;
   } catch {
+    if (gbDeviceId.value !== deviceId) return;
     gbChannels.value = [];
   }
 }
@@ -249,9 +255,14 @@ function hydrateGbFields(device: DeviceItem) {
     gbChannelId.value = cfg.channel_id ?? "";
     void loadGbDevices();
     if (gbDeviceId.value) {
+      const hydratedDeviceId = gbDeviceId.value;
       const savedChannel = gbChannelId.value;
-      void onGbDeviceChange(gbDeviceId.value).then(() => {
-        gbChannelId.value = savedChannel;
+      void onGbDeviceChange(hydratedDeviceId).then(() => {
+        // Only restore the saved channel if the dialog is still on this device
+        // (a rapid edit→edit on a different device must not clobber it).
+        if (gbDeviceId.value === hydratedDeviceId) {
+          gbChannelId.value = savedChannel;
+        }
       });
     }
   } catch {
@@ -274,6 +285,12 @@ async function onSubmit(event: { valid: boolean; values: Record<string, unknown>
   }
 
   const inputType = String(event.values.input_type ?? "");
+  // The gb pickers are standalone refs (not @primevue/forms fields), so guard
+  // their required-ness here rather than relying on the resolver's render-order
+  // side-effect to block the submit.
+  if (inputType === "gb28181" && (!gbDeviceId.value || !gbChannelId.value)) {
+    return;
+  }
   let inputValue = String(event.values.input_value ?? "");
   if (inputType === "xiaomi") {
     inputValue = JSON.stringify({
@@ -682,7 +699,14 @@ async function copyText(value: string, label: string) {
               placeholder="选择已注册的国标设备"
               @update:model-value="onGbDeviceChange"
               @before-show="loadGbDevices"
-            />
+            >
+              <template #option="{ option }">
+                <div class="gb-option">
+                  <span class="mono-text">{{ option.device_id }}</span>
+                  <Tag v-if="!option.online" value="离线" severity="secondary" />
+                </div>
+              </template>
+            </Select>
           </div>
           <div class="field">
             <label for="gb_channel">国标通道</label>
@@ -696,11 +720,19 @@ async function copyText(value: string, label: string) {
               placeholder="选择通道"
               :disabled="!gbDeviceId"
             />
+            <Message
+              v-if="$form.input_value?.invalid"
+              severity="error"
+              size="small"
+              variant="simple"
+            >
+              {{ $form.input_value.error?.message }}
+            </Message>
           </div>
           <div class="field">
             <span class="field-hint">
-              国标设备需先注册到本平台（NVR_GB_ENABLE=1）。下拉框列出在线设备及其通道，
-              保存后仅在有人观看时按需 INVITE 拉流。
+              国标设备需先注册到本平台（NVR_GB_ENABLE=1）。下拉框列出已注册设备（离线设备会标注），
+              选择后加载其通道，保存后仅在有人观看时按需 INVITE 拉流。
             </span>
           </div>
         </template>
@@ -879,6 +911,14 @@ async function copyText(value: string, label: string) {
   flex: 1 1 100%;
   font-size: 0.75rem;
   color: #94a3b8;
+}
+
+.gb-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
 }
 
 :deep(.device-dialog .field) {
