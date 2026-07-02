@@ -85,14 +85,15 @@ impl GbBridge {
         stream_id: &str,
         mapping: &crate::gb::stream_map::Mapping,
     ) -> anyhow::Result<()> {
-        let handle = self.receiver.open(stream_id, Transport::Udp).await?;
+        let transport = mapping.transport;
+        let handle = self.receiver.open(stream_id, transport).await?;
         let port = handle.port();
         let (ssrc, ssrc_str) = self.server.next_ssrc(SsrcKind::Live);
         let media_addr = format!("{}:{}", self.media_ip, port).parse()?;
         let spec = MediaSpec {
             ssrc,
             ssrc_str,
-            transport: Transport::Udp,
+            transport,
             media_addr,
             stream_type: StreamType::Play,
             negotiated_remote: None,
@@ -101,6 +102,15 @@ impl GbBridge {
             .server
             .invite_play(&mapping.device_id, &mapping.channel_id, spec)
             .await?;
+        // TCP-active: now that the device answered with its media address, connect
+        // out to it. UDP / TCP-passive: the device pushes to `media_addr`, nothing
+        // more to do.
+        if transport == Transport::TcpActive {
+            let remote = session.spec.negotiated_remote.ok_or_else(|| {
+                anyhow::anyhow!("gb28181: tcp-active pull for {stream_id} got no negotiated remote")
+            })?;
+            handle.connect(remote).await?;
+        }
         self.active.lock().unwrap().insert(
             stream_id.to_string(),
             ActiveSession {
@@ -109,10 +119,11 @@ impl GbBridge {
             },
         );
         log::info!(
-            "gb28181: pulling {} channel {} -> stream {} (port {})",
+            "gb28181: pulling {} channel {} -> stream {} ({:?} port {})",
             mapping.device_id,
             mapping.channel_id,
             stream_id,
+            transport,
             port
         );
         Ok(())

@@ -93,3 +93,54 @@ async fn pull_on_not_found_then_release_on_no_reader() {
     client.shutdown();
     answerer.abort();
 }
+
+#[tokio::test]
+async fn pull_uses_udp_transport_and_skips_connect() {
+    let scfg = GbServerConfig::new(PLATFORM, DOMAIN, "127.0.0.1:0".parse().unwrap());
+    let (server, mut server_events) = GbServer::bind(scfg).await.unwrap();
+    let server_addr = server.local_addr();
+    let fake = FakeReceiver::default();
+    let probe = fake.clone();
+    let bridge = GbBridge::new(server, "127.0.0.1".into(), Box::new(fake));
+
+    let (client, answerer) = spawn_answering_client(server_addr).await;
+    wait_registered(&mut server_events).await;
+
+    bridge.register_mapping("cam1", DEVICE, CHANNEL, gb28181::Transport::Udp);
+    assert!(bridge.handle_media_not_found("cam1").await);
+    assert!(bridge.is_active("cam1"));
+    assert_eq!(probe.opened.lock().unwrap()[0].1, gb28181::Transport::Udp);
+    assert!(probe.connected.lock().unwrap().is_empty());
+
+    client.shutdown();
+    answerer.abort();
+}
+
+#[tokio::test]
+async fn pull_active_does_two_phase_connect() {
+    let scfg = GbServerConfig::new(PLATFORM, DOMAIN, "127.0.0.1:0".parse().unwrap());
+    let (server, mut server_events) = GbServer::bind(scfg).await.unwrap();
+    let server_addr = server.local_addr();
+    let fake = FakeReceiver::default();
+    let probe = fake.clone();
+    let bridge = GbBridge::new(server, "127.0.0.1".into(), Box::new(fake));
+
+    let (client, answerer) = spawn_answering_client(server_addr).await;
+    wait_registered(&mut server_events).await;
+
+    bridge.register_mapping("cam2", DEVICE, CHANNEL, gb28181::Transport::TcpActive);
+    assert!(bridge.handle_media_not_found("cam2").await);
+    assert!(bridge.is_active("cam2"));
+    assert_eq!(
+        probe.opened.lock().unwrap()[0].1,
+        gb28181::Transport::TcpActive
+    );
+    // the answering client answered with media at 127.0.0.1:40010 -> connect there
+    assert_eq!(
+        probe.connected.lock().unwrap().as_slice(),
+        &["127.0.0.1:40010".parse().unwrap()]
+    );
+
+    client.shutdown();
+    answerer.abort();
+}
