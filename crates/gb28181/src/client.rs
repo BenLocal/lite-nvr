@@ -1,0 +1,296 @@
+//! GbClient — the UAC / 下级设备 facade. Registers up to a platform, answers
+//! Catalog queries and INVITEs. Media is the caller's job (spec §3 row 7).
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
+
+use rsipstack::dialog::authenticate::Credential;
+use rsipstack::dialog::dialog::{Dialog, DialogState};
+use rsipstack::dialog::registration::Registration;
+use rsipstack::dialog::server_dialog::ServerInviteDialog;
+use rsipstack::sip as rsip;
+use rsipstack::sip::prelude::HeadersExt;
+use rsipstack::transaction::TransactionReceiver;
+use rsipstack::transaction::transaction::Transaction;
+use rsipstack::transport::SipAddr;
+use tokio::sync::mpsc;
+
+use crate::endpoint::{SipEndpoint, send_out_of_dialog_message, sip_err};
+use crate::error::{GbError, Result};
+use crate::event::GbEvent;
+use crate::manscdp::{self, CatalogItem, CmdType};
+use crate::sdp;
+
+pub struct GbClientConfig {
+    /// Our 20-digit device GB code.
+    pub device_id: String,
+    /// SIP domain / digest realm shared with the platform.
+    pub domain: String,
+    /// The platform's GB code (Request-URI user for REGISTER/MESSAGE).
+    pub server_id: String,
+    /// The platform's SIP UDP address.
+    pub server_addr: SocketAddr,
+    pub password: Option<String>,
+    /// Local UDP listen address (port 0 = ephemeral).
+    pub listen: SocketAddr,
+    /// Channels reported in Catalog responses.
+    pub channels: Vec<CatalogItem>,
+    pub expires: u32,
+    pub keepalive_interval: Duration,
+    pub user_agent: String,
+}
+
+impl GbClientConfig {
+    pub fn new(
+        device_id: impl Into<String>,
+        domain: impl Into<String>,
+        server_id: impl Into<String>,
+        server_addr: SocketAddr,
+    ) -> Self {
+        Self {
+            device_id: device_id.into(),
+            domain: domain.into(),
+            server_id: server_id.into(),
+            server_addr,
+            password: None,
+            listen: "0.0.0.0:5061".parse().expect("static addr"),
+            channels: Vec::new(),
+            expires: 3600,
+            keepalive_interval: Duration::from_secs(60),
+            user_agent: "lite-nvr-gb28181-client".into(),
+        }
+    }
+}
+
+struct ClientInner {
+    cfg: GbClientConfig,
+    ep: SipEndpoint,
+    events: mpsc::UnboundedSender<GbEvent>,
+    sn: AtomicU64,
+    keepalive_running: AtomicBool,
+}
+
+pub struct GbClient {
+    inner: Arc<ClientInner>,
+}
+
+impl GbClient {
+    pub async fn bind(cfg: GbClientConfig) -> Result<(GbClient, mpsc::UnboundedReceiver<GbEvent>)> {
+        let (ep, streams) = SipEndpoint::bind_udp(cfg.listen, &cfg.user_agent).await?;
+        let (events_tx, events_rx) = mpsc::unbounded_channel();
+        let inner = Arc::new(ClientInner {
+            cfg,
+            ep,
+            events: events_tx,
+            sn: AtomicU64::new(1),
+            keepalive_running: AtomicBool::new(false),
+        });
+        tokio::spawn(main_loop(inner.clone(), streams.incoming));
+        tokio::spawn(state_loop(inner.clone(), streams.state_receiver));
+        Ok((GbClient { inner }, events_rx))
+    }
+
+    pub fn local_addr(&self) -> SocketAddr {
+        self.inner.ep.local_addr
+    }
+
+    /// REGISTER to the platform (rsipstack auto-answers the digest challenge)
+    /// and start the keepalive loop on success.
+    pub async fn register(&self) -> Result<()> {
+        let cfg = &self.inner.cfg;
+        let credential = Credential {
+            username: cfg.device_id.clone(),
+            password: cfg.password.clone().unwrap_or_default(),
+            realm: Some(cfg.domain.clone()),
+        };
+        let mut reg = Registration::new(self.inner.ep.inner(), Some(credential));
+        let uri: rsip::Uri = format!("sip:{}@{}", cfg.server_id, cfg.server_addr)
+            .try_into()
+            .map_err(sip_err)?;
+        let resp = reg
+            .register(uri, Some(cfg.expires))
+            .await
+            .map_err(sip_err)?;
+        if resp.status_code != rsip::StatusCode::OK {
+            return Err(GbError::Auth(format!(
+                "register rejected: {}",
+                resp.status_code
+            )));
+        }
+        self.start_keepalive();
+        Ok(())
+    }
+
+    fn start_keepalive(&self) {
+        if self.inner.keepalive_running.swap(true, Ordering::SeqCst) {
+            return; // already running
+        }
+        let inner = self.inner.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(inner.cfg.keepalive_interval);
+            tick.tick().await; // first tick fires immediately; skip it
+            loop {
+                tokio::select! {
+                    _ = inner.ep.cancel.cancelled() => return,
+                    _ = tick.tick() => {}
+                }
+                let sn = inner.sn.fetch_add(1, Ordering::Relaxed);
+                let body = manscdp::encode_keepalive_notify(sn, &inner.cfg.device_id);
+                let dest = SipAddr::from(inner.cfg.server_addr);
+                send_out_of_dialog_message(
+                    &inner.ep.inner(),
+                    (&inner.cfg.device_id, &inner.cfg.domain),
+                    (&inner.cfg.server_id, &inner.cfg.domain),
+                    dest,
+                    inner.ep.next_cseq(),
+                    body,
+                )
+                .await
+                .ok();
+            }
+        });
+    }
+
+    pub fn shutdown(&self) {
+        self.inner.ep.shutdown();
+    }
+}
+
+async fn main_loop(inner: Arc<ClientInner>, mut incoming: TransactionReceiver) {
+    while let Some(mut tx) = incoming.recv().await {
+        let has_to_tag = tx
+            .original
+            .to_header()
+            .ok()
+            .and_then(|t| t.tag().ok().flatten())
+            .is_some();
+        if has_to_tag {
+            match inner.ep.dialog_layer.match_dialog(&tx) {
+                Some(mut d) => {
+                    tokio::spawn(async move {
+                        d.handle(&mut tx).await.ok();
+                    });
+                }
+                None => {
+                    tx.reply(rsip::StatusCode::CallTransactionDoesNotExist)
+                        .await
+                        .ok();
+                }
+            }
+            continue;
+        }
+        let inner = inner.clone();
+        tokio::spawn(async move {
+            let result = match tx.original.method {
+                rsip::Method::Invite => handle_invite(&inner, &mut tx).await,
+                rsip::Method::Message => handle_client_message(&inner, &mut tx).await,
+                rsip::Method::Ack => Ok(()),
+                _ => tx.reply(rsip::StatusCode::OK).await.map_err(sip_err),
+            };
+            if let Err(e) = result {
+                tracing::warn!(error = %e, "gb28181 client: request handling failed");
+            }
+        });
+    }
+}
+
+async fn handle_invite(inner: &Arc<ClientInner>, tx: &mut Transaction) -> Result<()> {
+    let contact: rsip::Uri = format!("sip:{}@{}", inner.cfg.device_id, inner.ep.local_addr)
+        .try_into()
+        .map_err(sip_err)?;
+    match inner.ep.dialog_layer.get_or_create_server_invite(
+        tx,
+        inner.ep.state_sender.clone(),
+        None,
+        Some(contact),
+    ) {
+        Ok(mut dialog) => {
+            // handle() drives the INVITE transaction (100/ringing/final) until
+            // accept()/reject() is called on the dialog from the event consumer.
+            dialog.handle(tx).await.map_err(sip_err)?;
+            Ok(())
+        }
+        Err(_) => tx
+            .reply(rsip::StatusCode::CallTransactionDoesNotExist)
+            .await
+            .map_err(sip_err),
+    }
+}
+
+async fn handle_client_message(inner: &Arc<ClientInner>, tx: &mut Transaction) -> Result<()> {
+    let body = tx.original.body.clone();
+    match manscdp::peek_cmd_type(&body) {
+        Ok(CmdType::Catalog) => {
+            // A Catalog QUERY from the platform: ack it, then send our
+            // channel list back as a separate MESSAGE.
+            let (sn, _target) = manscdp::decode_sn_device(&body)?;
+            tx.reply(rsip::StatusCode::OK).await.map_err(sip_err)?;
+            let resp_body =
+                manscdp::encode_catalog_response(sn, &inner.cfg.device_id, &inner.cfg.channels);
+            let dest = SipAddr::from(inner.cfg.server_addr);
+            send_out_of_dialog_message(
+                &inner.ep.inner(),
+                (&inner.cfg.device_id, &inner.cfg.domain),
+                (&inner.cfg.server_id, &inner.cfg.domain),
+                dest,
+                inner.ep.next_cseq(),
+                resp_body,
+            )
+            .await?;
+            Ok(())
+        }
+        _ => tx.reply(rsip::StatusCode::OK).await.map_err(sip_err),
+    }
+}
+
+async fn state_loop(
+    inner: Arc<ClientInner>,
+    mut state_rx: rsipstack::dialog::dialog::DialogStateReceiver,
+) {
+    while let Some(state) = state_rx.recv().await {
+        match state {
+            DialogState::Calling(id) => {
+                let Some(Dialog::ServerInvite(dialog)) = inner.ep.dialog_layer.get_dialog(&id)
+                else {
+                    continue;
+                };
+                let req = dialog.initial_request();
+                let offer_text = String::from_utf8_lossy(&req.body).to_string();
+                match sdp::parse_offer(&offer_text) {
+                    Ok(remote) => {
+                        // InviteReceived is added to GbEvent in Task 10;
+                        // until then this arm only rejects.
+                        emit_invite(inner.clone(), dialog, remote);
+                    }
+                    Err(_) => {
+                        dialog.reject(None, Some("bad sdp".into())).ok();
+                    }
+                }
+            }
+            DialogState::Terminated(id, _reason) => {
+                inner
+                    .events
+                    .send(GbEvent::SessionClosed {
+                        dialog_id: id.to_string(),
+                    })
+                    .ok();
+                inner.ep.dialog_layer.remove_dialog(&id);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Task 8 placeholder-free stub: reject INVITEs until negotiation lands in
+/// Task 10 (which replaces this function body with the InviteReceived emit).
+fn emit_invite(_inner: Arc<ClientInner>, dialog: ServerInviteDialog, _remote: sdp::OfferSdp) {
+    dialog
+        .reject(Some(rsip::StatusCode::NotImplemented), None)
+        .ok();
+}
+
+#[cfg(test)]
+#[path = "client_test.rs"]
+mod client_test;
