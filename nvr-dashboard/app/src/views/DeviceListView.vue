@@ -6,10 +6,12 @@ import Card from "primevue/card";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";
 import Dialog from "primevue/dialog";
+import InputNumber from "primevue/inputnumber";
 import InputText from "primevue/inputtext";
 import Message from "primevue/message";
 import Password from "primevue/password";
 import Select from "primevue/select";
+import Slider from "primevue/slider";
 import Tag from "primevue/tag";
 import Textarea from "primevue/textarea";
 import ToggleSwitch from "primevue/toggleswitch";
@@ -23,7 +25,13 @@ import {
   type DeviceItem,
   type DevicePayload,
 } from "../api/device";
-import { getGbCatalog, getGbDevices, type GbChannel, type GbDevice } from "../api/gb";
+import {
+  getGbCatalog,
+  getGbDevices,
+  ptzControl,
+  type GbChannel,
+  type GbDevice,
+} from "../api/gb";
 import { useAppToast } from "../utils/toast";
 
 const appToast = useAppToast();
@@ -74,6 +82,57 @@ function resetGbFields() {
   gbChannelId.value = "";
   gbChannels.value = [];
 }
+
+// PTZ (云台) control for gb28181 devices. The target is resolved from the
+// device's input_value JSON ({device_id, channel_id}); moves are press-and-hold
+// (move on press, stop on release/leave) and presets are one-shot clicks.
+const ptzDialogVisible = ref(false);
+const ptzTarget = ref<{ device_id: string; channel_id: string } | null>(null);
+const ptzSpeed = ref(128);
+const ptzPreset = ref(1);
+
+function openPtzDialog(device: DeviceItem) {
+  try {
+    const cfg = JSON.parse(device.input_value) as {
+      device_id?: string;
+      channel_id?: string;
+    };
+    ptzTarget.value = {
+      device_id: cfg.device_id ?? "",
+      channel_id: cfg.channel_id ?? "",
+    };
+    ptzDialogVisible.value = true;
+  } catch {
+    ptzTarget.value = null;
+    appToast.errorFrom("云台", null, "无法解析国标设备通道");
+  }
+}
+
+async function sendPtz(command: string, preset?: number) {
+  if (!ptzTarget.value) return;
+  try {
+    await ptzControl({
+      device_id: ptzTarget.value.device_id,
+      channel_id: ptzTarget.value.channel_id,
+      command,
+      speed: ptzSpeed.value,
+      preset,
+    });
+  } catch {
+    // Best-effort: a failed PTZ command shouldn't disrupt the UI. A dropped
+    // move still gets a stop on release, so the camera won't run away.
+  }
+}
+
+// Press-and-hold: send the move on press, stop on release/leave/cancel.
+function ptzPress(command: string) {
+  void sendPtz(command);
+}
+
+function ptzRelease() {
+  void sendPtz("stop");
+}
+
 const inputTypeOptions = [
   { label: "RTSP", value: "rtsp" },
   { label: "RTMP", value: "rtmp" },
@@ -505,6 +564,15 @@ async function copyText(value: string, label: string) {
                   @click="openPreview(data)"
                 />
                 <Button
+                  v-if="data.input_type === 'gb28181'"
+                  icon="pi pi-compass"
+                  text
+                  rounded
+                  aria-label="云台"
+                  title="云台控制"
+                  @click="openPtzDialog(data)"
+                />
+                <Button
                   icon="pi pi-pencil"
                   text
                   rounded
@@ -799,6 +867,94 @@ async function copyText(value: string, label: string) {
         />
       </div>
     </Dialog>
+
+    <Dialog
+      v-model:visible="ptzDialogVisible"
+      modal
+      header="云台控制"
+      :style="{ width: 'min(22rem, calc(100vw - 2rem))' }"
+    >
+      <div class="ptz-pad">
+        <span />
+        <Button
+          icon="pi pi-arrow-up"
+          aria-label="上"
+          @pointerdown="ptzPress('up')"
+          @pointerup="ptzRelease"
+          @pointerleave="ptzRelease"
+          @pointercancel="ptzRelease"
+        />
+        <span />
+        <Button
+          icon="pi pi-arrow-left"
+          aria-label="左"
+          @pointerdown="ptzPress('left')"
+          @pointerup="ptzRelease"
+          @pointerleave="ptzRelease"
+          @pointercancel="ptzRelease"
+        />
+        <Button icon="pi pi-stop" severity="secondary" aria-label="停止" @click="sendPtz('stop')" />
+        <Button
+          icon="pi pi-arrow-right"
+          aria-label="右"
+          @pointerdown="ptzPress('right')"
+          @pointerup="ptzRelease"
+          @pointerleave="ptzRelease"
+          @pointercancel="ptzRelease"
+        />
+        <span />
+        <Button
+          icon="pi pi-arrow-down"
+          aria-label="下"
+          @pointerdown="ptzPress('down')"
+          @pointerup="ptzRelease"
+          @pointerleave="ptzRelease"
+          @pointercancel="ptzRelease"
+        />
+        <span />
+      </div>
+
+      <div class="ptz-row">
+        <Button
+          label="放大"
+          size="small"
+          icon="pi pi-search-plus"
+          @pointerdown="ptzPress('zoom_in')"
+          @pointerup="ptzRelease"
+          @pointerleave="ptzRelease"
+          @pointercancel="ptzRelease"
+        />
+        <Button
+          label="缩小"
+          size="small"
+          icon="pi pi-search-minus"
+          @pointerdown="ptzPress('zoom_out')"
+          @pointerup="ptzRelease"
+          @pointerleave="ptzRelease"
+          @pointercancel="ptzRelease"
+        />
+      </div>
+
+      <div class="ptz-row">
+        <label class="ptz-label">速度</label>
+        <Slider v-model="ptzSpeed" :min="1" :max="255" class="ptz-slider" />
+        <span class="ptz-value">{{ ptzSpeed }}</span>
+      </div>
+
+      <div class="ptz-row">
+        <label class="ptz-label">预置位</label>
+        <InputNumber
+          v-model="ptzPreset"
+          :min="1"
+          :max="255"
+          show-buttons
+          :input-style="{ width: '3.5rem' }"
+        />
+        <Button label="调用" size="small" @click="sendPtz('preset_call', ptzPreset)" />
+        <Button label="设置" size="small" severity="secondary" @click="sendPtz('preset_set', ptzPreset)" />
+        <Button label="删除" size="small" text severity="danger" @click="sendPtz('preset_delete', ptzPreset)" />
+      </div>
+    </Dialog>
   </div>
 </template>
 
@@ -888,6 +1044,39 @@ async function copyText(value: string, label: string) {
   display: flex;
   align-items: center;
   gap: 0.125rem;
+}
+
+.ptz-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.5rem;
+  justify-items: center;
+  margin-bottom: 1rem;
+}
+
+.ptz-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.ptz-label {
+  min-width: 3.5rem;
+  color: #cbd5e1;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.ptz-slider {
+  flex: 1;
+}
+
+.ptz-value {
+  min-width: 2.5rem;
+  text-align: right;
+  color: #94a3b8;
+  font-size: 0.8125rem;
 }
 
 .device-form {

@@ -18,3 +18,18 @@ export function getGbDevices() {
 export function getGbCatalog(deviceId: string) {
   return request<GbChannel[]>(`/gb/catalog/${encodeURIComponent(deviceId)}`)
 }
+
+export interface PtzRequest {
+  device_id: string
+  channel_id: string
+  command: string
+  speed?: number
+  preset?: number
+}
+
+export function ptzControl(payload: PtzRequest) {
+  return request<null>('/gb/ptz', {
+    method: 'POST',
+    body: payload,
+  })
+}
