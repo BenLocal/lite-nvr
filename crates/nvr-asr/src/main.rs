@@ -28,6 +28,10 @@ struct Args {
     /// 16 kHz mono WAV to transcribe.
     #[arg(long)]
     wav: PathBuf,
+    /// Optional CT-Transformer punctuation model (model.onnx). When set,
+    /// partials stay punctuation-free and each final is punctuated.
+    #[arg(long)]
+    punct: Option<PathBuf>,
 
     /// SenseVoice language: auto|zh|en|ja|ko|yue.
     #[arg(long, default_value = "auto")]
@@ -64,6 +68,7 @@ fn main() -> Result<()> {
     );
 
     let mut config = AsrConfig::new(&args.model, &args.tokens, &args.vad);
+    config.punct_model = args.punct;
     config.language = args.language;
     config.num_threads = args.num_threads;
     config.partial_interval = Duration::from_millis(args.partial_ms);

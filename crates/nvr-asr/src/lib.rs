@@ -41,6 +41,13 @@ pub struct AsrConfig {
     /// Path to the Silero VAD ONNX model (`silero_vad.onnx`).
     pub silero_vad_model: PathBuf,
 
+    /// Optional CT-Transformer punctuation model (`model.onnx` from a
+    /// `sherpa-onnx-punct-*` release). When set, interim [`Transcript::Partial`]s
+    /// are emitted **without** punctuation (only the recognizer's corrections
+    /// show), and each [`Transcript::Final`] is punctuated by this model in one
+    /// pass. When `None`, punctuation follows the recognizer (`use_itn`).
+    pub punct_model: Option<PathBuf>,
+
     // --- recognizer options ---
     /// SenseVoice language: `auto`, `zh`, `en`, `ja`, `ko`, or `yue`.
     pub language: String,
@@ -77,6 +84,7 @@ impl Default for AsrConfig {
             sense_voice_model: PathBuf::new(),
             tokens: PathBuf::new(),
             silero_vad_model: PathBuf::new(),
+            punct_model: None,
             language: "auto".to_string(),
             use_itn: true,
             num_threads: 2,

@@ -3,7 +3,8 @@
 
 use anyhow::Context;
 use sherpa_onnx::{
-    OfflineRecognizer, OfflineRecognizerConfig, VadModelConfig, VoiceActivityDetector,
+    OfflinePunctuation, OfflinePunctuationConfig, OfflineRecognizer, OfflineRecognizerConfig,
+    VadModelConfig, VoiceActivityDetector,
 };
 
 use crate::{AsrConfig, SAMPLE_RATE, Transcript};
@@ -13,6 +14,8 @@ use crate::{AsrConfig, SAMPLE_RATE, Transcript};
 pub struct AsrEngine {
     recognizer: OfflineRecognizer,
     vad: VoiceActivityDetector,
+    /// Optional punctuation restorer, applied only to `Final` text.
+    punct: Option<OfflinePunctuation>,
     config: AsrConfig,
 
     /// Samples not yet aligned to a full VAD window.
@@ -48,10 +51,12 @@ impl AsrEngine {
             .context("failed to create SenseVoice offline recognizer (check model/tokens paths and native lib)")?;
         let vad = build_vad(&config)
             .context("failed to create Silero VAD (check silero_vad_model path and native lib)")?;
+        let punct = build_punct(&config)?;
 
         Ok(Self {
             recognizer,
             vad,
+            punct,
             config,
             pending: Vec::new(),
             speech_buf: Vec::new(),
@@ -84,6 +89,13 @@ impl AsrEngine {
                     && let Some(text) = self.decode(&self.speech_buf)
                 {
                     self.since_partial = 0;
+                    // With a punctuation model, keep interim text punctuation-free
+                    // so partials show only the recognizer's corrections.
+                    let text = if self.punct.is_some() {
+                        strip_punct(&text)
+                    } else {
+                        text
+                    };
                     out.push(Transcript::Partial { text });
                 }
             }
@@ -123,7 +135,7 @@ impl AsrEngine {
                 if let Some(text) = self.decode(samples) {
                     let sr = SAMPLE_RATE as f32;
                     out.push(Transcript::Final {
-                        text,
+                        text: self.finalize_text(text),
                         start: segment.start() as f32 / sr,
                         duration: segment.n() as f32 / sr,
                     });
@@ -133,6 +145,19 @@ impl AsrEngine {
             // The utterance ended; drop its interim buffer.
             self.speech_buf.clear();
             self.since_partial = 0;
+        }
+    }
+
+    /// Finalize a segment's text: when a punctuation model is configured, strip
+    /// any recognizer punctuation and restore it in one pass; otherwise return
+    /// the recognizer text unchanged.
+    fn finalize_text(&self, text: String) -> String {
+        match &self.punct {
+            Some(p) => {
+                let clean = strip_punct(&text);
+                p.add_punctuation(&clean).unwrap_or(clean)
+            }
+            None => text,
         }
     }
 
@@ -157,7 +182,8 @@ impl AsrEngine {
 
 fn build_recognizer(config: &AsrConfig) -> Option<OfflineRecognizer> {
     let mut c = OfflineRecognizerConfig::default();
-    c.model_config.sense_voice.model = Some(config.sense_voice_model.to_string_lossy().into_owned());
+    c.model_config.sense_voice.model =
+        Some(config.sense_voice_model.to_string_lossy().into_owned());
     c.model_config.sense_voice.language = Some(config.language.clone());
     c.model_config.sense_voice.use_itn = config.use_itn;
     c.model_config.tokens = Some(config.tokens.to_string_lossy().into_owned());
@@ -178,3 +204,66 @@ fn build_vad(config: &AsrConfig) -> Option<VoiceActivityDetector> {
     c.debug = config.debug;
     VoiceActivityDetector::create(&c, config.vad_buffer_seconds)
 }
+
+/// Build the optional CT-Transformer punctuation restorer. `Ok(None)` when no
+/// `punct_model` is configured; `Err` when a configured model fails to load.
+fn build_punct(config: &AsrConfig) -> anyhow::Result<Option<OfflinePunctuation>> {
+    let Some(path) = &config.punct_model else {
+        return Ok(None);
+    };
+    let mut c = OfflinePunctuationConfig::default();
+    c.model.ct_transformer = Some(path.to_string_lossy().into_owned());
+    c.model.num_threads = config.num_threads;
+    c.model.debug = config.debug;
+    let punct = OfflinePunctuation::create(&c)
+        .context("failed to create punctuation model (check punct_model path and native lib)")?;
+    Ok(Some(punct))
+}
+
+/// Drop sentence punctuation (ASCII + CJK) from `text`. Used to keep interim
+/// `Partial`s punctuation-free and to normalize a segment before re-punctuating.
+fn strip_punct(text: &str) -> String {
+    text.chars().filter(|c| !is_punct(*c)).collect()
+}
+
+fn is_punct(c: char) -> bool {
+    matches!(
+        c,
+        ',' | '.'
+            | '!'
+            | '?'
+            | ';'
+            | ':'
+            | '，'
+            | '。'
+            | '！'
+            | '？'
+            | '、'
+            | '；'
+            | '：'
+            | '…'
+            | '—'
+            | '～'
+            | '·'
+            | '「'
+            | '」'
+            | '『'
+            | '』'
+            | '（'
+            | '）'
+            | '《'
+            | '》'
+            | '【'
+            | '】'
+            | '〈'
+            | '〉'
+            | '\u{201C}'
+            | '\u{201D}'
+            | '\u{2018}'
+            | '\u{2019}'
+    )
+}
+
+#[cfg(test)]
+#[path = "engine_test.rs"]
+mod engine_test;

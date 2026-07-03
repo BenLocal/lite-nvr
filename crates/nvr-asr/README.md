@@ -14,6 +14,11 @@ SenseVoice** recognizer:
 3. When the VAD closes the segment, the finalized (silence-trimmed) samples are
    decoded into a stable `Final`.
 
+With an optional CT-Transformer **punctuation model** (`punct_model`), interim
+`Partial`s are emitted **punctuation-free** — only the recognizer's corrections
+show — and each `Final` is punctuated in a single pass. Punctuation never
+flickers mid-utterance; digits still come from the recognizer's `use_itn`.
+
 The engine is source-agnostic: feed it 16 kHz mono `f32` PCM.
 
 ```
@@ -96,12 +101,15 @@ cargo run -p nvr-asr --bin nvr-asr-demo -- \
   --tokens sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tokens.txt \
   --vad    silero_vad.onnx \
   --wav    speech-16k.wav \
+  --punct  sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12/model.onnx \
   --language auto \
   --realtime          # pace chunks to wall-clock to feel like a live mic
 ```
 
-Interim lines overwrite in place (`… 今天天气`) and commit on segment end
-(`[  1.20s +2.34s] 今天天气不错`).
+`--punct` is optional; omit it to let punctuation follow the recognizer.
+
+Interim lines overwrite in place (`… 今天天气`) and commit, punctuated, on
+segment end (`[  1.20s +2.34s] 今天天气,不错。`).
 
 ## Library usage
 

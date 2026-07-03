@@ -73,6 +73,20 @@ else
   rm -f "$TARBALL"   # extracted; drop the 1 GB archive
 fi
 
+# 3) Punctuation model (CT-Transformer, zh/en). Used to punctuate Finals only.
+PUNCT_MODEL="${PUNCT_MODEL:-sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12}"
+PUNCT_DIR="$DEST/$PUNCT_MODEL"
+if [[ -f "$PUNCT_DIR/model.onnx" ]]; then
+  echo "Punctuation model already present: $PUNCT_DIR"
+else
+  TARBALL="$DEST/$PUNCT_MODEL.tar.bz2"
+  echo "Downloading $PUNCT_MODEL.tar.bz2 ..."
+  dl "$BASE/$PUNCT_MODEL.tar.bz2" "$TARBALL"
+  bzip2 -t "$TARBALL"
+  tar -xjf "$TARBALL" -C "$DEST"
+  rm -f "$TARBALL"
+fi
+
 echo
 echo "==================================================================="
 echo "Models ready under $DEST"
@@ -80,11 +94,13 @@ echo "  VAD    : $VAD"
 echo "  model  : $MODEL_DIR/model.int8.onnx"
 echo "  tokens : $MODEL_DIR/tokens.txt"
 echo "  wavs   : $MODEL_DIR/test_wavs/"
+echo "  punct  : $PUNCT_DIR/model.onnx"
 echo
-echo "Run the demo:"
+echo "Run the demo (with punctuation on finals only):"
 echo "  cargo run -p nvr-asr --bin nvr-asr-demo -- \\"
 echo "    --model  $MODEL_DIR/model.int8.onnx \\"
 echo "    --tokens $MODEL_DIR/tokens.txt \\"
 echo "    --vad    $VAD \\"
+echo "    --punct  $PUNCT_DIR/model.onnx \\"
 echo "    --wav    $MODEL_DIR/test_wavs/zh.wav"
 echo "==================================================================="
