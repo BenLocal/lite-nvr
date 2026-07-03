@@ -10,6 +10,7 @@ output.h264
 output.aac
 output_rawvideo_test.h264
 output_encoded_auto_hw_fallback.h264
+output_transcode.mp4
 
 nvr.db
 nvr.db-shm

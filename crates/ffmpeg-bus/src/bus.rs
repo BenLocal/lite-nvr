@@ -1,4 +1,10 @@
-use std::{backtrace::Backtrace, collections::HashMap, hash::Hasher, pin::Pin};
+use std::{
+    backtrace::Backtrace,
+    collections::{HashMap, HashSet},
+    hash::Hasher,
+    pin::Pin,
+    sync::Arc,
+};
 
 use futures::{Stream, StreamExt};
 use log::error;
@@ -13,9 +19,33 @@ use crate::{
     frame::{RawFrameCmd, VideoFrame, packet_to_raw_video_frame},
     input::{AvInput, AvInputTask},
     output::{AvOutput, AvOutputStream},
-    packet::RawPacketCmd,
+    packet::{RawPacket, RawPacketCmd, RawPacketReceiver},
     stream::AvStream,
 };
+
+/// Destination for the multi-stream muxer.
+enum MuxTarget {
+    File(String),
+    Net { url: String, format: Option<String> },
+}
+
+/// An item flowing into the multi-stream muxer: a packet for a given output
+/// stream index, or the end-of-stream signal for one source.
+enum MuxSignal {
+    Packet(usize, RawPacket),
+    Eof,
+}
+
+/// One stream's role in a File/Net mux: copy the demuxed input through, or
+/// transcode it via its encoder task.
+struct MuxPlanEntry {
+    input_index: usize,
+    transcode: bool,
+    /// Encode config when transcoding (used to start the encoder task).
+    encode: Option<EncodeConfig>,
+    /// Target codec id for the muxed output stream.
+    codec_id: ffmpeg_next::codec::Id,
+}
 
 pub struct Bus {
     id: String,
@@ -102,22 +132,29 @@ impl Bus {
                 let input_stream_index = input_stream.index();
                 let need_decoder = Self::try_decoder(input_stream, &output)?;
                 let need_encoder = Self::try_encoder(input_stream, &output)?;
-                if need_decoder {
-                    Self::start_decoder_task(state, input_stream_index).await?;
-                }
-                if need_encoder {
-                    Self::start_encoder_task(state, input_stream_index, output.encode.as_ref())
-                        .await?;
+                let is_file_net = matches!(
+                    &output.dest,
+                    OutputDest::File { .. } | OutputDest::Net { .. }
+                );
+                // File/Net decide copy vs transcode per stream and start their
+                // decoder/encoder tasks inside the muxer builder; every other
+                // dest starts the primary stream's tasks here.
+                if !is_file_net {
+                    if need_decoder {
+                        Self::start_decoder_task(state, input_stream_index).await?;
+                    }
+                    if need_encoder {
+                        Self::start_encoder_task(state, input_stream_index, output.encode.as_ref())
+                            .await?;
+                    }
                 }
 
-                let include_audio = output.include_audio;
                 let stream_result = match &output.dest {
                     OutputDest::Raw => {
                         Self::create_decoder_raw_output_stream(state, input_stream_index).await
                     }
                     OutputDest::File { path } => {
-                        Self::create_mux_to_file(state, path, input_stream_index, include_audio)
-                            .await
+                        Self::create_mux_to_file(state, path, input_stream_index, &output).await
                     }
                     OutputDest::Net { url, format } => {
                         Self::create_mux_to_net(
@@ -125,7 +162,7 @@ impl Bus {
                             url,
                             format.as_deref(),
                             input_stream_index,
-                            include_audio,
+                            &output,
                         )
                         .await
                     }
@@ -317,182 +354,244 @@ impl Bus {
         }
     }
 
-    /// Mux to a real file path (seekable). Produces standard MP4 that any player can open.
-    /// When `include_audio` is true, both video and audio streams are muxed into the file.
+    /// Mux to a real file path (seekable). Standard MP4 any player can open.
+    /// Per stream, copies the demuxed input or muxes the transcoded encoder
+    /// output; `output.include_audio` also carries the audio stream.
     async fn create_mux_to_file(
         state: &mut BusState,
         path: &str,
-        input_stream_index: usize,
-        include_audio: bool,
+        primary_index: usize,
+        output: &OutputConfig,
     ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
-        let mut input_receiver = state
-            .input_task
-            .as_ref()
-            .ok_or(anyhow::anyhow!("input task not found"))?
-            .subscribe();
-
-        let target_stream = state
-            .input_streams
-            .iter()
-            .find(|s| s.index() == input_stream_index)
-            .ok_or(anyhow::anyhow!("no matching stream in input"))?
-            .clone();
-        let target_stream_index = target_stream.index();
-        let path_owned = path.to_string();
-
-        let mut output = AvOutput::new(path, None, None)?;
-        output.add_stream(&target_stream)?;
-
-        // Collect additional stream indices to write
-        let mut accepted_indices = vec![target_stream_index];
-
-        if include_audio {
-            if let Some(audio_stream) = state.input_streams.iter().find(|s| s.is_audio()) {
-                output.add_stream(audio_stream)?;
-                accepted_indices.push(audio_stream.index());
-                log::info!(
-                    "mux to file: added audio stream index {} alongside video",
-                    audio_stream.index()
-                );
-            }
-        }
-
-        tokio::spawn(async move {
-            let mut output = output;
-            loop {
-                match input_receiver.recv().await {
-                    Ok(RawPacketCmd::Data(packet)) => {
-                        if accepted_indices.contains(&packet.index()) {
-                            if let Err(e) = output.write_packet(packet.index(), packet) {
-                                log::error!(
-                                    "mux to file write_packet error: {:#?}\nbacktrace:\n{}",
-                                    e,
-                                    Backtrace::capture()
-                                );
-                            }
-                        }
-                    }
-                    Ok(RawPacketCmd::EOF) => break,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        log::warn!("mux to file lagged, dropped {} messages", n);
-                        continue;
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-            if let Err(e) = output.finish() {
-                log::error!(
-                    "mux to file finish error: {:#?}\nbacktrace:\n{}",
-                    e,
-                    Backtrace::capture()
-                );
-            }
-            log::info!("mux to file finished: {}", path_owned);
-        });
-
-        Ok((
-            target_stream.clone(),
-            Box::pin(futures::stream::empty::<Option<VideoFrame>>()),
-        ))
+        let plan = Self::build_mux_plan(state, primary_index, output)?;
+        Self::start_mux_transcoders(state, &plan).await?;
+        Self::spawn_multi_stream_mux(state, MuxTarget::File(path.to_string()), plan).await
     }
 
-    /// Mux to a network URL (e.g. rtmp://, rtsp://). Remux only (input packets).
-    /// format: e.g. Some("rtsp"), Some("flv"); None = let FFmpeg guess from URL.
-    /// When `include_audio` is true, both video and audio streams are muxed.
+    /// Mux to a network URL (rtmp://, rtsp://, ...). Per stream, copies the
+    /// demuxed input or muxes the transcoded encoder output.
     async fn create_mux_to_net(
         state: &mut BusState,
         url: &str,
         format: Option<&str>,
-        input_stream_index: usize,
-        include_audio: bool,
+        primary_index: usize,
+        output: &OutputConfig,
     ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
-        let mut input_receiver = state
+        let plan = Self::build_mux_plan(state, primary_index, output)?;
+        Self::start_mux_transcoders(state, &plan).await?;
+        Self::spawn_multi_stream_mux(
+            state,
+            MuxTarget::Net {
+                url: url.to_string(),
+                format: format.map(str::to_string),
+            },
+            plan,
+        )
+        .await
+    }
+
+    /// Plan the streams a File/Net output muxes and whether each is copied or
+    /// transcoded. The primary (`av_type`) stream uses `output.encode`; the
+    /// audio stream carried via `include_audio` uses `output.audio_encode`.
+    /// Audio transcode is not yet implemented, so audio is always copied.
+    fn build_mux_plan(
+        state: &BusState,
+        primary_index: usize,
+        output: &OutputConfig,
+    ) -> anyhow::Result<Vec<MuxPlanEntry>> {
+        let primary = state
+            .input_streams
+            .iter()
+            .find(|s| s.index() == primary_index)
+            .ok_or(anyhow::anyhow!("no matching stream in input"))?;
+        let mut plan = vec![Self::plan_entry(primary, output.encode.as_ref())];
+
+        if output.include_audio
+            && primary.is_video()
+            && let Some(audio) = state.input_streams.iter().find(|s| s.is_audio())
+        {
+            plan.push(Self::plan_entry(audio, output.audio_encode.as_ref()));
+        }
+        Ok(plan)
+    }
+
+    fn plan_entry(stream: &AvStream, encode: Option<&EncodeConfig>) -> MuxPlanEntry {
+        let input_codec = stream.parameters().id();
+        let wants_transcode = encode.is_some_and(|e| Self::encode_needed(stream, e));
+
+        // Phase 1: only video transcode is wired; audio is always copied.
+        if wants_transcode && !stream.is_video() {
+            log::warn!(
+                "audio transcode not yet supported; copying audio stream {}",
+                stream.index()
+            );
+        }
+        let transcode = wants_transcode && stream.is_video();
+
+        let codec_id = if transcode {
+            encode
+                .and_then(|e| Self::codec_id_from_name(&e.codec))
+                .unwrap_or(input_codec)
+        } else {
+            input_codec
+        };
+        MuxPlanEntry {
+            input_index: stream.index(),
+            transcode,
+            encode: if transcode { encode.cloned() } else { None },
+            codec_id,
+        }
+    }
+
+    /// Start a decoder + encoder task for each transcoded stream in the plan.
+    async fn start_mux_transcoders(
+        state: &mut BusState,
+        plan: &[MuxPlanEntry],
+    ) -> anyhow::Result<()> {
+        for entry in plan.iter().filter(|e| e.transcode) {
+            Self::start_decoder_task(state, entry.input_index).await?;
+            Self::start_encoder_task(state, entry.input_index, entry.encode.as_ref()).await?;
+        }
+        Ok(())
+    }
+
+    /// Build the muxer and spawn the task that merges every planned stream —
+    /// copied input packets plus transcoded encoder packets — into one
+    /// container. Each output track keeps its input stream index so the muxer's
+    /// index-keyed mapping stays unambiguous.
+    async fn spawn_multi_stream_mux(
+        state: &mut BusState,
+        target: MuxTarget,
+        plan: Vec<MuxPlanEntry>,
+    ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
+        let (mut output, label) = match &target {
+            MuxTarget::File(path) => (AvOutput::new(path, None, None)?, path.clone()),
+            MuxTarget::Net { url, format } => {
+                // RTSP output often needs rtsp_transport=tcp for avio_open2.
+                let options = match format.as_deref() {
+                    Some("rtsp") => {
+                        let mut opts = Dictionary::new();
+                        opts.set("rtsp_transport", "tcp");
+                        Some(opts)
+                    }
+                    _ => None,
+                };
+                (
+                    AvOutput::new(url, format.as_deref(), options).map_err(|e| {
+                        anyhow::anyhow!("mux AvOutput::new(url={:?}): {:?}", url, e)
+                    })?,
+                    url.clone(),
+                )
+            }
+        };
+
+        // Add one output stream per planned stream; collect the packet sources.
+        let mut copied_indices: HashSet<usize> = HashSet::new();
+        let mut enc_receivers: Vec<(usize, RawPacketReceiver)> = Vec::new();
+        let mut primary_av: Option<AvStream> = None;
+
+        for entry in &plan {
+            let input_stream = state
+                .input_streams
+                .iter()
+                .find(|s| s.index() == entry.input_index)
+                .ok_or(anyhow::anyhow!("no matching stream in input"))?
+                .clone();
+            let out_stream = if entry.transcode {
+                AvStream::for_encoder_output(&input_stream, entry.codec_id)
+                    .with_index(entry.input_index)
+            } else {
+                input_stream
+            };
+            output.add_stream(&out_stream)?;
+            if primary_av.is_none() {
+                primary_av = Some(out_stream.clone());
+            }
+            if entry.transcode {
+                let recv = state
+                    .encoder_tasks
+                    .get(&entry.input_index)
+                    .ok_or(anyhow::anyhow!("encoder task not found"))?
+                    .subscribe();
+                enc_receivers.push((entry.input_index, recv));
+            } else {
+                copied_indices.insert(entry.input_index);
+            }
+        }
+        let primary_av = primary_av.ok_or(anyhow::anyhow!("mux plan is empty"))?;
+
+        let input_receiver = state
             .input_task
             .as_ref()
             .ok_or(anyhow::anyhow!("input task not found"))?
             .subscribe();
 
-        let target_stream = state
-            .input_streams
-            .iter()
-            .find(|s| s.index() == input_stream_index)
-            .ok_or(anyhow::anyhow!("no matching stream in input"))?
-            .clone();
-        let target_stream_index = target_stream.index();
-        let url_owned = url.to_string();
-
-        // RTSP output often needs rtsp_transport=tcp for avio_open2 to succeed
-        let options = match format {
-            Some("rtsp") => {
-                let mut opts = Dictionary::new();
-                opts.set("rtsp_transport", "tcp");
-                Some(opts)
-            }
-            _ => None,
-        };
-
-        let mut output = AvOutput::new(url, format, options).map_err(|e| {
-            anyhow::anyhow!(
-                "create_mux_to_net AvOutput::new(url={:?}, format={:?}): {:?}",
-                url,
-                format,
-                e
-            )
-        })?;
-        output
-            .add_stream(&target_stream)
-            .map_err(|e| anyhow::anyhow!("create_mux_to_net add_stream: {:?}", e))?;
-
-        let mut accepted_indices = vec![target_stream_index];
-
-        if include_audio {
-            if let Some(audio_stream) = state.input_streams.iter().find(|s| s.is_audio()) {
-                output
-                    .add_stream(audio_stream)
-                    .map_err(|e| anyhow::anyhow!("create_mux_to_net add_audio_stream: {:?}", e))?;
-                accepted_indices.push(audio_stream.index());
-                log::info!(
-                    "mux to net: added audio stream index {} alongside video",
-                    audio_stream.index()
-                );
-            }
-        }
-
         tokio::spawn(async move {
-            let mut output = output;
-            loop {
-                match input_receiver.recv().await {
-                    Ok(RawPacketCmd::Data(packet)) => {
-                        if accepted_indices.contains(&packet.index()) {
-                            if let Err(e) = output.write_packet(packet.index(), packet) {
-                                log::error!(
-                                    "mux to net write_packet error: {:#?}\nbacktrace:\n{}",
-                                    e,
-                                    Backtrace::capture()
-                                );
+            // One MuxSignal stream per source. A source's channel may stay open
+            // after its logical end (the input/encoder tasks keep a sender), so
+            // termination is driven by the EOF *signal* (one per source), not by
+            // channel close.
+            let mut sources: Vec<Pin<Box<dyn Stream<Item = MuxSignal> + Send>>> = Vec::new();
+            let copied = Arc::new(copied_indices);
+            {
+                let copied = copied.clone();
+                let s = BroadcastStream::new(input_receiver).filter_map(move |r| {
+                    let copied = copied.clone();
+                    async move {
+                        match r {
+                            Ok(RawPacketCmd::Data(p)) if copied.contains(&p.index()) => {
+                                Some(MuxSignal::Packet(p.index(), p))
                             }
+                            Ok(RawPacketCmd::Data(_)) => None, // packet for a transcoded stream
+                            Ok(RawPacketCmd::EOF) => Some(MuxSignal::Eof),
+                            Err(_) => None, // Lagged / Closed
                         }
                     }
-                    Ok(RawPacketCmd::EOF) => break,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        log::warn!("mux to net lagged, dropped {} messages", n);
-                        continue;
+                });
+                sources.push(Box::pin(s));
+            }
+            for (idx, recv) in enc_receivers {
+                let s = BroadcastStream::new(recv).filter_map(move |r| async move {
+                    match r {
+                        Ok(RawPacketCmd::Data(p)) => Some(MuxSignal::Packet(idx, p)),
+                        Ok(RawPacketCmd::EOF) => Some(MuxSignal::Eof),
+                        Err(_) => None,
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                });
+                sources.push(Box::pin(s));
+            }
+
+            let total_sources = sources.len();
+            let mut eofs = 0usize;
+            let mut merged = futures::stream::select_all(sources);
+            let mut output = output;
+            while let Some(sig) = merged.next().await {
+                match sig {
+                    MuxSignal::Packet(idx, packet) => {
+                        if let Err(e) = output.write_packet(idx, packet) {
+                            log::error!("mux write_packet error: {:#?}", e);
+                        }
+                    }
+                    MuxSignal::Eof => {
+                        eofs += 1;
+                        if eofs >= total_sources {
+                            break;
+                        }
+                    }
                 }
             }
             if let Err(e) = output.finish() {
                 log::error!(
-                    "mux to net finish error: {:#?}\nbacktrace:\n{}",
+                    "mux finish error: {:#?}\nbacktrace:\n{}",
                     e,
                     Backtrace::capture()
                 );
             }
-            log::info!("mux to net finished: {}", url_owned);
+            log::info!("mux finished: {}", label);
         });
 
         Ok((
-            target_stream.clone(),
+            primary_av,
             Box::pin(futures::stream::empty::<Option<VideoFrame>>()),
         ))
     }
@@ -920,7 +1019,21 @@ impl Bus {
                     ..Settings::default()
                 }
             } else {
+                // Decoded video transcode: size the encoder to the input (so a
+                // codec-only transcode preserves resolution), honoring explicit
+                // width/height overrides. The encoder's send_frame scaler handles
+                // any resize/format conversion.
+                let target_w = encode
+                    .and_then(|e| e.width)
+                    .unwrap_or_else(|| input_stream.width());
+                let target_h = encode
+                    .and_then(|e| e.height)
+                    .unwrap_or_else(|| input_stream.height());
+                let (target_w, target_h) = Self::ensure_video_dimensions(target_w, target_h);
                 Settings {
+                    width: target_w,
+                    height: target_h,
+                    pixel_format: ffmpeg_next::format::Pixel::YUV420P,
                     codec: Some(codec),
                     ..Settings::default()
                 }
@@ -1114,7 +1227,12 @@ pub struct OutputConfig {
     pub id: String,
     pub dest: OutputDest,
     pub av_type: OutputAvType,
+    /// Encode config for the primary (`av_type`) stream. `None` = copy.
     pub encode: Option<EncodeConfig>,
+    /// Encode config for the audio stream carried alongside video in File/Net
+    /// outputs (`include_audio`). `None` = copy. Independent of `encode`, so a
+    /// File/Net output can copy video while transcoding audio, or vice versa.
+    pub audio_encode: Option<EncodeConfig>,
     /// When true, include both video and audio streams in File/Net outputs.
     pub include_audio: bool,
 }
@@ -1126,12 +1244,19 @@ impl OutputConfig {
             dest,
             av_type,
             encode: None,
+            audio_encode: None,
             include_audio: false,
         }
     }
 
     pub fn with_encode(mut self, encode: EncodeConfig) -> Self {
         self.encode = Some(encode);
+        self
+    }
+
+    /// Set the encode config for the included audio stream (File/Net + `with_audio`).
+    pub fn with_audio_encode(mut self, encode: EncodeConfig) -> Self {
+        self.audio_encode = Some(encode);
         self
     }
 

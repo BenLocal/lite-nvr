@@ -334,7 +334,7 @@ impl Encoder {
         let sending_frame = match (&mut frame, &self.inner) {
             (RawFrame::Video(f), EncoderType::Video(e)) => {
                 let f = f.get_mut();
-                if f.format() != e.format() {
+                if f.format() != e.format() || f.width() != e.width() || f.height() != e.height() {
                     if self.scaler.is_none() {
                         self.scaler =
                             Some(Scaler::new(ffmpeg_next::software::scaling::Context::get(

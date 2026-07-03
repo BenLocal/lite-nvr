@@ -135,6 +135,53 @@ async fn test_mux_only_video_mp4() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Requires scripts/test.mp4. Transcodes the video to a smaller resolution and
+/// muxes it to a file, exercising decode -> scale -> encode -> mux. Verifies the
+/// output is a valid MP4 with a video stream.
+#[tokio::test]
+async fn test_transcode_video_to_file() -> anyhow::Result<()> {
+    let file_name = "output_transcode.mp4";
+    if Path::new(file_name).exists() {
+        std::fs::remove_file(file_name).ok();
+    }
+    let input_path = test_mp4_path();
+    if !input_path.exists() {
+        log::warn!("skip: {} not found", input_path.display());
+        return Ok(());
+    }
+
+    let bus = Bus::new("t");
+    bus.add_input(
+        InputConfig::File {
+            path: input_path.to_string_lossy().into_owned(),
+        },
+        None,
+    )
+    .await?;
+
+    // Force a transcode by requesting a different resolution (same codec).
+    let encode = EncodeConfig {
+        codec: "h264".to_string(),
+        width: Some(320),
+        height: Some(240),
+        ..Default::default()
+    };
+    let output_config = OutputConfig::new(
+        "transcode_file".to_string(),
+        OutputAvType::Video,
+        OutputDest::File {
+            path: file_name.to_string(),
+        },
+    )
+    .with_encode(encode);
+    let _ = bus.add_output(output_config).await?;
+
+    // Source is ~5s; wait for decode/encode/mux to finish, then verify.
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    verify_output_mp4(file_name, Some(5.0), None).await?;
+    Ok(())
+}
+
 /// Stable init-level regression: prefer HW H.264 encoder and fallback to software automatically.
 /// Uses scripts/test.mp4 to obtain real stream parameters, then only validates encoder init path.
 #[test]

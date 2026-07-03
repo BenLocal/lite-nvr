@@ -15,6 +15,15 @@ impl AvStream {
         self.index
     }
 
+    /// Return a copy with a different stream index. Used when muxing an
+    /// encoder-output stream (which [`for_encoder_output`](Self::for_encoder_output)
+    /// creates with index 0) alongside copied input streams, so each output
+    /// stream keeps a distinct index for the muxer's index-keyed mapping.
+    pub fn with_index(mut self, index: usize) -> Self {
+        self.index = index;
+        self
+    }
+
     pub fn parameters(&self) -> &Parameters {
         &self.parameters
     }
