@@ -2494,6 +2494,7 @@ dependencies = [
  "media-pipe-zlm",
  "nvr-dashboard",
  "nvr-db",
+ "nvr-switcher",
  "pavao",
  "reqwest",
  "rszlm",
@@ -2532,6 +2533,19 @@ dependencies = [
  "tokio",
  "turso",
  "uuid",
+]
+
+[[package]]
+name = "nvr-switcher"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "env_logger",
+ "ffmpeg-bus",
+ "ffmpeg-next",
+ "log",
+ "tokio",
 ]
 
 [[package]]

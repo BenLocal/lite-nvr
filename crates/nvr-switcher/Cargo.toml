@@ -1,0 +1,15 @@
+[package]
+name = "nvr-switcher"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Seamless director/switcher: many hot sources feed ONE persistent encoder+muxer published to ZLM, so switching the program source never interrupts the player."
+
+[dependencies]
+ffmpeg-bus = { path = "../../ffmpeg-bus" }
+ffmpeg-next = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+clap = { version = "4", features = ["derive"] }
