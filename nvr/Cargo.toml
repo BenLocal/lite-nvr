@@ -25,6 +25,7 @@ chrono = { workspace = true }
 ffmpeg-bus = { path = "../ffmpeg-bus" }
 nvr-db = { path = "../nvr-db" }
 nvr-dashboard = { path = "../nvr-dashboard" }
+nvr-switcher = { path = "../crates/nvr-switcher" }
 media-pipe-core = { path = "../crates/media-pipe-core" }
 media-pipe-zlm = { path = "../crates/media-pipe-zlm" }
 xiaomi = { path = "../crates/xiaomi" }

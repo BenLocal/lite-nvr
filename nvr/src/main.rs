@@ -10,6 +10,7 @@ mod gb;
 mod handler;
 mod init;
 mod manager;
+mod program;
 mod transport;
 mod xiaomi;
 mod zlm;
