@@ -1,0 +1,16 @@
+[package]
+name = "nvr-compositor"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Multi-view compositor: composite several sources into ONE video via a libavfilter overlay graph, published to ZLM (mosaic / picture-in-picture / video wall)."
+
+[dependencies]
+ffmpeg-bus = { path = "../ffmpeg-bus" }
+ffmpeg-next = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+clap = { version = "4", features = ["derive"] }

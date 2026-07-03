@@ -26,6 +26,7 @@ ffmpeg-bus = { path = "../crates/ffmpeg-bus" }
 nvr-db = { path = "../nvr-db" }
 nvr-dashboard = { path = "../nvr-dashboard" }
 nvr-switcher = { path = "../crates/nvr-switcher" }
+nvr-compositor = { path = "../crates/nvr-compositor" }
 media-pipe-core = { path = "../crates/media-pipe-core" }
 media-pipe-zlm = { path = "../crates/media-pipe-zlm" }
 xiaomi = { path = "../crates/xiaomi" }

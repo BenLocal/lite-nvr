@@ -12,7 +12,8 @@ pub(crate) fn start_api_server(cancel: CancellationToken, port: u16) {
             .nest("/system", crate::handler::system::system_router())
             .nest("/gb", crate::gb::api::gb_router())
             .nest("/transport", crate::transport::api::transport_router())
-            .nest("/program", crate::program::api::program_router());
+            .nest("/program", crate::program::api::program_router())
+            .nest("/compositor", crate::compositor::api::compositor_router());
 
         let app = Router::new()
             .nest("/api", api)

@@ -2492,6 +2492,7 @@ dependencies = [
  "md5",
  "media-pipe-core",
  "media-pipe-zlm",
+ "nvr-compositor",
  "nvr-dashboard",
  "nvr-db",
  "nvr-switcher",
@@ -2507,6 +2508,20 @@ dependencies = [
  "turso",
  "uuid",
  "xiaomi",
+]
+
+[[package]]
+name = "nvr-compositor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "env_logger",
+ "ffmpeg-bus",
+ "ffmpeg-next",
+ "log",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
