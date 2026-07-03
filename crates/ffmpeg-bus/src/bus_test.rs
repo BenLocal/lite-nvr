@@ -182,6 +182,132 @@ async fn test_transcode_video_to_file() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Transcodes audio (copying video), forcing a resample (44100->48000), a
+/// channel change (mono->stereo), and FIFO reframing to the AAC frame size.
+/// Verifies both streams land in the MP4, the audio is really re-encoded to the
+/// requested params, and audio/video stay time-aligned end to end (A/V sync).
+#[tokio::test]
+async fn test_transcode_audio_av_sync() -> anyhow::Result<()> {
+    let file_name = "output_transcode_audio.mp4";
+    if Path::new(file_name).exists() {
+        std::fs::remove_file(file_name).ok();
+    }
+    let input_path = test_mp4_path();
+    if !input_path.exists() {
+        log::warn!("skip: {} not found", input_path.display());
+        return Ok(());
+    }
+
+    let bus = Bus::new("ta");
+    bus.add_input(
+        InputConfig::File {
+            path: input_path.to_string_lossy().into_owned(),
+        },
+        None,
+    )
+    .await?;
+
+    // Copy video, transcode audio to AAC 48000/stereo (source is 44100/mono).
+    let audio_encode = EncodeConfig {
+        codec: "aac".to_string(),
+        sample_rate: Some(48000),
+        channels: Some(2),
+        ..Default::default()
+    };
+    let output_config = OutputConfig::new(
+        "transcode_audio".to_string(),
+        OutputAvType::Video,
+        OutputDest::File {
+            path: file_name.to_string(),
+        },
+    )
+    .with_audio()
+    .with_audio_encode(audio_encode);
+    let _ = bus.add_output(output_config).await?;
+
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
+    let info = probe(file_name).map_err(|e| anyhow::anyhow!("invalid container: {}", e))?;
+    let audio = info
+        .streams
+        .iter()
+        .find(|s| s.codec_type == "audio")
+        .ok_or_else(|| anyhow::anyhow!("output should contain a transcoded audio stream"))?;
+    assert_eq!(
+        audio.sample_rate,
+        Some(48000),
+        "audio should be resampled to 48kHz"
+    );
+    assert_eq!(audio.channels, Some(2), "audio should be upmixed to stereo");
+    assert!(
+        info.streams.iter().any(|s| s.codec_type == "video"),
+        "output should still contain the copied video stream"
+    );
+
+    verify_av_sync(file_name, 5.0).await?;
+    Ok(())
+}
+
+/// Reads a muxed output and checks that its video and audio streams both run to
+/// ~`expected_dur` seconds and end within a small window of each other. A wrong
+/// per-stream time base (e.g. audio PTS in the wrong units) or dropped samples
+/// would show up here as a duration mismatch or A/V drift.
+async fn verify_av_sync(path: &str, expected_dur: f64) -> anyhow::Result<()> {
+    let info = probe(path)?;
+    let type_of: std::collections::HashMap<usize, String> = info
+        .streams
+        .iter()
+        .map(|s| (s.index, s.codec_type.clone()))
+        .collect();
+
+    let mut input = ffmpeg_next::format::input(path)?;
+    let mut last: std::collections::HashMap<usize, f64> = std::collections::HashMap::new();
+    for (stream, packet) in input.packets() {
+        let tb = stream.time_base();
+        let denom = tb.denominator() as f64;
+        if denom == 0.0 {
+            continue;
+        }
+        if let Some(pts) = packet.pts() {
+            let end =
+                (pts as f64 + packet.duration().max(0) as f64) * tb.numerator() as f64 / denom;
+            let e = last.entry(stream.index()).or_insert(0.0);
+            if end > *e {
+                *e = end;
+            }
+        }
+    }
+
+    let end_for = |ty: &str| -> Option<f64> {
+        last.iter()
+            .filter(|(idx, _)| type_of.get(idx).map(|t| t == ty).unwrap_or(false))
+            .map(|(_, v)| *v)
+            .fold(None, |acc, v| Some(acc.map_or(v, |a: f64| a.max(v))))
+    };
+    let video_end = end_for("video").ok_or_else(|| anyhow::anyhow!("no video packets"))?;
+    let audio_end = end_for("audio").ok_or_else(|| anyhow::anyhow!("no audio packets"))?;
+
+    assert!(
+        (video_end - expected_dur).abs() < 0.5,
+        "video ends at {:.3}s, expected ~{:.1}s",
+        video_end,
+        expected_dur
+    );
+    assert!(
+        (audio_end - expected_dur).abs() < 0.5,
+        "audio ends at {:.3}s, expected ~{:.1}s",
+        audio_end,
+        expected_dur
+    );
+    assert!(
+        (video_end - audio_end).abs() < 0.3,
+        "A/V out of sync: video ends {:.3}s, audio ends {:.3}s",
+        video_end,
+        audio_end
+    );
+    Ok(())
+}
+
 /// Stable init-level regression: prefer HW H.264 encoder and fallback to software automatically.
 /// Uses scripts/test.mp4 to obtain real stream parameters, then only validates encoder init path.
 #[test]

@@ -124,6 +124,178 @@ pub fn pixel_format_for_libx264(source: ffmpeg_next::format::Pixel) -> ffmpeg_ne
     }
 }
 
+/// Resamples decoded audio to the encoder's sample format / rate / channel
+/// layout and reframes it into fixed-size frames (the encoder's `frame_size`,
+/// e.g. AAC's 1024 samples) via an `AVAudioFifo`. Codecs with a fixed frame
+/// size reject arbitrarily-sized decoded frames, so a FIFO between the
+/// resampler and the encoder is required.
+struct AudioResampler {
+    swr: ffmpeg_next::software::resampling::Context,
+    fifo: *mut ffmpeg_next::ffi::AVAudioFifo,
+    out_format: ffmpeg_next::format::Sample,
+    out_layout: ffmpeg_next::ChannelLayout,
+    out_rate: u32,
+    in_rate: u32,
+    frame_size: usize,
+    /// Running output sample count, used as each emitted frame's PTS (in the
+    /// encoder's `1/sample_rate` time base). Anchored on the first frame to the
+    /// source's presentation time so copied video and transcoded audio stay in
+    /// sync even when the stream does not start at PTS 0.
+    next_pts: i64,
+    started: bool,
+}
+
+// The AVAudioFifo pointer is created, used, and freed only within this struct,
+// which is not shared across threads concurrently.
+unsafe impl Send for AudioResampler {}
+
+impl AudioResampler {
+    fn new(
+        input: &ffmpeg_next::frame::Audio,
+        out_rate: u32,
+        out_format: ffmpeg_next::format::Sample,
+        out_layout: ffmpeg_next::ChannelLayout,
+        frame_size: u32,
+    ) -> anyhow::Result<Self> {
+        let swr = ffmpeg_next::software::resampling::Context::get(
+            input.format(),
+            input.channel_layout(),
+            input.rate(),
+            out_format,
+            out_layout,
+            out_rate,
+        )?;
+        let channels = out_layout.channels().max(1);
+        let sample_fmt: ffmpeg_next::ffi::AVSampleFormat = out_format.into();
+        let fifo = unsafe { ffmpeg_next::ffi::av_audio_fifo_alloc(sample_fmt, channels, 1) };
+        if fifo.is_null() {
+            anyhow::bail!("av_audio_fifo_alloc failed");
+        }
+        // frame_size == 0 means the codec accepts any frame size; pick a
+        // reasonable default chunk.
+        let frame_size = if frame_size == 0 {
+            1024
+        } else {
+            frame_size as usize
+        };
+        Ok(Self {
+            swr,
+            fifo,
+            out_format,
+            out_layout,
+            out_rate,
+            in_rate: input.rate(),
+            frame_size,
+            next_pts: 0,
+            started: false,
+        })
+    }
+
+    /// Resample `input` and buffer the converted samples in the FIFO.
+    fn push(&mut self, input: &ffmpeg_next::frame::Audio) -> anyhow::Result<()> {
+        if !self.started {
+            self.started = true;
+            // Anchor the output PTS to the first frame's presentation time so
+            // audio stays aligned with copied video when the source starts off
+            // zero. Decoded audio frame PTS are in 1/in_rate; rescale to out_rate.
+            if let Some(p) = input.pts()
+                && self.in_rate > 0
+            {
+                self.next_pts = (p as i128 * self.out_rate as i128 / self.in_rate as i128) as i64;
+            }
+        }
+        let max_out = unsafe {
+            ffmpeg_next::ffi::swr_get_out_samples(self.swr.as_mut_ptr(), input.samples() as i32)
+        };
+        if max_out <= 0 {
+            return Ok(());
+        }
+        let mut converted =
+            ffmpeg_next::frame::Audio::new(self.out_format, max_out as usize, self.out_layout);
+        self.swr.run(input, &mut converted)?;
+        self.fifo_write(&converted)?;
+        Ok(())
+    }
+
+    /// Pull every full `frame_size` frame currently buffered.
+    fn drain(&mut self) -> anyhow::Result<Vec<ffmpeg_next::frame::Audio>> {
+        let mut out = Vec::new();
+        while self.fifo_size() >= self.frame_size as i32 {
+            out.push(self.read_frame(self.frame_size)?);
+        }
+        Ok(out)
+    }
+
+    /// Flush the resampler's internal buffer, then emit all remaining frames
+    /// including a final short one. Call once at end of stream.
+    fn flush(&mut self) -> anyhow::Result<Vec<ffmpeg_next::frame::Audio>> {
+        loop {
+            let mut converted =
+                ffmpeg_next::frame::Audio::new(self.out_format, self.frame_size, self.out_layout);
+            let more = self.swr.flush(&mut converted)?.is_some();
+            if converted.samples() > 0 {
+                self.fifo_write(&converted)?;
+            }
+            if !more || converted.samples() == 0 {
+                break;
+            }
+        }
+        let mut out = self.drain()?;
+        let rem = self.fifo_size();
+        if rem > 0 {
+            out.push(self.read_frame(rem as usize)?);
+        }
+        Ok(out)
+    }
+
+    fn fifo_size(&self) -> i32 {
+        unsafe { ffmpeg_next::ffi::av_audio_fifo_size(self.fifo) }
+    }
+
+    fn fifo_write(&mut self, frame: &ffmpeg_next::frame::Audio) -> anyhow::Result<()> {
+        let n = frame.samples();
+        if n == 0 {
+            return Ok(());
+        }
+        let written = unsafe {
+            ffmpeg_next::ffi::av_audio_fifo_write(
+                self.fifo,
+                (*frame.as_ptr()).extended_data as *const *mut std::ffi::c_void,
+                n as i32,
+            )
+        };
+        if written < n as i32 {
+            anyhow::bail!("av_audio_fifo_write short write: {} < {}", written, n);
+        }
+        Ok(())
+    }
+
+    fn read_frame(&mut self, n: usize) -> anyhow::Result<ffmpeg_next::frame::Audio> {
+        let mut frame = ffmpeg_next::frame::Audio::new(self.out_format, n, self.out_layout);
+        let got = unsafe {
+            ffmpeg_next::ffi::av_audio_fifo_read(
+                self.fifo,
+                (*frame.as_mut_ptr()).extended_data as *const *mut std::ffi::c_void,
+                n as i32,
+            )
+        };
+        if got < 0 {
+            anyhow::bail!("av_audio_fifo_read failed");
+        }
+        frame.set_samples(got as usize);
+        frame.set_rate(self.out_rate);
+        frame.set_pts(Some(self.next_pts));
+        self.next_pts += got as i64;
+        Ok(frame)
+    }
+}
+
+impl Drop for AudioResampler {
+    fn drop(&mut self) {
+        unsafe { ffmpeg_next::ffi::av_audio_fifo_free(self.fifo) };
+    }
+}
+
 pub struct Encoder {
     stream: AvStream,
     inner: EncoderType,
@@ -131,6 +303,7 @@ pub struct Encoder {
     interleaved: bool,
     frame_index: i64,
     scaler: Option<Scaler>,
+    audio_resampler: Option<AudioResampler>,
 }
 
 impl Encoder {
@@ -229,6 +402,7 @@ impl Encoder {
             interleaved: false,
             frame_index: 0,
             scaler: None,
+            audio_resampler: None,
         })
     }
 
@@ -299,7 +473,10 @@ impl Encoder {
             encoder.set_format(default_fmt);
         }
 
-        encoder.set_time_base(ffmpeg_next::util::mathematics::rescale::TIME_BASE);
+        // Audio encoders use a 1/sample_rate time base. Frame PTS are emitted as
+        // a running output-sample count (see AudioResampler), so this makes the
+        // muxer rescale audio timestamps correctly and keeps A/V in sync.
+        encoder.set_time_base(Rational(1, sample_rate as i32));
 
         if let Some(bitrate) = settings.bitrate {
             encoder.set_bit_rate(bitrate as usize);
@@ -327,23 +504,37 @@ impl Encoder {
             interleaved: false,
             frame_index: 0,
             scaler: None,
+            audio_resampler: None,
         })
     }
 
     pub fn send_frame(&mut self, mut frame: RawFrame) -> anyhow::Result<()> {
-        let sending_frame = match (&mut frame, &self.inner) {
-            (RawFrame::Video(f), EncoderType::Video(e)) => {
-                let f = f.get_mut();
-                if f.format() != e.format() || f.width() != e.width() || f.height() != e.height() {
+        // What to hand the encoder: either the input frame unchanged, or a set
+        // of derived frames (a scaled video frame, or resampled/reframed audio
+        // frames). Computed while borrowing `frame`, then acted on afterwards so
+        // the original frame can be moved into the copy path.
+        enum Outbound {
+            Original,
+            Frames(Vec<RawFrame>),
+        }
+
+        let action = match &mut frame {
+            RawFrame::Video(vf) => {
+                let (ef, ew, eh) = match &self.inner {
+                    EncoderType::Video(e) => (e.format(), e.width(), e.height()),
+                    _ => anyhow::bail!("video frame sent to non-video encoder"),
+                };
+                let f = vf.get_mut();
+                if f.format() != ef || f.width() != ew || f.height() != eh {
                     if self.scaler.is_none() {
                         self.scaler =
                             Some(Scaler::new(ffmpeg_next::software::scaling::Context::get(
                                 f.format(),
                                 f.width(),
                                 f.height(),
-                                e.format(),
-                                e.width(),
-                                e.height(),
+                                ef,
+                                ew,
+                                eh,
                                 ffmpeg_next::software::scaling::flag::Flags::empty(),
                             )?));
                     }
@@ -352,26 +543,78 @@ impl Encoder {
                     self.scaler.as_mut().unwrap().run(f, &mut converted)?;
                     // Copy over PTS from old frame.
                     converted.set_pts(f.pts());
-                    Some(RawFrame::Video(converted.into()))
+                    Outbound::Frames(vec![RawFrame::Video(converted.into())])
                 } else {
-                    None
+                    Outbound::Original
                 }
             }
-            (RawFrame::Audio(_), EncoderType::Audio(_)) => None,
-            _ => None,
+            RawFrame::Audio(af) => {
+                let (rate, fmt, layout, frame_size) = match &self.inner {
+                    EncoderType::Audio(e) => {
+                        (e.rate(), e.format(), e.channel_layout(), e.frame_size())
+                    }
+                    _ => anyhow::bail!("audio frame sent to non-audio encoder"),
+                };
+                let in_af = af.get_mut();
+                if self.audio_resampler.is_none() {
+                    self.audio_resampler =
+                        Some(AudioResampler::new(in_af, rate, fmt, layout, frame_size)?);
+                }
+                let resampler = self.audio_resampler.as_mut().unwrap();
+                resampler.push(in_af)?;
+                let chunks = resampler.drain()?;
+                Outbound::Frames(
+                    chunks
+                        .into_iter()
+                        .map(|c| RawFrame::Audio(c.into()))
+                        .collect(),
+                )
+            }
         };
 
-        if let Some(converted) = sending_frame {
-            self.inner.send_frame(converted, self.frame_index)?;
-        } else {
-            self.inner.send_frame(frame, self.frame_index)?;
+        match action {
+            Outbound::Original => {
+                self.inner.send_frame(frame, self.frame_index)?;
+                self.frame_index += 1;
+            }
+            Outbound::Frames(frames) => {
+                for f in frames {
+                    self.inner.send_frame(f, self.frame_index)?;
+                    self.frame_index += 1;
+                }
+            }
         }
-        self.frame_index += 1;
         Ok(())
     }
 
     pub fn send_eof(&mut self) -> anyhow::Result<()> {
+        // Flush the audio resampler's buffered/tail samples before EOF so no
+        // audio is dropped at end of stream.
+        let chunks = if let Some(resampler) = self.audio_resampler.as_mut() {
+            resampler.flush()?
+        } else {
+            Vec::new()
+        };
+        for chunk in chunks {
+            self.inner
+                .send_frame(RawFrame::Audio(chunk.into()), self.frame_index)?;
+            self.frame_index += 1;
+        }
         self.inner.send_eof()
+    }
+
+    /// Describe this encoder's output stream for muxing, taking the codec
+    /// parameters (sample rate / channels / dimensions and the encoder-generated
+    /// extradata) from the encoder context rather than the input stream. A
+    /// param-changing transcode (e.g. 44100/mono -> 48000/stereo) must advertise
+    /// the *encoder's* params, or the muxed header won't match the packets.
+    /// `index` keys the muxer's input->output stream mapping.
+    pub fn output_stream(&self, index: usize) -> AvStream {
+        let params = match &self.inner {
+            EncoderType::Video(e) => ffmpeg_next::codec::Parameters::from(e),
+            EncoderType::Audio(e) => ffmpeg_next::codec::Parameters::from(e),
+        };
+        AvStream::new(index, params, self.encoder_time_base, self.stream.rate())
     }
 
     pub fn encoder_receive_packet(&mut self) -> anyhow::Result<Option<RawPacket>> {
@@ -388,9 +631,12 @@ impl Encoder {
                 }
                 EncoderType::Audio(encoder) => {
                     let frame_size = encoder.frame_size() as i64;
-                    if frame_size > 0 {
-                        let tb = self.encoder_time_base;
-                        let duration = frame_size * tb.1 as i64 / tb.0 as i64;
+                    let rate = encoder.rate() as i64;
+                    let tb = self.encoder_time_base;
+                    if frame_size > 0 && rate > 0 && tb.0 != 0 {
+                        // Duration of `frame_size` samples expressed in the
+                        // encoder time base: frame_size/rate seconds ÷ (num/den).
+                        let duration = frame_size * tb.1 as i64 / (rate * tb.0 as i64);
                         p.set_duration(duration);
                     }
                 }
@@ -426,12 +672,18 @@ impl EncoderTask {
         self.cancel.cancel();
     }
 
-    pub async fn start(&self, encoder: Encoder, mut encoder_receiver: RawFrameReceiver) {
+    pub async fn start(
+        &self,
+        encoder: Encoder,
+        mut encoder_receiver: RawFrameReceiver,
+        lossless: bool,
+    ) {
         let cancel_clone = self.cancel.clone();
         let sender_clone = self.raw_chan.clone();
         log::info!(
-            "encoder loop started, stream index: {}",
-            encoder.stream.index()
+            "encoder loop started, stream index: {}, lossless: {}",
+            encoder.stream.index(),
+            lossless
         );
         /// Bounded queue: when encoder is slower than producer, back-pressure instead of unbounded growth (OOM).
         const FRAME_QUEUE_BOUND: usize = 128;
@@ -460,11 +712,15 @@ impl EncoderTask {
                     }
                     Ok(frame) => {
                         let is_eof = matches!(&frame, RawFrameCmd::EOF);
-                        let ok = if is_eof {
-                            tx.send(frame).is_ok()
+                        // EOF must always land; lossless mode (file/net transcode)
+                        // backpressures every frame so none are dropped. Lossy
+                        // mode (live) drops DATA when the queue is full to bound
+                        // latency/memory.
+                        let disconnected = if is_eof || lossless {
+                            Self::relay_send_backpressure(&tx, &cancel_clone, frame).await
                         } else {
                             match tx.try_send(frame) {
-                                Ok(()) => true,
+                                Ok(()) => false,
                                 Err(std::sync::mpsc::TrySendError::Full(_)) => {
                                     dropped_count += 1;
                                     if dropped_count % DROP_LOG_INTERVAL == 1 {
@@ -473,12 +729,12 @@ impl EncoderTask {
                                             dropped_count
                                         );
                                     }
-                                    true
+                                    false
                                 }
-                                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => false,
+                                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => true,
                             }
                         };
-                        if !ok {
+                        if disconnected {
                             break;
                         }
                     }
@@ -489,6 +745,30 @@ impl EncoderTask {
             let _ = handle.await;
             log::info!("encoder task finished");
         });
+    }
+
+    /// Send a frame into the bounded encoder queue, waiting (async, so the
+    /// executor stays free) for room instead of dropping. Returns true if the
+    /// encoder loop's receiver has gone away, so the caller should stop.
+    async fn relay_send_backpressure(
+        tx: &std::sync::mpsc::SyncSender<RawFrameCmd>,
+        cancel: &CancellationToken,
+        frame: RawFrameCmd,
+    ) -> bool {
+        let mut pending = frame;
+        loop {
+            match tx.try_send(pending) {
+                Ok(()) => return false,
+                Err(std::sync::mpsc::TrySendError::Full(f)) => {
+                    if cancel.is_cancelled() {
+                        return false;
+                    }
+                    pending = f;
+                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                }
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return true,
+            }
+        }
     }
 
     fn encoder_loop(

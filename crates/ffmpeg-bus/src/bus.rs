@@ -140,12 +140,18 @@ impl Bus {
                 // decoder/encoder tasks inside the muxer builder; every other
                 // dest starts the primary stream's tasks here.
                 if !is_file_net {
+                    // Live/streaming outputs keep the lossy (low-latency) path.
                     if need_decoder {
-                        Self::start_decoder_task(state, input_stream_index).await?;
+                        Self::start_decoder_task(state, input_stream_index, false).await?;
                     }
                     if need_encoder {
-                        Self::start_encoder_task(state, input_stream_index, output.encode.as_ref())
-                            .await?;
+                        Self::start_encoder_task(
+                            state,
+                            input_stream_index,
+                            output.encode.as_ref(),
+                            false,
+                        )
+                        .await?;
                     }
                 }
 
@@ -393,7 +399,8 @@ impl Bus {
     /// Plan the streams a File/Net output muxes and whether each is copied or
     /// transcoded. The primary (`av_type`) stream uses `output.encode`; the
     /// audio stream carried via `include_audio` uses `output.audio_encode`.
-    /// Audio transcode is not yet implemented, so audio is always copied.
+    /// A stream is transcoded when its encode config differs from the input
+    /// params (see [`Self::encode_needed`]); otherwise it is copied.
     fn build_mux_plan(
         state: &BusState,
         primary_index: usize,
@@ -417,16 +424,7 @@ impl Bus {
 
     fn plan_entry(stream: &AvStream, encode: Option<&EncodeConfig>) -> MuxPlanEntry {
         let input_codec = stream.parameters().id();
-        let wants_transcode = encode.is_some_and(|e| Self::encode_needed(stream, e));
-
-        // Phase 1: only video transcode is wired; audio is always copied.
-        if wants_transcode && !stream.is_video() {
-            log::warn!(
-                "audio transcode not yet supported; copying audio stream {}",
-                stream.index()
-            );
-        }
-        let transcode = wants_transcode && stream.is_video();
+        let transcode = encode.is_some_and(|e| Self::encode_needed(stream, e));
 
         let codec_id = if transcode {
             encode
@@ -448,9 +446,12 @@ impl Bus {
         state: &mut BusState,
         plan: &[MuxPlanEntry],
     ) -> anyhow::Result<()> {
+        // File/Net transcode must be lossless (no dropped frames), or audio/video
+        // gaps and A/V drift appear when a fast source (e.g. a file) is decoded
+        // in a burst. Backpressure is a no-op for realtime sources.
         for entry in plan.iter().filter(|e| e.transcode) {
-            Self::start_decoder_task(state, entry.input_index).await?;
-            Self::start_encoder_task(state, entry.input_index, entry.encode.as_ref()).await?;
+            Self::start_decoder_task(state, entry.input_index, true).await?;
+            Self::start_encoder_task(state, entry.input_index, entry.encode.as_ref(), true).await?;
         }
         Ok(())
     }
@@ -498,8 +499,19 @@ impl Bus {
                 .ok_or(anyhow::anyhow!("no matching stream in input"))?
                 .clone();
             let out_stream = if entry.transcode {
-                AvStream::for_encoder_output(&input_stream, entry.codec_id)
-                    .with_index(entry.input_index)
+                // Use the encoder's real output params (rate/channels/dims +
+                // extradata), captured when its task started, so the muxed
+                // header matches the transcoded packets.
+                state
+                    .encoder_output_streams
+                    .get(&entry.input_index)
+                    .cloned()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "no encoder output stream for transcoded input {}",
+                            entry.input_index
+                        )
+                    })?
             } else {
                 input_stream
             };
@@ -921,6 +933,7 @@ impl Bus {
         state: &mut BusState,
         input_stream_index: usize,
         encode: Option<&EncodeConfig>,
+        lossless: bool,
     ) -> anyhow::Result<()> {
         let input_stream = state
             .input_streams
@@ -941,14 +954,22 @@ impl Bus {
                 .subscribe();
             let audio_settings = Self::audio_settings_from_config(encode);
             let encoder = Encoder::new_audio(input_stream, audio_settings, None)?;
-            encoder_task.start(encoder, encoder_receiver).await;
+            let out_stream = encoder.output_stream(input_stream_index);
+            encoder_task
+                .start(encoder, encoder_receiver, lossless)
+                .await;
             state.encoder_tasks.insert(input_stream_index, encoder_task);
+            state
+                .encoder_output_streams
+                .insert(input_stream_index, out_stream);
             return Ok(());
         }
 
         // Video encoder path
         let codec_id = input_stream.parameters().id();
         let encoder_task = EncoderTask::new();
+        // Encoder-derived output stream descriptor for the muxer, set in each branch.
+        let out_stream: AvStream;
         // Only RAWVIDEO has raw pixel data in packets; use packet->frame conversion.
         // WRAPPED_AVFRAME packets wrap AVFrame (not raw pixels), so use decoder path.
         if codec_id == ffmpeg_next::codec::Id::RAWVIDEO {
@@ -997,7 +1018,8 @@ impl Bus {
                     }
                 });
             }
-            encoder_task.start(encoder, frame_rx).await;
+            out_stream = encoder.output_stream(input_stream_index);
+            encoder_task.start(encoder, frame_rx, lossless).await;
         } else {
             let encoder_receiver = state
                 .decoder_tasks
@@ -1040,16 +1062,23 @@ impl Bus {
             };
             let encoder_opts = Self::encoder_options_from_config(encode);
             let encoder = Encoder::new(input_stream, encoder_settings, encoder_opts)?;
-            encoder_task.start(encoder, encoder_receiver).await;
+            out_stream = encoder.output_stream(input_stream_index);
+            encoder_task
+                .start(encoder, encoder_receiver, lossless)
+                .await;
         }
 
         state.encoder_tasks.insert(input_stream_index, encoder_task);
+        state
+            .encoder_output_streams
+            .insert(input_stream_index, out_stream);
         Ok(())
     }
 
     async fn start_decoder_task(
         state: &mut BusState,
         input_stream_index: usize,
+        lossless: bool,
     ) -> anyhow::Result<()> {
         let input_stream = state
             .input_streams
@@ -1070,7 +1099,9 @@ impl Bus {
             .subscribe();
         let decoder = Decoder::new(input_stream)?;
         let decoder_task = DecoderTask::new();
-        decoder_task.start(decoder, decoder_receiver).await;
+        decoder_task
+            .start(decoder, decoder_receiver, lossless)
+            .await;
         state.decoder_tasks.insert(input_stream_index, decoder_task);
 
         Ok(())
@@ -1177,6 +1208,10 @@ struct BusState {
     input_streams: Vec<AvStream>,
     decoder_tasks: HashMap<usize, DecoderTask>,
     encoder_tasks: HashMap<usize, EncoderTask>,
+    /// Encoder-derived output stream descriptors, keyed by input stream index.
+    /// Populated when an encoder task starts; the muxer uses these (not the
+    /// input params) for transcoded streams so the header matches the packets.
+    encoder_output_streams: HashMap<usize, AvStream>,
 }
 
 impl BusState {
@@ -1189,6 +1224,7 @@ impl BusState {
             input_streams: Vec::new(),
             decoder_tasks: HashMap::new(),
             encoder_tasks: HashMap::new(),
+            encoder_output_streams: HashMap::new(),
             input_options: None,
         }
     }

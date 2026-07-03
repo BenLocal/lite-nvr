@@ -11,6 +11,18 @@ pub struct AvStream {
 }
 
 impl AvStream {
+    /// Construct directly from codec parameters. Used to describe an encoder's
+    /// output stream for muxing, where the parameters come from the encoder
+    /// context (see [`Encoder::output_stream`](crate::encoder::Encoder::output_stream)).
+    pub fn new(index: usize, parameters: Parameters, time_base: Rational, rate: Rational) -> Self {
+        Self {
+            index,
+            parameters,
+            time_base,
+            rate,
+        }
+    }
+
     pub fn index(&self) -> usize {
         self.index
     }

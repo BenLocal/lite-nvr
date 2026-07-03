@@ -12,6 +12,33 @@ use crate::{
     stream::AvStream,
 };
 
+/// Decoder output ring-buffer size. Balances memory vs avoiding Lagged
+/// (dropped frames break a stream). Used both to size the broadcast channel and
+/// as the backpressure high-water mark in lossless mode.
+const FRAME_CHAN_CAP: usize = 16;
+
+/// Send a decoded frame downstream. In `lossless` mode (file/net transcode),
+/// wait for ring-buffer room so a fast producer (e.g. a whole file decoded in a
+/// burst) does not overwrite unconsumed frames. Realtime sources keep the
+/// buffer near-empty, so this never actually waits for them. Not lossless:
+/// send immediately (old behaviour), dropping the oldest if consumers lag.
+fn send_frame_backpressure(
+    sender: &RawFrameSender,
+    cancel: &CancellationToken,
+    lossless: bool,
+    msg: RawFrameCmd,
+) {
+    if lossless {
+        while sender.len() >= FRAME_CHAN_CAP
+            && sender.receiver_count() > 0
+            && !cancel.is_cancelled()
+        {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    let _ = sender.send(msg);
+}
+
 enum DecoderType {
     Video(ffmpeg_next::codec::decoder::Video),
     Audio(ffmpeg_next::codec::decoder::Audio),
@@ -217,8 +244,6 @@ pub struct DecoderTask {
 impl DecoderTask {
     pub fn new() -> Self {
         let cancel = CancellationToken::new();
-        /// Decoder output = raw frames; balance memory vs avoiding Lagged (dropped frames break stream).
-        const FRAME_CHAN_CAP: usize = 16;
         let (sender, _) = tokio::sync::broadcast::channel(FRAME_CHAN_CAP);
 
         Self {
@@ -235,22 +260,29 @@ impl DecoderTask {
         self.cancel.cancel();
     }
 
-    pub async fn start(&self, decoder: Decoder, mut decoder_receiver: RawPacketReceiver) {
+    pub async fn start(
+        &self,
+        decoder: Decoder,
+        mut decoder_receiver: RawPacketReceiver,
+        lossless: bool,
+    ) {
         log::info!(
-            "decoder loop started, stream index: {}",
-            decoder.stream_index()
+            "decoder loop started, stream index: {}, lossless: {}",
+            decoder.stream_index(),
+            lossless
         );
         let cancel_clone = self.cancel.clone();
         let sender_clone = self.raw_chan.clone();
         /// Bounded queue: when decoder is slower than producer, back-pressure instead of unbounded growth (OOM).
         const PACKET_QUEUE_BOUND: usize = 16;
         tokio::spawn(async move {
-            let (packet_tx, packet_rx) = std::sync::mpsc::sync_channel::<RawPacketCmd>(PACKET_QUEUE_BOUND);
+            let (packet_tx, packet_rx) =
+                std::sync::mpsc::sync_channel::<RawPacketCmd>(PACKET_QUEUE_BOUND);
             let current_stream_index = decoder.stream_index();
 
             let handle_cancel = cancel_clone.clone();
             let handle = tokio::task::spawn_blocking(move || {
-                Self::decoder_loop(decoder, handle_cancel, packet_rx, sender_clone)
+                Self::decoder_loop(decoder, handle_cancel, packet_rx, sender_clone, lossless)
             });
             loop {
                 tokio::select! {
@@ -263,12 +295,27 @@ impl DecoderTask {
                                 if packet.index() != current_stream_index {
                                     continue;
                                 }
-                                if packet_tx.send(RawPacketCmd::Data(packet)).is_err() {
+                                // Async backpressure (never block this worker): if
+                                // the decode loop is paused applying its own
+                                // backpressure, yield so sibling tasks (e.g. the
+                                // encoder relay) can run instead of deadlocking.
+                                if Self::packet_send_backpressure(
+                                    &packet_tx,
+                                    &cancel_clone,
+                                    RawPacketCmd::Data(packet),
+                                )
+                                .await
+                                {
                                     break;
                                 }
                             }
                             RawPacketCmd::EOF => {
-                                let _ = packet_tx.send(RawPacketCmd::EOF);
+                                let _ = Self::packet_send_backpressure(
+                                    &packet_tx,
+                                    &cancel_clone,
+                                    RawPacketCmd::EOF,
+                                )
+                                .await;
                                 break;
                             }
                         }
@@ -279,11 +326,36 @@ impl DecoderTask {
         });
     }
 
+    /// Send a packet into the bounded decode queue, waiting (async, so the
+    /// worker stays free) for room instead of blocking the executor thread.
+    /// Returns true if the decode loop's receiver has gone away.
+    async fn packet_send_backpressure(
+        tx: &std::sync::mpsc::SyncSender<RawPacketCmd>,
+        cancel: &CancellationToken,
+        msg: RawPacketCmd,
+    ) -> bool {
+        let mut pending = msg;
+        loop {
+            match tx.try_send(pending) {
+                Ok(()) => return false,
+                Err(std::sync::mpsc::TrySendError::Full(m)) => {
+                    if cancel.is_cancelled() {
+                        return false;
+                    }
+                    pending = m;
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return true,
+            }
+        }
+    }
+
     fn decoder_loop(
         mut decoder: Decoder,
         cancel: CancellationToken,
         packet_rx: std::sync::mpsc::Receiver<RawPacketCmd>,
         out_sender: RawFrameSender,
+        lossless: bool,
     ) {
         loop {
             if cancel.is_cancelled() {
@@ -318,10 +390,20 @@ impl DecoderTask {
                     'outer: loop {
                         match decoder.receive_frame() {
                             Ok(Some(RawFrame::Video(frame))) => {
-                                let _ = out_sender.send(RawFrameCmd::Data(RawFrame::Video(frame)));
+                                send_frame_backpressure(
+                                    &out_sender,
+                                    &cancel,
+                                    lossless,
+                                    RawFrameCmd::Data(RawFrame::Video(frame)),
+                                );
                             }
                             Ok(Some(RawFrame::Audio(frame))) => {
-                                let _ = out_sender.send(RawFrameCmd::Data(RawFrame::Audio(frame)));
+                                send_frame_backpressure(
+                                    &out_sender,
+                                    &cancel,
+                                    lossless,
+                                    RawFrameCmd::Data(RawFrame::Audio(frame)),
+                                );
                             }
                             Ok(None) => break 'outer,
                             Err(e) => {
@@ -347,6 +429,7 @@ impl DecoderTask {
             decoder.stream.time_base(),
             decoder.decoder_time_base
         );
-        let _ = out_sender.send(RawFrameCmd::EOF);
+        // Backpressure EOF too, so it doesn't evict an unread tail frame.
+        send_frame_backpressure(&out_sender, &cancel, lossless, RawFrameCmd::EOF);
     }
 }

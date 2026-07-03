@@ -35,7 +35,8 @@ impl Source {
         let input_task = AvInputTask::new();
         let decoder = Decoder::new(&video_stream)?;
         let decoder_task = DecoderTask::new();
-        decoder_task.start(decoder, input_task.subscribe()).await;
+        // Compositor keeps only the latest frame per source, so lossy is fine.
+        decoder_task.start(decoder, input_task.subscribe(), false).await;
 
         let mut frames = decoder_task.subscribe();
         input_task.start(input).await;
