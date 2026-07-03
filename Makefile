@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install-deps install-watch build run watch check test test-nvr test-ffmpeg-bus \
+.PHONY: help install-deps install-watch build run watch dummy check test test-nvr test-ffmpeg-bus \
         fmt fmt-check frontend-install frontend-build frontend-dev frontend-lint \
         frontend-typecheck clean clean-frontend
 
@@ -36,6 +36,7 @@ help:
 	@echo "Build / Run:"
 	@echo "  build              cargo build --workspace"
 	@echo "  run                cargo run --package nvr"
+	@echo "  dummy              Run GB28181 dummy-camera (emulated IPC) vs local NVR"
 	@echo "  watch              Auto-rebuild & restart nvr on .rs changes"
 	@echo "  check              cargo check --workspace"
 	@echo "  frontend-build     Build dashboard SPA"
@@ -65,6 +66,25 @@ build:
 
 run:
 	cargo run --package nvr
+
+# GB28181 dummy-camera (emulated IPC). Defaults target the local NVR's GB SIP
+# (NVR_GB_SIP_ID / NVR_GB_PORT). Override any DUMMY_* var, and pass extra flags
+# via DUMMY_ARGS, e.g.:
+#   make dummy DUMMY_PASSWORD=12345678
+#   make dummy DUMMY_ARGS="--source-file clip.mp4 --media-ip 172.17.0.1"
+DUMMY_SERVER_ADDR ?= 127.0.0.1:5060
+DUMMY_SERVER_ID   ?= 34020000002000000001
+DUMMY_DEVICE_ID   ?= 34020000001320000001
+DUMMY_PASSWORD    ?=
+DUMMY_ARGS        ?=
+
+dummy:
+	cargo run -p dummy-camera -- \
+		--server-addr $(DUMMY_SERVER_ADDR) \
+		--server-id   $(DUMMY_SERVER_ID) \
+		--device-id   $(DUMMY_DEVICE_ID) \
+		$(if $(strip $(DUMMY_PASSWORD)),--password $(DUMMY_PASSWORD)) \
+		$(DUMMY_ARGS)
 
 watch:
 	@command -v cargo-watch >/dev/null 2>&1 || { \
