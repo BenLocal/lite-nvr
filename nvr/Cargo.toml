@@ -37,7 +37,8 @@ harsh = { workspace = true }
 md5 = { workspace = true }
 # Record-segment transport backends (blocking clients, driven via spawn_blocking).
 suppaftp = "6"
-pavao = "0.2"
+# SMB backend; optional because it links the libsmbclient system library.
+pavao = { version = "0.2", optional = true }
 
 # Only built when target is Linux (see also build.rs for feature "linux" cfg)
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -46,3 +47,6 @@ tokio-linux-video = { workspace = true }
 [features]
 # Set by build.rs when compiling for Linux; satisfies check-cfg
 linux = []
+# SMB transport backend. Off by default so the base build needs no Samba dev
+# library (libsmbclient); enable with `--features smb`.
+smb = ["dep:pavao"]

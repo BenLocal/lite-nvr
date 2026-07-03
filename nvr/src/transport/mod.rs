@@ -6,6 +6,7 @@ pub mod api;
 mod backend;
 pub mod config;
 mod ftp;
+#[cfg(feature = "smb")]
 mod smb;
 mod worker;
 

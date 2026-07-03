@@ -7,6 +7,7 @@ use anyhow::Result;
 use nvr_db::transport_target::TransportTarget;
 
 use crate::transport::ftp::FtpBackend;
+#[cfg(feature = "smb")]
 use crate::transport::smb::SmbBackend;
 
 /// A remote storage destination recorded segments can be copied to. Backends run
@@ -23,7 +24,12 @@ pub trait StorageBackend: Send + Sync {
 pub fn build_backend(target: &TransportTarget) -> Result<Box<dyn StorageBackend>> {
     match target.kind.as_str() {
         "ftp" => Ok(Box::new(FtpBackend::from_json(&target.config)?)),
+        #[cfg(feature = "smb")]
         "smb" => Ok(Box::new(SmbBackend::from_json(&target.config)?)),
+        #[cfg(not(feature = "smb"))]
+        "smb" => anyhow::bail!(
+            "smb transport support was not compiled in (rebuild nvr with `--features smb`)"
+        ),
         other => anyhow::bail!("unsupported transport kind: {other}"),
     }
 }

@@ -170,3 +170,10 @@ jobs:
 
       - name: Cargo test (workspace, no doctest, skip bin harness)
         run: cargo test --workspace --lib --tests --no-fail-fast
+
+      # SMB backend is behind the optional `smb` feature (links libsmbclient).
+      # Verify it still compiles, with the system lib installed only for this step.
+      - name: Cargo check (smb feature)
+        run: |
+          sudo apt-get install -y libsmbclient-dev
+          cargo check -p nvr --features smb
