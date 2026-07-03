@@ -246,11 +246,75 @@ impl Bus {
             }
         }
 
-        if output.encode.is_some() {
-            return Ok(true);
+        // Adaptive: an explicit encode config forces a transcode only when the
+        // requested params actually differ from the input; if they match, the
+        // stream is copied through unchanged (no decoder, no encoder).
+        if let Some(encode) = &output.encode {
+            return Ok(Self::encode_needed(input_stream, encode));
         }
 
         Ok(false)
+    }
+
+    /// Map an [`EncodeConfig::codec`] name to its codec id (best-effort). Covers
+    /// the codecs this pipeline emits; unknown names yield `None` (treated as a
+    /// codec change, i.e. transcode).
+    fn codec_id_from_name(name: &str) -> Option<ffmpeg_next::codec::Id> {
+        use ffmpeg_next::codec::Id;
+        Some(match name.to_ascii_lowercase().as_str() {
+            "h264" | "avc" | "libx264" => Id::H264,
+            "hevc" | "h265" | "libx265" => Id::HEVC,
+            "aac" => Id::AAC,
+            "opus" | "libopus" => Id::OPUS,
+            "mjpeg" => Id::MJPEG,
+            "vp8" | "libvpx" => Id::VP8,
+            "vp9" | "libvpx-vp9" => Id::VP9,
+            "av1" => Id::AV1,
+            "mp3" | "libmp3lame" => Id::MP3,
+            "rawvideo" => Id::RAWVIDEO,
+            _ => return None,
+        })
+    }
+
+    /// Whether an explicit encode config actually requires a transcode of the
+    /// input stream, or whether it can be copied through unchanged. Only the
+    /// *structural* parameters a stream-copy cannot alter are compared: the
+    /// codec, plus geometry (video) or sample rate + channel count (audio).
+    /// Quality knobs (bitrate, preset, pixel_format) do not by themselves force
+    /// a transcode when the structural params already match.
+    fn encode_needed(input_stream: &AvStream, encode: &EncodeConfig) -> bool {
+        Self::encode_needed_params(
+            input_stream.parameters().id(),
+            input_stream.is_video(),
+            input_stream.width(),
+            input_stream.height(),
+            input_stream.sample_rate(),
+            input_stream.channels(),
+            encode,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn encode_needed_params(
+        input_codec: ffmpeg_next::codec::Id,
+        is_video: bool,
+        width: u32,
+        height: u32,
+        sample_rate: u32,
+        channels: u32,
+        encode: &EncodeConfig,
+    ) -> bool {
+        // A different (or unrecognized) target codec always requires a transcode.
+        match Self::codec_id_from_name(&encode.codec) {
+            Some(target) if target == input_codec => {}
+            _ => return true,
+        }
+        if is_video {
+            encode.width.is_some_and(|w| w != width) || encode.height.is_some_and(|h| h != height)
+        } else {
+            encode.sample_rate.is_some_and(|sr| sr != sample_rate)
+                || encode.channels.is_some_and(|c| c != channels)
+        }
     }
 
     /// Mux to a real file path (seekable). Produces standard MP4 that any player can open.

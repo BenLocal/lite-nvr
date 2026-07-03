@@ -8,10 +8,11 @@ use crate::encoder::{AudioSettings, Encoder, Settings};
 use crate::input::AvInput;
 use crate::metadata::probe;
 
-/// Path to scripts/test.mp4 relative to workspace root (parent of ffmpeg-bus). Works regardless of cwd.
+/// Path to scripts/test.mp4 at the workspace root (crates/ffmpeg-bus/../..). Works regardless of cwd.
 fn test_mp4_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
+        .and_then(Path::parent)
         .unwrap()
         .join("scripts")
         .join("test.mp4")
@@ -552,4 +553,138 @@ async fn verify_output_aac(
     );
 
     Ok(())
+}
+
+// --- Adaptive copy-vs-transcode decision (pure logic, no media file) ---
+
+#[test]
+fn codec_id_from_name_maps_known_codecs() {
+    use ffmpeg_next::codec::Id;
+    assert_eq!(Bus::codec_id_from_name("h264"), Some(Id::H264));
+    assert_eq!(Bus::codec_id_from_name("H264"), Some(Id::H264));
+    assert_eq!(Bus::codec_id_from_name("h265"), Some(Id::HEVC));
+    assert_eq!(Bus::codec_id_from_name("hevc"), Some(Id::HEVC));
+    assert_eq!(Bus::codec_id_from_name("aac"), Some(Id::AAC));
+    assert_eq!(Bus::codec_id_from_name("opus"), Some(Id::OPUS));
+    assert_eq!(Bus::codec_id_from_name("wobble"), None);
+}
+
+#[test]
+fn video_params_match_means_copy() {
+    use ffmpeg_next::codec::Id;
+    // Same codec, no geometry override -> copy.
+    let keep = EncodeConfig {
+        codec: "h264".into(),
+        ..Default::default()
+    };
+    assert!(!Bus::encode_needed_params(
+        Id::H264,
+        true,
+        1920,
+        1080,
+        0,
+        0,
+        &keep
+    ));
+    // Same codec, matching geometry -> copy.
+    let matching = EncodeConfig {
+        codec: "h264".into(),
+        width: Some(1920),
+        height: Some(1080),
+        ..Default::default()
+    };
+    assert!(!Bus::encode_needed_params(
+        Id::H264,
+        true,
+        1920,
+        1080,
+        0,
+        0,
+        &matching
+    ));
+}
+
+#[test]
+fn video_params_differ_means_transcode() {
+    use ffmpeg_next::codec::Id;
+    // Different codec.
+    let hevc = EncodeConfig {
+        codec: "hevc".into(),
+        ..Default::default()
+    };
+    assert!(Bus::encode_needed_params(
+        Id::H264,
+        true,
+        1920,
+        1080,
+        0,
+        0,
+        &hevc
+    ));
+    // Same codec, different resolution.
+    let resized = EncodeConfig {
+        codec: "h264".into(),
+        width: Some(1280),
+        height: Some(720),
+        ..Default::default()
+    };
+    assert!(Bus::encode_needed_params(
+        Id::H264,
+        true,
+        1920,
+        1080,
+        0,
+        0,
+        &resized
+    ));
+}
+
+#[test]
+fn audio_copy_vs_transcode() {
+    use ffmpeg_next::codec::Id;
+    // AAC 48k/2 into AAC 48k/2 -> copy.
+    let same = EncodeConfig {
+        codec: "aac".into(),
+        sample_rate: Some(48000),
+        channels: Some(2),
+        ..Default::default()
+    };
+    assert!(!Bus::encode_needed_params(
+        Id::AAC,
+        false,
+        0,
+        0,
+        48000,
+        2,
+        &same
+    ));
+    // Different sample rate -> transcode.
+    let resampled = EncodeConfig {
+        codec: "aac".into(),
+        sample_rate: Some(44100),
+        ..Default::default()
+    };
+    assert!(Bus::encode_needed_params(
+        Id::AAC,
+        false,
+        0,
+        0,
+        48000,
+        2,
+        &resampled
+    ));
+    // Different codec -> transcode.
+    let opus = EncodeConfig {
+        codec: "opus".into(),
+        ..Default::default()
+    };
+    assert!(Bus::encode_needed_params(
+        Id::AAC,
+        false,
+        0,
+        0,
+        48000,
+        2,
+        &opus
+    ));
 }
