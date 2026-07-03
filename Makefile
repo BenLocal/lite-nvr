@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install-deps install-watch build run watch dummy check test test-nvr test-ffmpeg-bus \
+.PHONY: help install-deps download-asr-libs download-asr-models xvfb install-watch build run watch dummy check test test-nvr test-ffmpeg-bus \
         fmt fmt-check frontend-install frontend-build frontend-dev frontend-lint \
         frontend-typecheck clean clean-frontend
 
@@ -23,6 +23,25 @@ endif
 
 export LD_LIBRARY_PATH
 
+# Mirror uppercase proxy vars (from .env) to lowercase so curl/wget honor them
+# for both http and https (curl ignores uppercase HTTP_PROXY for http URLs).
+ifneq ($(strip $(HTTPS_PROXY)),)
+https_proxy ?= $(HTTPS_PROXY)
+export https_proxy
+endif
+ifneq ($(strip $(HTTP_PROXY)),)
+http_proxy ?= $(HTTP_PROXY)
+export http_proxy
+endif
+
+# Prebuilt sherpa-onnx libs for crates/nvr-asr. When fetched via
+# `make download-asr-libs`, auto-wire SHERPA_ONNX_LIB_DIR so the workspace
+# build links them offline (static libs; no runtime LD_LIBRARY_PATH needed).
+SHERPA_ONNX_LIB_DIR ?= $(firstword $(wildcard $(PROJECT_ROOT)/third_party/sherpa-onnx/*/lib))
+ifneq ($(strip $(SHERPA_ONNX_LIB_DIR)),)
+export SHERPA_ONNX_LIB_DIR
+endif
+
 DASHBOARD_DIR := nvr-dashboard/app
 
 help:
@@ -30,6 +49,8 @@ help:
 	@echo ""
 	@echo "Setup:"
 	@echo "  install-deps       Install FFmpeg & ZLMediaKit prerequisites"
+	@echo "  download-asr-libs  Download prebuilt sherpa-onnx libs for nvr-asr (via HTTP(S)_PROXY)"
+	@echo "  download-asr-models Download silero_vad.onnx + SenseVoice model (via HTTP(S)_PROXY)"
 	@echo "  install-watch      cargo install cargo-watch"
 	@echo "  frontend-install   npm ci in $(DASHBOARD_DIR)"
 	@echo ""
@@ -41,6 +62,7 @@ help:
 	@echo "  check              cargo check --workspace"
 	@echo "  frontend-build     Build dashboard SPA"
 	@echo "  frontend-dev       Run dashboard dev server"
+	@echo "  xvfb               Start Xvfb virtual display :99 (screen-capture tests)"
 	@echo ""
 	@echo "Quality:"
 	@echo "  test               Run all workspace tests"
@@ -57,6 +79,25 @@ help:
 
 install-deps:
 	bash scripts/pre_install_deps.sh
+
+# Download the prebuilt sherpa-onnx native libs (crates/nvr-asr) via the proxy
+# from .env (HTTP_PROXY/HTTPS_PROXY, mirrored to lowercase above). Pass script
+# flags with ASR_LIBS_ARGS, e.g.:
+#   make download-asr-libs ASR_LIBS_ARGS="--shared --arch aarch64"
+ASR_LIBS_ARGS ?=
+download-asr-libs:
+	bash scripts/download_sherpa_onnx_libs.sh $(ASR_LIBS_ARGS)
+
+# Download the ASR models (silero_vad.onnx + SenseVoice) via the .env proxy.
+# Pass script flags with ASR_MODELS_ARGS, e.g.
+#   make download-asr-models ASR_MODELS_ARGS="--dest /data/models"
+ASR_MODELS_ARGS ?=
+download-asr-models:
+	bash scripts/download_asr_models.sh $(ASR_MODELS_ARGS)
+
+# Start the Xvfb virtual display used by screen-capture tests/pipelines.
+xvfb:
+	bash scripts/run_xvfb.sh
 
 install-watch:
 	cargo install cargo-watch

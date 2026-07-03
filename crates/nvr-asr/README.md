@@ -59,16 +59,27 @@ OS/arch and the version from `Cargo.lock`; run it with `--help` for options
 
 ## Models
 
-Download a SenseVoice model (ships with `tokens.txt`) and the Silero VAD model:
+The recognizer needs a SenseVoice model (ships with `tokens.txt`) and the
+Silero VAD model. Fetch both into `third_party/asr-models/` with:
+
+```bash
+make download-asr-models        # honors HTTP(S)_PROXY from .env
+```
+
+The SenseVoice release tarball also bundles `test_wavs/*.wav` (16 kHz sample
+clips) you can point the demo at.
+
+<details><summary>Manual download</summary>
 
 ```bash
 # SenseVoice (multilingual: zh / en / ja / ko / yue)
 curl -LO https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2
 tar xjf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2
-
 # Silero VAD
 curl -LO https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
 ```
+
+</details>
 
 ## Run the demo
 
