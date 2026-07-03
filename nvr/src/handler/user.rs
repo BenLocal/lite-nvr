@@ -3,7 +3,6 @@ use axum::{
     Json, Router,
     routing::{get, post},
 };
-use nvr_db::{kv::Kv, user::UserInfo};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -42,10 +41,9 @@ async fn login(Json(req): Json<UserLoginRequest>) -> ApiJsonResult<UserLoginResp
         return Err(anyhow::anyhow!("Invalid username or password").into());
     }
 
-    let user = match nvr_db::kv::by_module_and_key("user", username, &conn).await? {
-        Some(kv) => parse_user_info(kv)?,
-        None => return Err(anyhow::anyhow!("Invalid username or password").into()),
-    };
+    let user = nvr_db::user::get_by_username(username, &conn)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Invalid username or password"))?;
 
     let parsed_hash = PasswordHash::new(&user.password_hash)
         .map_err(|_| anyhow::anyhow!("Invalid username or password"))?;
@@ -55,11 +53,6 @@ async fn login(Json(req): Json<UserLoginRequest>) -> ApiJsonResult<UserLoginResp
 
     let token = uuid::Uuid::new_v4().to_string();
     Ok(ok_json(UserLoginResponse { token }))
-}
-
-fn parse_user_info(kv: Kv) -> anyhow::Result<UserInfo> {
-    serde_json::from_str(&kv.value.unwrap_or_default())
-        .map_err(|_| anyhow::anyhow!("Invalid username or password"))
 }
 
 async fn logout() -> ApiJsonResult<()> {

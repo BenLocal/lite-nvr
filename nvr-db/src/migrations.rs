@@ -46,10 +46,7 @@ pub async fn ensure_default_admin_user(url: &str) -> anyhow::Result<()> {
     let config = DatabaseConfig::new(url);
     let db = NvrDatabase::new(&config).await?;
     let conn = db.connect()?;
-    if crate::kv::by_module_and_key("user", "admin", &conn)
-        .await?
-        .is_some()
-    {
+    if crate::user::exists("admin", &conn).await? {
         return Ok(());
     }
 
@@ -61,13 +58,7 @@ pub async fn ensure_default_admin_user(url: &str) -> anyhow::Result<()> {
         create_time: now,
         update_time: now,
     };
-
-    let value = serde_json::to_string(&user)?;
-    conn.execute(
-        "INSERT INTO kvs (module, key, sub_key, value) VALUES (?1, ?2, ?3, ?4)",
-        ("user", "admin", "", value.as_str()),
-    )
-    .await?;
+    crate::user::insert(&user, &conn).await?;
 
     Ok(())
 }
