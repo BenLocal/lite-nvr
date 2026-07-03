@@ -16,28 +16,26 @@ use axum::{
         FromRequestParts, Request,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{HeaderName, StatusCode, header},
+    http::{HeaderMap, HeaderName, StatusCode, header},
     response::{IntoResponse, Response},
     routing::any,
 };
 use futures::{SinkExt, StreamExt};
+use hyper_util::{
+    client::legacy::{Client, connect::HttpConnector},
+    rt::TokioExecutor,
+};
 use tokio_tungstenite::tungstenite;
 
 /// ZLM HTTP/WS endpoint. Loopback is fine — ZLM's server binds all interfaces.
 const ZLM_HTTP_HOST: &str = "127.0.0.1";
 const ZLM_HTTP_PORT: u16 = 8553;
-/// Cap on a proxied *request* body we buffer before forwarding. Responses are
-/// streamed (so live FLV/HLS are unbounded); this only limits uploads.
-const MAX_REQUEST_BODY: usize = 64 * 1024 * 1024;
 
-/// Shared HTTP client for the upstream leg. Redirects are disabled so the proxy
-/// passes ZLM's responses through verbatim instead of chasing them itself.
-static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("build zlm proxy http client")
-});
+/// Low-level client for the upstream leg. It forwards the incoming `Request`
+/// after only rewriting its URI — request and response bodies stream through
+/// untouched (no buffering), so uploads and live FLV/HLS are both unbounded.
+static CLIENT: LazyLock<Client<HttpConnector, Body>> =
+    LazyLock::new(|| Client::builder(TokioExecutor::new()).build_http());
 
 /// Router that forwards `/media` and `/media/*` to ZLM. Merge into the app.
 pub(crate) fn media_proxy_router() -> Router {
@@ -67,64 +65,51 @@ async fn proxy(req: Request) -> Response {
     }
 }
 
-/// Headers that are connection-specific and must not be forwarded either way.
-fn is_hop_by_hop(name: &HeaderName) -> bool {
-    *name == header::CONNECTION
-        || *name == header::TRANSFER_ENCODING
-        || *name == header::UPGRADE
-        || *name == header::PROXY_AUTHENTICATE
-        || *name == header::PROXY_AUTHORIZATION
-        || *name == header::TE
-        || *name == header::TRAILER
-        || name.as_str().eq_ignore_ascii_case("keep-alive")
+/// Remove connection-specific (hop-by-hop) headers that must not cross a proxy.
+fn strip_hop_by_hop(headers: &mut HeaderMap) {
+    for name in [
+        header::CONNECTION,
+        header::TRANSFER_ENCODING,
+        header::UPGRADE,
+        header::PROXY_AUTHENTICATE,
+        header::PROXY_AUTHORIZATION,
+        header::TE,
+        header::TRAILER,
+    ] {
+        headers.remove(name);
+    }
+    headers.remove(HeaderName::from_static("keep-alive"));
 }
 
-async fn proxy_http(req: Request, zlm_path: &str, query: Option<&str>) -> Response {
-    let (parts, body) = req.into_parts();
-
-    let mut url = format!("http://{ZLM_HTTP_HOST}:{ZLM_HTTP_PORT}{zlm_path}");
+async fn proxy_http(mut req: Request, zlm_path: &str, query: Option<&str>) -> Response {
+    // Point the request at ZLM; its body streams through untouched.
+    let mut target = format!("http://{ZLM_HTTP_HOST}:{ZLM_HTTP_PORT}{zlm_path}");
     if let Some(q) = query {
-        url.push('?');
-        url.push_str(q);
+        target.push('?');
+        target.push_str(q);
     }
-
-    let body_bytes = match axum::body::to_bytes(body, MAX_REQUEST_BODY).await {
-        Ok(b) => b,
-        Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
-    };
-
-    let mut rb = CLIENT.request(parts.method, &url);
-    for (name, value) in parts.headers.iter() {
-        if is_hop_by_hop(name) || *name == header::HOST {
-            continue;
-        }
-        rb = rb.header(name, value);
-    }
-    if !body_bytes.is_empty() {
-        rb = rb.body(body_bytes);
-    }
-
-    let upstream = match rb.send().await {
-        Ok(r) => r,
+    match target.parse() {
+        Ok(uri) => *req.uri_mut() = uri,
         Err(e) => {
-            log::warn!("media proxy: upstream error for {url}: {e}");
-            return (StatusCode::BAD_GATEWAY, "zlm upstream error").into_response();
+            log::warn!("media proxy: bad target uri {target}: {e}");
+            return StatusCode::BAD_GATEWAY.into_response();
         }
-    };
-
-    let mut builder = Response::builder().status(upstream.status());
-    for (name, value) in upstream.headers().iter() {
-        if is_hop_by_hop(name) {
-            continue;
-        }
-        builder = builder.header(name, value);
     }
-    builder
-        .body(Body::from_stream(upstream.bytes_stream()))
-        .unwrap_or_else(|e| {
-            log::error!("media proxy: build response: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        })
+    // The client derives Host from the new authority; drop the incoming one.
+    req.headers_mut().remove(header::HOST);
+    strip_hop_by_hop(req.headers_mut());
+
+    match CLIENT.request(req).await {
+        Ok(resp) => {
+            let (mut parts, body) = resp.into_parts();
+            strip_hop_by_hop(&mut parts.headers);
+            Response::from_parts(parts, Body::new(body))
+        }
+        Err(e) => {
+            log::warn!("media proxy: upstream error for {target}: {e}");
+            (StatusCode::BAD_GATEWAY, "zlm upstream error").into_response()
+        }
+    }
 }
 
 fn proxy_ws(ws: WebSocketUpgrade, zlm_path: &str, query: Option<&str>) -> Response {
