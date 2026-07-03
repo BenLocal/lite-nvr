@@ -12,6 +12,7 @@ mod handler;
 mod init;
 mod manager;
 mod program;
+mod proxy;
 mod transport;
 mod xiaomi;
 mod zlm;

@@ -17,7 +17,9 @@ pub(crate) fn start_api_server(cancel: CancellationToken, port: u16) {
 
         let app = Router::new()
             .nest("/api", api)
-            .nest("/nvr", nvr_dashboard::app_router(None));
+            .nest("/nvr", nvr_dashboard::app_router(None))
+            // Reverse-proxy `/media/*` to ZLM's HTTP service (HTTP + WS).
+            .merge(crate::proxy::media_proxy_router());
 
         let listener = TcpListener::bind(format!("0.0.0.0:{}", port))
             .await
