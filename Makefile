@@ -89,7 +89,7 @@ dummy:
 watch:
 	@command -v cargo-watch >/dev/null 2>&1 || { \
 		echo "cargo-watch not found. Run: make install-watch"; exit 1; }
-	cargo watch -w nvr -w ffmpeg-bus -w nvr-db -x 'run --package nvr'
+	cargo watch -w nvr -w crates/ffmpeg-bus -w nvr-db -x 'run --package nvr'
 
 check:
 	cargo check --workspace

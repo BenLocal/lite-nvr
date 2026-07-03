@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "ffmpeg-bus",
+    "crates/ffmpeg-bus",
     "nvr",
     "nvr-dashboard",
     "nvr-db",

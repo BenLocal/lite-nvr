@@ -22,7 +22,7 @@ tokio-util = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
-ffmpeg-bus = { path = "../ffmpeg-bus" }
+ffmpeg-bus = { path = "../crates/ffmpeg-bus" }
 nvr-db = { path = "../nvr-db" }
 nvr-dashboard = { path = "../nvr-dashboard" }
 nvr-switcher = { path = "../crates/nvr-switcher" }

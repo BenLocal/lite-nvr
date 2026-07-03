@@ -76,7 +76,7 @@ REST API request → Handler → Manager (global RwLock<HashMap>) → Pipe → f
 - `nvr/src/api.rs` — route mounting (`/user`, `/pipe`, `/device`, `/playback`, `/system`, `/nvr`)
 - `nvr/src/manager.rs` — pipeline lifecycle via global `RwLock<HashMap<String, Arc<Pipe>>>`
 - `nvr/src/media/pipe.rs` — translates business config into ffmpeg-bus operations
-- `ffmpeg-bus/src/bus.rs` — core media command dispatcher (~35KB, most complex file)
+- `crates/ffmpeg-bus/src/bus.rs` — core media command dispatcher (~35KB, most complex file)
 
 **Database:** SQLite with WAL mode. Migrations in `nvr-db/migrations/`. Uses a KV table (`kvs`) for flexible config storage.
 
@@ -84,7 +84,7 @@ REST API request → Handler → Manager (global RwLock<HashMap>) → Pipe → f
 
 - **Rust:** `cargo fmt`, snake_case for modules/files/functions, Rust edition 2024
 - **Tests:** colocated as `*_test.rs` files alongside source files. For example:
-  - `ffmpeg-bus/src/bus.rs` → `ffmpeg-bus/src/bus_test.rs`
+  - `crates/ffmpeg-bus/src/bus.rs` → `crates/ffmpeg-bus/src/bus_test.rs`
   - `nvr/src/media/pipe.rs` → `nvr/src/media/pipe_test.rs`
   - Keep test files in the same directory as the code they test, using the `_test.rs` suffix
   - Import test modules at the end of source files using:
