@@ -3,6 +3,8 @@
 /zlm
 /data
 /target*
+# downloaded prebuilt native libs (see scripts/download_sherpa_onnx_libs.sh)
+/third_party
 
 
 output.mp4

@@ -1,0 +1,24 @@
+[package]
+name = "nvr-asr"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Real-time speech-to-text via sherpa-onnx: Silero VAD segments speech and an offline SenseVoice recognizer re-decodes the growing segment (offline model simulating streaming, with correction)."
+
+[dependencies]
+# Official k2-fsa Rust bindings to the native sherpa-onnx library. Links
+# statically by default; the build script fetches the prebuilt static libs from
+# GitHub on first build. To build offline/reproducibly, pre-fetch them with
+# `scripts/download_sherpa_onnx_libs.sh` and export SHERPA_ONNX_LIB_DIR. See
+# README.md.
+sherpa-onnx = { version = "1.13", default-features = false }
+hound = "3"
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+
+# src/main.rs is the demo binary; src/lib.rs is the reusable engine.
+[[bin]]
+name = "nvr-asr-demo"
+path = "src/main.rs"
