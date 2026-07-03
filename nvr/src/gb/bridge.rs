@@ -51,18 +51,13 @@ impl GbBridge {
             receiver,
             streams: StreamMap::new(),
             active: Mutex::new(HashMap::new()),
-            media_cache: MediaCache::new(),
+            media_cache: MediaCache,
             control,
         }
     }
 
     pub fn server(&self) -> &GbServer {
         &self.server
-    }
-
-    /// The live-stream cache (fed by ZLM's `on_media_changed` hook).
-    pub fn media_cache(&self) -> &MediaCache {
-        &self.media_cache
     }
 
     /// Snapshot of every gb stream mapping with its live flag and, for live

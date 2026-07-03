@@ -96,21 +96,6 @@ async fn pull_on_not_found_then_release_on_no_reader() {
 }
 
 #[tokio::test]
-async fn media_cache_tracks_regist_through_bridge() {
-    let scfg = GbServerConfig::new(PLATFORM, DOMAIN, "127.0.0.1:0".parse().unwrap());
-    let (server, _ev) = GbServer::bind(scfg).await.unwrap();
-    let bridge = GbBridge::new(
-        server,
-        "127.0.0.1".into(),
-        Box::new(FakeReceiver::default()),
-        crate::zlm::cmd::ZlmControl::spawn(),
-    );
-    assert!(!bridge.media_cache().is_live("rtp", "cam1"));
-    bridge.media_cache().on_regist("rtp", "cam1");
-    assert!(bridge.media_cache().is_live("rtp", "cam1"));
-}
-
-#[tokio::test]
 async fn pull_uses_udp_transport_and_skips_connect() {
     let scfg = GbServerConfig::new(PLATFORM, DOMAIN, "127.0.0.1:0".parse().unwrap());
     let (server, mut server_events) = GbServer::bind(scfg).await.unwrap();

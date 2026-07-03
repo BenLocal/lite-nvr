@@ -1,51 +1,120 @@
-//! Live-stream registry fed by ZLM's `on_media_changed` hook. A stream key
-//! `(app, stream)` is present iff ZLM currently has it registered (publishing).
-//! Cheap-clone (Arc) so the hook and the API can share one instance.
+//! Live-stream liveness check backed by ZLM's own media-source registry. A
+//! stream key `(app, stream)` is live iff ZLM currently has a matching source
+//! registered (publishing). Queried on demand via `MediaSource::for_each`, so
+//! there is no local state to keep in sync with `on_media_changed` events.
 
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use rszlm::obj::{MediaSource, Track};
+use serde::Serialize;
 
-#[derive(Clone, Default)]
-pub struct MediaCache {
-    live: Arc<Mutex<HashSet<(String, String)>>>,
+#[derive(Clone, Copy, Default)]
+pub struct MediaCache;
+
+/// A snapshot of one registered source, extracted from a `MediaSource` while it
+/// is valid (i.e. inside `for_each`), so it can be handed out and serialized.
+#[derive(Debug, Clone, Serialize)]
+pub struct MediaInfo {
+    pub schema: String,
+    pub app: String,
+    pub stream: String,
+    pub reader_count: i32,
+    pub total_reader_count: i32,
+    pub tracks: Vec<TrackInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TrackInfo {
+    pub codec_id: i32,
+    pub codec_name: String,
+    pub bit_rate: i32,
+    pub is_video: bool,
+    // Video-only (0 for audio tracks).
+    pub width: i32,
+    pub height: i32,
+    pub fps: i32,
+    // Audio-only (0 for video tracks).
+    pub sample_rate: i32,
+    pub channels: i32,
+    pub sample_bit: i32,
+}
+
+impl TrackInfo {
+    fn from_track(track: &Track) -> Self {
+        let is_video = track.is_video();
+        let (width, height, fps) = if is_video {
+            (track.video_width(), track.video_height(), track.video_fps())
+        } else {
+            (0, 0, 0)
+        };
+        let (sample_rate, channels, sample_bit) = if is_video {
+            (0, 0, 0)
+        } else {
+            (
+                track.audio_sample_rate(),
+                track.audio_channel(),
+                track.audio_sample_bit(),
+            )
+        };
+        Self {
+            codec_id: track.get_codec_id(),
+            codec_name: track.get_codec_name(),
+            bit_rate: track.get_bit_rate(),
+            is_video,
+            width,
+            height,
+            fps,
+            sample_rate,
+            channels,
+            sample_bit,
+        }
+    }
 }
 
 impl MediaCache {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// ZLM `on_media_changed` Regist: the stream is now publishing.
-    pub fn on_regist(&self, app: &str, stream: &str) {
-        self.live
-            .lock()
-            .unwrap()
-            .insert((app.to_string(), stream.to_string()));
-    }
-
-    /// ZLM `on_media_changed` UnRegist: the stream stopped.
-    pub fn on_unregist(&self, app: &str, stream: &str) {
-        self.live
-            .lock()
-            .unwrap()
-            .remove(&(app.to_string(), stream.to_string()));
-    }
-
+    /// Whether ZLM currently has a source registered for `(app, stream)`.
+    /// Schema/vhost agnostic — matches on app+stream like the old cache key.
     pub fn is_live(&self, app: &str, stream: &str) -> bool {
-        self.live
-            .lock()
-            .unwrap()
-            .contains(&(app.to_string(), stream.to_string()))
+        let mut found = false;
+        MediaSource::for_each(
+            |_src| found = true,
+            None, // any schema
+            None, // any vhost
+            Some(app),
+            Some(stream),
+        );
+        found
     }
 
-    // Reserved for a future aggregate consumer; no caller yet (P4b Task 3 only
-    // consumes `is_live` via `GbBridge::stream_status`).
+    /// Media info (reader counts + tracks) of the source registered for
+    /// `(app, stream)`, or `None` if nothing is publishing. Returns the first
+    /// match if the stream is registered under several schemas.
+    // Reserved for a future consumer (e.g. a `GET /gb/streams/{id}/info` API);
+    // no caller yet.
     #[allow(dead_code)]
-    pub fn live_streams(&self) -> Vec<(String, String)> {
-        self.live.lock().unwrap().iter().cloned().collect()
+    pub fn media_info(&self, app: &str, stream: &str) -> Option<MediaInfo> {
+        let mut info: Option<MediaInfo> = None;
+        MediaSource::for_each(
+            |src| {
+                if info.is_some() {
+                    return;
+                }
+                let tracks = (0..src.track_count())
+                    .filter_map(|i| src.get_track(i))
+                    .map(|track| TrackInfo::from_track(&track))
+                    .collect();
+                info = Some(MediaInfo {
+                    schema: src.schema(),
+                    app: src.app(),
+                    stream: src.stream(),
+                    reader_count: src.reader_count(),
+                    total_reader_count: src.total_reader_count(),
+                    tracks,
+                });
+            },
+            None, // any schema
+            None, // any vhost
+            Some(app),
+            Some(stream),
+        );
+        info
     }
 }
-
-#[cfg(test)]
-#[path = "media_cache_test.rs"]
-mod media_cache_test;

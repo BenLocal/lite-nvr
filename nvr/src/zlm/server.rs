@@ -78,19 +78,6 @@ pub(crate) fn start_zlm_server(
                         bridge.handle_media_no_reader(&stream).await;
                     });
                 });
-                events.on_media_changed(move |msg| {
-                    let Some(bridge) = crate::gb::bridge() else {
-                        return; // GB disabled: no cache to update
-                    };
-                    match msg {
-                        rszlm::event::MediaChangedMessage::Regist(src) => {
-                            bridge.media_cache().on_regist(&src.app(), &src.stream());
-                        }
-                        rszlm::event::MediaChangedMessage::UnRegist(src) => {
-                            bridge.media_cache().on_unregist(&src.app(), &src.stream());
-                        }
-                    }
-                });
                 let runtime_clone = runtime.clone();
                 events.on_record_ts(move |record| {
                     let record_app = record.ts.app();
