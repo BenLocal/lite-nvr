@@ -110,14 +110,20 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// ANSI SGR: interim partials are drawn in yellow (uncommitted, still being
+/// corrected); finals use the terminal's default color (committed).
+const YELLOW: &str = "\x1b[33m";
+const RESET: &str = "\x1b[0m";
+
 /// A `Partial` overwrites the current terminal line (self-correcting); a `Final`
 /// commits it on its own line with timing.
 fn render(ev: &Transcript, pending_partial: &mut bool) {
     use std::io::Write;
     match ev {
         Transcript::Partial { text } => {
-            // \r to line start, \x1b[K clears stale trailing chars.
-            print!("\r\x1b[K… {text}");
+            // \r to line start, \x1b[K clears stale trailing chars; yellow marks
+            // the line as interim, reset so it doesn't bleed past the text.
+            print!("\r\x1b[K{YELLOW}… {text}{RESET}");
             let _ = std::io::stdout().flush();
             *pending_partial = true;
         }
