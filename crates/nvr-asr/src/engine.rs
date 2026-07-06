@@ -85,18 +85,26 @@ impl AsrEngine {
             if self.vad.detected() {
                 self.speech_buf.extend_from_slice(&window);
                 self.since_partial += window.len();
-                if self.since_partial >= partial_every
-                    && let Some(text) = self.decode(&self.speech_buf)
-                {
-                    self.since_partial = 0;
-                    // With a punctuation model, keep interim text punctuation-free
-                    // so partials show only the recognizer's corrections.
-                    let text = if self.punct.is_some() {
-                        strip_punct(&text)
-                    } else {
-                        text
-                    };
-                    out.push(Transcript::Partial { text });
+                if self.since_partial >= partial_every {
+                    let t_dec = std::time::Instant::now();
+                    let decoded = self.decode(&self.speech_buf);
+                    log::debug!(
+                        "partial decode took {:?} for {:.2}s audio",
+                        t_dec.elapsed(),
+                        self.speech_buf.len() as f32 / SAMPLE_RATE as f32
+                    );
+                    if let Some(text) = decoded {
+                        self.since_partial = 0;
+                        // With a punctuation model, keep interim text
+                        // punctuation-free so partials show only the
+                        // recognizer's corrections.
+                        let text = if self.punct.is_some() {
+                            strip_punct(&text)
+                        } else {
+                            text
+                        };
+                        out.push(Transcript::Partial { text });
+                    }
                 }
             }
 
@@ -132,7 +140,14 @@ impl AsrEngine {
         while !self.vad.is_empty() {
             if let Some(segment) = self.vad.front() {
                 let samples = segment.samples();
-                if let Some(text) = self.decode(samples) {
+                let t_dec = std::time::Instant::now();
+                let decoded = self.decode(samples);
+                log::debug!(
+                    "final decode took {:?} for {:.2}s audio",
+                    t_dec.elapsed(),
+                    samples.len() as f32 / SAMPLE_RATE as f32
+                );
+                if let Some(text) = decoded {
                     let sr = SAMPLE_RATE as f32;
                     out.push(Transcript::Final {
                         text: self.finalize_text(text),
@@ -155,7 +170,14 @@ impl AsrEngine {
         match &self.punct {
             Some(p) => {
                 let clean = strip_punct(&text);
-                p.add_punctuation(&clean).unwrap_or(clean)
+                let t = std::time::Instant::now();
+                let out = p.add_punctuation(&clean).unwrap_or(clean);
+                log::debug!(
+                    "punct add_punctuation took {:?} ({} chars)",
+                    t.elapsed(),
+                    out.chars().count()
+                );
+                out
             }
             None => text,
         }

@@ -74,8 +74,15 @@ fn main() -> Result<()> {
     config.partial_interval = Duration::from_millis(args.partial_ms);
     config.debug = args.debug;
 
+    let t_load = std::time::Instant::now();
     let mut engine = AsrEngine::new(config)?;
+    log::debug!(
+        "engine + models load: {:.3}s",
+        t_load.elapsed().as_secs_f64()
+    );
 
+    let audio_secs = samples.len() as f64 / SAMPLE_RATE as f64;
+    let t_proc = std::time::Instant::now();
     let chunk = ((args.chunk_ms * SAMPLE_RATE as u64) / 1000).max(1) as usize;
     let mut pending_partial = false;
     for block in samples.chunks(chunk) {
@@ -91,6 +98,14 @@ fn main() -> Result<()> {
     }
     if pending_partial {
         println!();
+    }
+    if !args.realtime {
+        let p = t_proc.elapsed().as_secs_f64();
+        log::debug!(
+            "processed {audio_secs:.2}s audio in {p:.3}s -> RTF {:.4} ({:.1}x real-time)",
+            p / audio_secs,
+            audio_secs / p
+        );
     }
     Ok(())
 }
