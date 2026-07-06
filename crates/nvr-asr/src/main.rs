@@ -75,7 +75,7 @@ fn main() -> Result<()> {
     config.debug = args.debug;
 
     let t_load = std::time::Instant::now();
-    let mut engine = AsrEngine::new(config)?;
+    let mut engine = AsrEngine::from_config(config)?;
     log::debug!(
         "engine + models load: {:.3}s",
         t_load.elapsed().as_secs_f64()

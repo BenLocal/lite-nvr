@@ -1,6 +1,8 @@
 //! The [`AsrEngine`]: an offline recognizer driven by a VAD to simulate
 //! streaming with correction. See the crate docs for the overall approach.
 
+use std::sync::Arc;
+
 use anyhow::Context;
 use sherpa_onnx::{
     OfflinePunctuation, OfflinePunctuationConfig, OfflineRecognizer, OfflineRecognizerConfig,
@@ -9,31 +11,19 @@ use sherpa_onnx::{
 
 use crate::{AsrConfig, SAMPLE_RATE, Transcript};
 
-/// Real-time speech-to-text engine. Feed it 16 kHz mono `f32` PCM and drain
-/// [`Transcript`] events. Not `Sync`; drive it from a single task/thread.
-pub struct AsrEngine {
+/// Load-once, shareable heavy models (recognizer + optional punctuation) plus
+/// the resolved config. `Send + Sync`; share across streams via `Arc`.
+pub struct AsrModels {
     recognizer: OfflineRecognizer,
-    vad: VoiceActivityDetector,
     /// Optional punctuation restorer, applied only to `Final` text.
     punct: Option<OfflinePunctuation>,
     config: AsrConfig,
-
-    /// Samples not yet aligned to a full VAD window.
-    pending: Vec<f32>,
-    /// Audio accumulated for the currently-open utterance, used to produce
-    /// interim `Partial`s (the VAD owns the authoritative segment for `Final`).
-    speech_buf: Vec<f32>,
-    /// Samples fed into `speech_buf` since the last emitted `Partial`.
-    since_partial: usize,
-    /// Total samples accepted so far (unused for timing — VAD reports segment
-    /// starts — but handy for debugging/back-pressure).
-    total_samples: u64,
 }
 
-impl AsrEngine {
-    /// Build the recognizer + VAD from `config`. Fails if a model path is
-    /// missing/unreadable or the native library could not create a component.
-    pub fn new(config: AsrConfig) -> anyhow::Result<Self> {
+impl AsrModels {
+    /// Build the recognizer (+ optional punctuation) from `config`. Fails if a
+    /// model path is missing/unreadable or the native library rejects it.
+    pub fn load(config: AsrConfig) -> anyhow::Result<Arc<Self>> {
         anyhow::ensure!(
             !config.sense_voice_model.as_os_str().is_empty(),
             "AsrConfig.sense_voice_model path is empty"
@@ -46,23 +36,60 @@ impl AsrEngine {
             !config.silero_vad_model.as_os_str().is_empty(),
             "AsrConfig.silero_vad_model path is empty"
         );
-
-        let recognizer = build_recognizer(&config)
-            .context("failed to create SenseVoice offline recognizer (check model/tokens paths and native lib)")?;
-        let vad = build_vad(&config)
-            .context("failed to create Silero VAD (check silero_vad_model path and native lib)")?;
+        let recognizer = build_recognizer(&config).context(
+            "failed to create SenseVoice offline recognizer (check model/tokens paths and native lib)",
+        )?;
         let punct = build_punct(&config)?;
-
-        Ok(Self {
+        Ok(Arc::new(Self {
             recognizer,
-            vad,
             punct,
             config,
+        }))
+    }
+
+    /// The resolved config (VAD params, cadence, language).
+    pub fn config(&self) -> &AsrConfig {
+        &self.config
+    }
+}
+
+/// Real-time speech-to-text engine over one audio stream. Feed it 16 kHz mono
+/// `f32` PCM and drain [`Transcript`] events. Not `Sync`; drive from one task.
+pub struct AsrEngine {
+    /// Shared heavy models.
+    models: Arc<AsrModels>,
+    /// Per-stream VAD (stateful — one per engine even though it is `Sync`).
+    vad: VoiceActivityDetector,
+    /// Samples not yet aligned to a full VAD window.
+    pending: Vec<f32>,
+    /// Audio accumulated for the currently-open utterance (interim `Partial`s).
+    speech_buf: Vec<f32>,
+    /// Samples fed into `speech_buf` since the last emitted `Partial`.
+    since_partial: usize,
+    /// Total samples accepted (debug/back-pressure only).
+    total_samples: u64,
+}
+
+impl AsrEngine {
+    /// Build a per-stream engine sharing `models`. Builds a fresh VAD from the
+    /// models' config; fails only if the native VAD cannot be created.
+    pub fn new(models: Arc<AsrModels>) -> anyhow::Result<Self> {
+        let vad = build_vad(models.config())
+            .context("failed to create Silero VAD (check silero_vad_model path and native lib)")?;
+        Ok(Self {
+            models,
+            vad,
             pending: Vec::new(),
             speech_buf: Vec::new(),
             since_partial: 0,
             total_samples: 0,
         })
+    }
+
+    /// Convenience: load models and build a single engine in one call (demo /
+    /// single-stream use).
+    pub fn from_config(config: AsrConfig) -> anyhow::Result<Self> {
+        Self::new(AsrModels::load(config)?)
     }
 
     /// Push mono 16 kHz `f32` samples and return any transcription events
@@ -72,8 +99,8 @@ impl AsrEngine {
         self.total_samples += samples.len() as u64;
         self.pending.extend_from_slice(samples);
 
-        let win = self.config.vad_window_size.max(1) as usize;
-        let partial_every = self.config.partial_interval_samples();
+        let win = self.models.config().vad_window_size.max(1) as usize;
+        let partial_every = self.models.config().partial_interval_samples();
 
         while self.pending.len() >= win {
             // Silero expects fixed-size windows; hand it exactly one at a time.
@@ -98,7 +125,7 @@ impl AsrEngine {
                         // With a punctuation model, keep interim text
                         // punctuation-free so partials show only the
                         // recognizer's corrections.
-                        let text = if self.punct.is_some() {
+                        let text = if self.models.punct.is_some() {
                             strip_punct(&text)
                         } else {
                             text
@@ -167,7 +194,7 @@ impl AsrEngine {
     /// any recognizer punctuation and restore it in one pass; otherwise return
     /// the recognizer text unchanged.
     fn finalize_text(&self, text: String) -> String {
-        match &self.punct {
+        match &self.models.punct {
             Some(p) => {
                 let clean = strip_punct(&text);
                 let t = std::time::Instant::now();
@@ -189,9 +216,9 @@ impl AsrEngine {
         if samples.is_empty() {
             return None;
         }
-        let stream = self.recognizer.create_stream();
+        let stream = self.models.recognizer.create_stream();
         stream.accept_waveform(SAMPLE_RATE, samples);
-        self.recognizer.decode(&stream);
+        self.models.recognizer.decode(&stream);
         let text = stream.get_result()?.text;
         let trimmed = text.trim();
         if trimmed.is_empty() {

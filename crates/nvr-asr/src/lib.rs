@@ -22,7 +22,7 @@ use std::{path::PathBuf, time::Duration};
 mod engine;
 mod wav;
 
-pub use engine::AsrEngine;
+pub use engine::{AsrEngine, AsrModels};
 pub use wav::{WavAudio, load_wav_16k_mono};
 
 /// The canonical sample rate SenseVoice + Silero VAD expect.
