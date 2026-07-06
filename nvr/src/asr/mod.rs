@@ -3,6 +3,7 @@
 
 pub mod hub;
 pub mod resample;
+pub mod tap;
 
 use std::path::PathBuf;
 
