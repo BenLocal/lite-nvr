@@ -135,12 +135,17 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
     manager::update_pipe(&device.id, config).await
 }
 
+/// Playable HTTP-FLV URL as a same-origin path through the `/media` reverse
+/// proxy (see `proxy.rs`), not ZLM's direct `127.0.0.1:8553`. A relative path
+/// keeps playback working behind port-forwarding / remote access, where only
+/// the API port is reachable and ZLM's port is not.
 pub(crate) fn build_flv_url(device_id: &str) -> String {
-    format!("http://127.0.0.1:8553/live/{}.live.flv", device_id)
+    format!("/media/live/{}.live.flv", device_id)
 }
 
 /// GB28181 streams are published by ZLM's RtpServer under the `rtp` app (not
-/// `live`), so their playable URL differs from `build_flv_url`.
+/// `live`), so their playable URL differs from `build_flv_url`. Same `/media`
+/// proxy path (see `build_flv_url`).
 pub(crate) fn build_gb_flv_url(device_id: &str) -> String {
-    format!("http://127.0.0.1:8553/rtp/{}.live.flv", device_id)
+    format!("/media/rtp/{}.live.flv", device_id)
 }
