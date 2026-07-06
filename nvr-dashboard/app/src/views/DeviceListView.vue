@@ -17,6 +17,7 @@ import Textarea from "primevue/textarea";
 import ToggleSwitch from "primevue/toggleswitch";
 import { useConfirm } from "primevue/useconfirm";
 import FlvPreviewPlayer from "../components/FlvPreviewPlayer.vue";
+import TranscriptPanel from "../components/TranscriptPanel.vue";
 import {
   addDevice,
   listDevices,
@@ -899,6 +900,11 @@ async function copyText(value: string, label: string) {
         </div>
         <FlvPreviewPlayer
           :url="previewDevice?.flv_url || (previewDevice ? buildFlvUrl(previewDevice.id) : '')"
+        />
+        <TranscriptPanel
+          v-if="previewDevice"
+          :key="previewDevice.id"
+          :pipe-id="previewDevice.id"
         />
       </div>
     </Dialog>
