@@ -2,7 +2,7 @@ use std::{
     backtrace::Backtrace,
     collections::HashMap,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -21,6 +21,10 @@ pub struct Pipe {
     config: PipeConfig,
     cancel: CancellationToken,
     started: AtomicBool,
+    /// The live ffmpeg-bus handle while the pipe is running (set in `start`,
+    /// cleared on teardown). Lets consumers such as ASR subscribe to the pipe's
+    /// decoded audio without owning its internals.
+    bus: Mutex<Option<Arc<FbBus>>>,
 }
 
 impl Pipe {
@@ -29,7 +33,20 @@ impl Pipe {
             config,
             cancel: CancellationToken::new(),
             started: AtomicBool::new(false),
+            bus: Mutex::new(None),
         }
+    }
+
+    /// Subscribe to this pipe's decoded-audio broadcast (for ASR). Errors if the
+    /// pipe is not currently started.
+    pub async fn subscribe_audio(&self) -> anyhow::Result<ffmpeg_bus::frame::RawFrameReceiver> {
+        let bus = self
+            .bus
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("pipe not started"))?;
+        bus.subscribe_audio().await
     }
 
     pub fn cancel(&self) {
@@ -64,7 +81,9 @@ impl Pipe {
 
         log::info!("Pipe: starting with input {}", log_input);
 
-        let bus = FbBus::new("pipe");
+        let bus = Arc::new(FbBus::new("pipe"));
+        // Publish the handle so consumers (ASR) can subscribe while we run.
+        *self.bus.lock().unwrap() = Some(Arc::clone(&bus));
         let cancel = self.cancel.clone();
 
         // Map and add input
@@ -155,6 +174,8 @@ impl Pipe {
             log::warn!("Pipe: remove_input failed: {:#}", e);
         }
         bus.stop();
+        // Unpublish before dropping the last handle; new subscribers now error.
+        *self.bus.lock().unwrap() = None;
         for h in join_handles {
             let _ = h.await;
         }

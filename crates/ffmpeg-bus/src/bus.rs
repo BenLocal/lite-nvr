@@ -211,6 +211,10 @@ impl Bus {
                     }
                 }
             }
+            BusCommand::SubscribeAudio { result } => {
+                let r = Self::subscribe_audio_internal(state).await;
+                let _ = result.send(r);
+            }
         }
 
         Ok(())
@@ -850,6 +854,30 @@ impl Bus {
         Ok((av.clone(), Box::pin(stream)))
     }
 
+    /// Ensure the input + audio decoder are running and return a subscription to
+    /// the decoded-audio broadcast. Mirrors the `OutputDest::Raw` audio path.
+    async fn subscribe_audio_internal(
+        state: &mut BusState,
+    ) -> anyhow::Result<crate::frame::RawFrameReceiver> {
+        if state.input_task.is_none() && state.input_config.is_some() {
+            Self::prepare_input_task(state).await?;
+        }
+        let audio_index = state
+            .input_streams
+            .iter()
+            .find(|s| s.is_audio())
+            .ok_or_else(|| anyhow::anyhow!("pipe has no audio stream"))?
+            .index();
+        Self::start_decoder_task(state, audio_index, false).await?;
+        let receiver = state
+            .decoder_tasks
+            .get(&audio_index)
+            .ok_or_else(|| anyhow::anyhow!("audio decoder task not found after start"))?
+            .subscribe();
+        Self::start_input_task(state).await?;
+        Ok(receiver)
+    }
+
     async fn add_input_internal(
         state: &mut BusState,
         input: InputConfig,
@@ -1188,6 +1216,16 @@ impl Bus {
         rx.await?
     }
 
+    /// Subscribe to this pipe's decoded-audio broadcast, starting the audio
+    /// decoder if needed. The receiver yields `RawFrameCmd` (filter `Audio`).
+    pub async fn subscribe_audio(&self) -> anyhow::Result<crate::frame::RawFrameReceiver> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(BusCommand::SubscribeAudio { result: tx })
+            .await?;
+        rx.await?
+    }
+
     pub fn stop(&self) {
         self.cancel.cancel();
     }
@@ -1244,6 +1282,12 @@ pub enum BusCommand {
     AddOutput {
         output: OutputConfig,
         result: tokio::sync::oneshot::Sender<anyhow::Result<(AvStream, VideoRawFrameStream)>>,
+    },
+    /// Subscribe to the pipe's decoded audio broadcast (ensures the audio
+    /// decoder task is running). Receiver yields `RawFrame::Audio` (and may
+    /// yield video; filter on the receiving side).
+    SubscribeAudio {
+        result: tokio::sync::oneshot::Sender<anyhow::Result<crate::frame::RawFrameReceiver>>,
     },
 }
 

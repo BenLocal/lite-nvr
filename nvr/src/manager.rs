@@ -182,3 +182,12 @@ pub(crate) async fn status(id: &str) -> Option<bool> {
 pub(crate) async fn list_pipe_ids() -> Vec<String> {
     PIPE_MANAGER.read().await.keys().cloned().collect()
 }
+
+/// Fetch a shared handle to the `Pipe` for `id`, if one is registered. Native
+/// worker entries have no `Pipe`, so they return `None`.
+pub(crate) async fn get_pipe(id: &str) -> Option<Arc<Pipe>> {
+    PIPE_MANAGER.read().await.get(id).and_then(|e| match e {
+        Entry::Pipe { pipe, .. } => Some(pipe.clone()),
+        Entry::Worker { .. } => None,
+    })
+}
