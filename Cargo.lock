@@ -2277,6 +2277,7 @@ dependencies = [
 name = "media-pipe-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bytes",
  "ffmpeg-bus",
  "futures",
