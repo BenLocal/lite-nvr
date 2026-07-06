@@ -1,6 +1,7 @@
 //! Real-time ASR for live pipes: taps decoded audio, transcribes via `nvr-asr`,
 //! and emits transcripts over Socket.IO. Opt-in per pipe.
 
+pub mod api;
 pub mod hub;
 pub mod resample;
 pub mod tap;
