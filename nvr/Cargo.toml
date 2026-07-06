@@ -18,6 +18,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 axum = { workspace = true, features = ["ws"] }
+socketioxide = "0.18"
 tokio-tungstenite = "0.29"
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 tokio-util = { workspace = true }
@@ -28,6 +29,7 @@ ffmpeg-bus = { path = "../crates/ffmpeg-bus" }
 ffmpeg-next = { workspace = true }
 nvr-db = { path = "../nvr-db" }
 nvr-dashboard = { path = "../nvr-dashboard" }
+nvr-asr = { path = "../crates/nvr-asr" }
 nvr-switcher = { path = "../crates/nvr-switcher" }
 nvr-compositor = { path = "../crates/nvr-compositor" }
 media-pipe-core = { path = "../crates/media-pipe-core" }
