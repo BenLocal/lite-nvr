@@ -4,6 +4,7 @@ use tokio_util::sync::CancellationToken;
 use crate::db::init_app_db;
 
 mod api;
+mod asr;
 mod compositor;
 mod config;
 mod db;

@@ -2515,6 +2515,7 @@ dependencies = [
  "chrono",
  "env_logger",
  "ffmpeg-bus",
+ "ffmpeg-next",
  "futures",
  "gb28181",
  "harsh",
