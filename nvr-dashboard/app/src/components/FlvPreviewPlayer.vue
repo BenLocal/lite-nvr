@@ -441,9 +441,9 @@ function formatAudioCodec(codec: string) {
 
 .preview-video {
   width: 100%;
-  height: min(70vh, 36rem);
-  min-height: 18rem;
-  max-height: 70vh;
+  height: min(56vh, 32rem);
+  min-height: 16rem;
+  max-height: 56vh;
   border-radius: 0.75rem;
   object-fit: contain;
   background:

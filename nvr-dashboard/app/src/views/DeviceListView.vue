@@ -888,7 +888,7 @@ async function copyText(value: string, label: string) {
       modal
       header="实时预览"
       :style="{ width: 'min(60rem, calc(100vw - 2rem))' }"
-      :content-style="{ overflow: 'hidden' }"
+      :content-style="{ overflowY: 'auto', overflowX: 'hidden' }"
       @hide="closePreview"
     >
       <div class="preview-shell">
@@ -1183,7 +1183,6 @@ async function copyText(value: string, label: string) {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  overflow: hidden;
 }
 
 .preview-meta {
