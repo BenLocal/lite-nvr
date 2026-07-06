@@ -20,7 +20,10 @@ pub(crate) fn start_api_server(cancel: CancellationToken, port: u16) {
 
         let app = Router::new()
             .nest("/api", api)
-            .nest("/nvr", nvr_dashboard::app_router(None))
+            // Mount the dashboard via its prefix-aware branch (nest_service), which
+            // serves the bare SPA root `/nvr/`. Nesting the fallback-based
+            // `app_router(None)` under `/nvr` instead makes axum 404 `/nvr/`.
+            .merge(nvr_dashboard::app_router(Some("/nvr")))
             // Reverse-proxy `/media/*` to ZLM's HTTP service (HTTP + WS).
             .merge(crate::proxy::media_proxy_router())
             // Socket.IO `/asr` namespace for live transcripts.
