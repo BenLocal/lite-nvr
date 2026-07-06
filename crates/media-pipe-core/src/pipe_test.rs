@@ -348,6 +348,64 @@ async fn test_pipe_start_with_rtsp_input() {
     handle.await.unwrap();
 }
 
+/// Isolates the ASR audio tap: a no-output file pipe must still deliver decoded
+/// audio via `subscribe_audio`. Reproduces the nvr smoke scenario without sherpa
+/// or ZLM. NOTE: a file input floods frames as fast as possible, so a slow
+/// consumer legitimately sees `Lagged` — the loop must continue on it (as the
+/// real tap does), not break.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires ffmpeg libs + scripts/test.mp4"]
+async fn test_subscribe_audio_delivers_frames() {
+    use std::time::Duration;
+
+    use ffmpeg_bus::frame::{RawFrame, RawFrameCmd};
+    use tokio::sync::broadcast::error::RecvError;
+
+    let media = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/test.mp4");
+
+    // No-output pipe == exactly the ASR tap scenario.
+    let pipe = Arc::new(Pipe::new(PipeConfig::builder().input_file(media).build()));
+    {
+        let p = pipe.clone();
+        tokio::spawn(async move { p.start(None).await });
+    }
+
+    // subscribe_audio races startup (input demux not ready yet); retry briefly.
+    let mut rx = {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+        loop {
+            match pipe.subscribe_audio().await {
+                Ok(rx) => break rx,
+                Err(_) if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Err(e) => panic!("subscribe_audio never became ready: {e:#}"),
+            }
+        }
+    };
+
+    let mut audio = 0usize;
+    let mut lagged = 0u64;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_secs(3), rx.recv()).await {
+            Ok(Ok(RawFrameCmd::Data(RawFrame::Audio(_)))) => audio += 1,
+            Ok(Ok(RawFrameCmd::Data(RawFrame::Video(_)))) => {}
+            Ok(Ok(RawFrameCmd::EOF)) => break,
+            Ok(Err(RecvError::Lagged(n))) => lagged += n, // keep going, like the real tap
+            Ok(Err(RecvError::Closed)) => break,
+            Err(_) => break, // 3s gap => stream ended
+        }
+    }
+    pipe.cancel();
+
+    eprintln!("[tap] audio frames = {audio}, dropped-by-lag = {lagged}");
+    assert!(
+        audio > 0,
+        "subscribe_audio delivered no audio frames (lagged={lagged})"
+    );
+}
+
 #[tokio::test]
 #[ignore = "Requires actual media file"]
 async fn test_pipe_raw_frame_output() {

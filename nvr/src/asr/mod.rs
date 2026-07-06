@@ -52,3 +52,7 @@ pub fn model_config() -> AsrConfig {
 #[cfg(test)]
 #[path = "resample_test.rs"]
 mod resample_test;
+
+#[cfg(test)]
+#[path = "smoke_test.rs"]
+mod smoke_test;
