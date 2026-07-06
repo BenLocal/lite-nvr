@@ -22,6 +22,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DEST="${DEST:-$REPO_ROOT/third_party/asr-models}"
 SENSE_VOICE_MODEL="${SENSE_VOICE_MODEL:-sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17}"
 BASE="${ASR_MODELS_BASE_URL:-https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models}"
+# The punctuation model lives under a separate GitHub release tag.
+PUNCT_BASE="${PUNCT_MODELS_BASE_URL:-https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -81,7 +83,7 @@ if [[ -f "$PUNCT_DIR/model.onnx" ]]; then
 else
   TARBALL="$DEST/$PUNCT_MODEL.tar.bz2"
   echo "Downloading $PUNCT_MODEL.tar.bz2 ..."
-  dl "$BASE/$PUNCT_MODEL.tar.bz2" "$TARBALL"
+  dl "$PUNCT_BASE/$PUNCT_MODEL.tar.bz2" "$TARBALL"
   bzip2 -t "$TARBALL"
   tar -xjf "$TARBALL" -C "$DEST"
   rm -f "$TARBALL"
