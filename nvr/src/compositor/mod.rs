@@ -82,15 +82,27 @@ pub async fn create(params: CreateParams) -> Result<Arc<CompositorEntry>> {
         Layout::new(params.width, params.height, params.regions)
     };
     for region in &layout.regions {
-        if !known.contains(region.source_id.as_str()) {
+        // An empty source id is a deliberately blank (black) region slot.
+        let sid = region.source_id.as_str();
+        if !sid.is_empty() && !known.contains(sid) {
             anyhow::bail!("region references unknown source '{}'", region.source_id);
         }
     }
 
-    // Start every source hot.
+    // Start every source hot. A source that can't start (e.g. an offline camera)
+    // is skipped rather than failing the whole program — its regions stay black
+    // until it comes up and is switched in.
     let mut started = Vec::with_capacity(params.sources.len());
     for s in &params.sources {
-        started.push(Source::start(&s.id, &s.url).await?);
+        match Source::start(&s.id, &s.url).await {
+            Ok(src) => started.push(src),
+            Err(e) => {
+                log::warn!("compositor '{id}' source '{}' failed to start, skipping: {e:#}", s.id)
+            }
+        }
+    }
+    if started.is_empty() {
+        anyhow::bail!("no source could be started");
     }
     let template = started[0].video_stream.clone();
     let feeds: Vec<SourceFeed> = started

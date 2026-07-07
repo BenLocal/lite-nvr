@@ -63,10 +63,14 @@ pub struct Director {
 }
 
 impl Director {
-    /// Switch region `index` to `source_id`. Returns false if the index is out
-    /// of range or the source is not in the pool.
+    /// Switch region `index` to `source_id`. An empty `source_id` clears the
+    /// region to black. Returns false if the index is out of range or (for a
+    /// non-empty id) the source is not in the pool.
     pub fn switch(&self, index: usize, source_id: &str) -> bool {
-        if index >= self.slots.len() || !self.pool_ids.contains(source_id) {
+        if index >= self.slots.len() {
+            return false;
+        }
+        if !source_id.is_empty() && !self.pool_ids.contains(source_id) {
             return false;
         }
         *self.slots[index].lock().unwrap() = source_id.to_string();
