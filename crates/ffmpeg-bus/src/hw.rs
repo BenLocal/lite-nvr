@@ -131,5 +131,11 @@ pub fn video_decoder_candidates(codec_id: CodecId) -> Vec<CodecCandidate> {
         }
         _ => {}
     }
+    // Escape hatch: some hardware decoders (e.g. QSV) open successfully but then
+    // fail at runtime on the first packet (MFX session errors), leaving no
+    // software fallback. Setting FFMPEG_BUS_DISABLE_HWDEC forces software decode.
+    if std::env::var_os("FFMPEG_BUS_DISABLE_HWDEC").is_some() {
+        out.retain(|c| !c.is_hw);
+    }
     dedup_by_name(out)
 }

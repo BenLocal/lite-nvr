@@ -116,6 +116,9 @@ pub struct Decoder {
     stream: AvStream,
     inner: DecoderType,
     decoder_time_base: Rational,
+    /// True while decoding on a hardware codec; cleared after a runtime
+    /// downgrade to software (see [`Decoder::send_packet`]).
+    is_hw: bool,
 }
 
 impl Decoder {
@@ -131,6 +134,22 @@ impl Decoder {
         let video_decoder = decoder_ctx.decoder().video()?;
         let decoder_time_base = video_decoder.time_base();
         Ok((video_decoder, decoder_time_base))
+    }
+
+    /// Open the default (software) decoder for this video stream, bypassing all
+    /// hardware candidates. Used as the ultimate fallback in [`Decoder::new`]
+    /// and for the runtime downgrade when a hardware decoder fails mid-stream.
+    fn open_software_video(
+        stream: &AvStream,
+    ) -> anyhow::Result<(ffmpeg_next::codec::decoder::Video, Rational)> {
+        let mut decoder_ctx = ffmpeg_next::codec::Context::new();
+        unsafe {
+            (*decoder_ctx.as_mut_ptr()).time_base = stream.time_base().into();
+        }
+        decoder_ctx.set_parameters(stream.parameters().clone())?;
+        let video_decoder = decoder_ctx.decoder().video()?;
+        let time_base = video_decoder.time_base();
+        Ok((video_decoder, time_base))
     }
 
     pub fn new(stream: &AvStream) -> anyhow::Result<Self> {
@@ -166,14 +185,7 @@ impl Decoder {
             }
             if opened.is_none() {
                 // ultimate software fallback: default codec from stream parameters
-                let mut decoder_ctx = ffmpeg_next::codec::Context::new();
-                unsafe {
-                    (*decoder_ctx.as_mut_ptr()).time_base = stream.time_base().into();
-                }
-                decoder_ctx.set_parameters(stream.parameters().clone())?;
-                let video_decoder = decoder_ctx.decoder().video()?;
-                let decoder_time_base = video_decoder.time_base();
-                opened = Some((video_decoder, decoder_time_base));
+                opened = Some(Self::open_software_video(stream)?);
             }
             let (video_decoder, decoder_time_base) =
                 opened.ok_or_else(|| anyhow::anyhow!("unable to open video decoder"))?;
@@ -185,7 +197,10 @@ impl Decoder {
                 );
             } else {
                 if let Some(reason) = first_hw_failure {
-                    log::info!("hardware decode unavailable, fallback to software: {}", reason);
+                    log::info!(
+                        "hardware decode unavailable, fallback to software: {}",
+                        reason
+                    );
                 }
                 log::info!(
                     "video decoder selected: {} (software), stream_index={}",
@@ -198,6 +213,7 @@ impl Decoder {
                 stream: stream.clone(),
                 inner: DecoderType::Video(video_decoder),
                 decoder_time_base,
+                is_hw: selected_is_hw,
             }
         } else if stream.is_audio() {
             let mut decoder_ctx = ffmpeg_next::codec::Context::new();
@@ -211,6 +227,7 @@ impl Decoder {
                 stream: stream.clone(),
                 inner: DecoderType::Audio(audio_decoder),
                 decoder_time_base,
+                is_hw: false,
             }
         } else {
             return Err(anyhow::anyhow!("unsupported stream type"));
@@ -220,7 +237,26 @@ impl Decoder {
     }
 
     pub fn send_packet(&mut self, packet: RawPacket) -> anyhow::Result<()> {
-        self.inner.send_packet(packet, self.decoder_time_base)
+        match self.inner.send_packet(packet, self.decoder_time_base) {
+            Ok(()) => Ok(()),
+            // A hardware decoder can open cleanly yet fail on the first real
+            // packet (e.g. QSV "MFX session" errors), with no built-in fallback.
+            // Downgrade to software once and keep going: the failed packet is
+            // dropped and the software decoder resyncs at the next keyframe.
+            Err(e) if self.is_hw => {
+                log::warn!(
+                    "stream {}: hardware decode failed at runtime ({e:#}); \
+                     falling back to software decoder",
+                    self.stream.index()
+                );
+                let (video_decoder, time_base) = Self::open_software_video(&self.stream)?;
+                self.inner = DecoderType::Video(video_decoder);
+                self.decoder_time_base = time_base;
+                self.is_hw = false;
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     pub fn send_eof(&mut self) -> anyhow::Result<()> {
