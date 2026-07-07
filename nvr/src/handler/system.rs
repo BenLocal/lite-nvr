@@ -16,6 +16,7 @@ pub fn system_router() -> Router {
         .route("/list/v4l2/devices", get(list_v4l2_device))
         .route("/list/x11grab/devices", get(list_x11grab_device))
         .route("/settings", get(get_settings).post(save_settings))
+        .route("/cleanup", get(get_cleanup).post(save_cleanup))
 }
 
 /// Persisted dashboard settings (stored as JSON under config key
@@ -63,6 +64,20 @@ async fn save_settings(Json(req): Json<DashboardSettings>) -> ApiJsonResult<Dash
     let conn = app_db_conn()?;
     nvr_db::config::set_json(SETTINGS_KEY, &settings, &conn).await?;
     Ok(ok_json(settings))
+}
+
+/// Read the record-retention cleanup policy.
+async fn get_cleanup() -> ApiJsonResult<crate::cleanup::CleanupConfig> {
+    Ok(ok_json(crate::cleanup::load_config().await?))
+}
+
+/// Save the record-retention cleanup policy (applied on the next worker cycle).
+async fn save_cleanup(
+    Json(cfg): Json<crate::cleanup::CleanupConfig>,
+) -> ApiJsonResult<crate::cleanup::CleanupConfig> {
+    let cfg = cfg.sanitized();
+    crate::cleanup::save_config(&cfg).await?;
+    Ok(ok_json(cfg))
 }
 
 #[derive(Serialize)]

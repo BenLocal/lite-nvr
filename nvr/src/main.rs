@@ -5,6 +5,7 @@ use crate::db::init_app_db;
 
 mod api;
 mod asr;
+mod cleanup;
 mod compositor;
 mod config;
 mod db;
@@ -70,6 +71,10 @@ async fn main() -> ! {
     // start the record-segment transport worker (copies segments to remote
     // storage targets configured via the API)
     transport::spawn_worker(cancel.clone());
+
+    // start the record-segment retention cleanup worker (deletes old segments
+    // per the policy configured on the dashboard Settings page)
+    cleanup::spawn_worker(cancel.clone());
 
     // start api server
     let cancel_clone = cancel.clone();

@@ -329,6 +329,35 @@ pub async fn get(id: &str, conn: &Connection) -> anyhow::Result<Option<RecordSeg
     Ok(Some(record_from_row(&row)?))
 }
 
+/// Segments whose `create_time` is older than `days` days, oldest first. Used by
+/// the record-retention cleanup to prune expired recordings.
+pub async fn list_older_than_days(
+    days: u32,
+    conn: &Connection,
+) -> anyhow::Result<Vec<RecordSegment>> {
+    let modifier = format!("-{days} days");
+    let mut rows = conn
+        .query(
+            r#"
+            SELECT
+                id, record_type, start_time, duration, file_size, file_name, file_path, folder, app, stream, vhost,
+                video_codec, video_width, video_height, video_fps, video_bit_rate,
+                audio_codec, audio_sample_rate, audio_channels, audio_bit_rate,
+                reserve_text1, reserve_text2, reserve_text3, reserve_int1, reserve_int2, create_time, update_time
+            FROM record_segments
+            WHERE create_time < datetime('now', ?1)
+            ORDER BY start_time ASC
+            "#,
+            [modifier.as_str()],
+        )
+        .await?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next().await? {
+        records.push(record_from_row(&row)?);
+    }
+    Ok(records)
+}
+
 pub async fn delete(id: &str, conn: &Connection) -> anyhow::Result<()> {
     conn.execute("DELETE FROM record_segments WHERE id = ?1", [id])
         .await?;

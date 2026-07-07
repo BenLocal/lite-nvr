@@ -3,8 +3,10 @@ import { computed, onMounted, ref } from 'vue'
 import Card from 'primevue/card'
 import Select from 'primevue/select'
 import Button from 'primevue/button'
+import InputNumber from 'primevue/inputnumber'
+import ToggleSwitch from 'primevue/toggleswitch'
 import { useAppToast } from '../utils/toast'
-import type { PlayerBackend } from '../api/settings'
+import { getCleanup, saveCleanup, type CleanupConfig, type PlayerBackend } from '../api/settings'
 import {
   ensurePlayerPreference,
   savePlayerBackend,
@@ -40,12 +42,6 @@ const currentHint = computed(
   () => playerOptions.find((o) => o.value === player.value)?.hint ?? '',
 )
 
-onMounted(async () => {
-  await ensurePlayerPreference()
-  player.value = playerBackend.value
-  loading.value = false
-})
-
 async function onSave() {
   saving.value = true
   try {
@@ -57,6 +53,45 @@ async function onSave() {
     saving.value = false
   }
 }
+
+// ---- Record-segment cleanup ----------------------------------------------
+const cleanup = ref<CleanupConfig>({
+  enabled: false,
+  max_age_days: 0,
+  max_total_gb: 0,
+  interval_minutes: 60,
+})
+const cleanupLoading = ref(true)
+const cleanupSaving = ref(false)
+
+async function loadCleanup() {
+  try {
+    cleanup.value = await getCleanup()
+  } catch {
+    // keep defaults if the endpoint isn't available yet (pre-rebuild)
+  } finally {
+    cleanupLoading.value = false
+  }
+}
+
+async function onSaveCleanup() {
+  cleanupSaving.value = true
+  try {
+    cleanup.value = await saveCleanup(cleanup.value)
+    appToast.success('已保存', '录制清理策略已更新')
+  } catch (error) {
+    appToast.errorFrom('保存失败', error, '无法保存清理策略')
+  } finally {
+    cleanupSaving.value = false
+  }
+}
+
+onMounted(async () => {
+  await ensurePlayerPreference()
+  player.value = playerBackend.value
+  loading.value = false
+  await loadCleanup()
+})
 </script>
 
 <template>
@@ -103,6 +138,84 @@ async function onSave() {
         </div>
       </template>
     </Card>
+
+    <Card class="data-card settings-card">
+      <template #header>
+        <div class="settings-card-header">
+          <i class="pi pi-trash settings-card-icon" />
+          <span class="settings-card-title">录制清理</span>
+        </div>
+      </template>
+      <template #content>
+        <div class="cleanup-toggle">
+          <label for="cleanup-enabled">启用定时清理</label>
+          <ToggleSwitch
+            input-id="cleanup-enabled"
+            v-model="cleanup.enabled"
+            :disabled="cleanupLoading"
+          />
+        </div>
+
+        <div class="field settings-field">
+          <label for="cleanup-age">保留天数</label>
+          <InputNumber
+            input-id="cleanup-age"
+            v-model="cleanup.max_age_days"
+            :min="0"
+            :max="3650"
+            suffix=" 天"
+            show-buttons
+            size="small"
+            class="field-input"
+            :disabled="cleanupLoading || !cleanup.enabled"
+          />
+          <p class="settings-hint">删除超过该天数的录制片段;0 表示不按时间清理。</p>
+        </div>
+
+        <div class="field settings-field">
+          <label for="cleanup-size">总容量上限</label>
+          <InputNumber
+            input-id="cleanup-size"
+            v-model="cleanup.max_total_gb"
+            :min="0"
+            :max="1048576"
+            suffix=" GB"
+            show-buttons
+            size="small"
+            class="field-input"
+            :disabled="cleanupLoading || !cleanup.enabled"
+          />
+          <p class="settings-hint">录制总大小超过该值时,从最旧的片段开始删除;0 表示不按容量清理。</p>
+        </div>
+
+        <div class="field settings-field">
+          <label for="cleanup-interval">运行间隔</label>
+          <InputNumber
+            input-id="cleanup-interval"
+            v-model="cleanup.interval_minutes"
+            :min="1"
+            :max="10080"
+            suffix=" 分钟"
+            show-buttons
+            size="small"
+            class="field-input"
+            :disabled="cleanupLoading || !cleanup.enabled"
+          />
+          <p class="settings-hint">后台清理任务的执行周期。</p>
+        </div>
+
+        <div class="settings-actions">
+          <Button
+            label="保存"
+            icon="pi pi-check"
+            size="small"
+            :loading="cleanupSaving"
+            :disabled="cleanupLoading"
+            @click="onSaveCleanup"
+          />
+        </div>
+      </template>
+    </Card>
   </div>
 </template>
 
@@ -130,6 +243,13 @@ async function onSave() {
 
 .settings-field {
   max-width: 32rem;
+}
+
+.cleanup-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
 }
 
 .settings-hint {
