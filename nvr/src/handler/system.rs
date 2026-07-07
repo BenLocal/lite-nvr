@@ -15,6 +15,54 @@ pub fn system_router() -> Router {
         .route("/list/device/formats", get(list_device_formats))
         .route("/list/v4l2/devices", get(list_v4l2_device))
         .route("/list/x11grab/devices", get(list_x11grab_device))
+        .route("/settings", get(get_settings).post(save_settings))
+}
+
+/// Persisted dashboard settings (stored as JSON under config key
+/// `dashboard_settings`). Currently only the playback player backend.
+#[derive(Serialize, Deserialize)]
+struct DashboardSettings {
+    /// Which browser player the dashboard uses: `mpegts` (default, MSE/native
+    /// hardware decode), `jessibuca` (WASM soft decode), or `auto` (mpegts
+    /// first, fall back to jessibuca on failure).
+    #[serde(default = "default_player")]
+    player: String,
+}
+
+fn default_player() -> String {
+    "mpegts".to_string()
+}
+
+impl Default for DashboardSettings {
+    fn default() -> Self {
+        Self {
+            player: default_player(),
+        }
+    }
+}
+
+const SETTINGS_KEY: &str = "dashboard_settings";
+
+/// Read dashboard settings, falling back to defaults when unset.
+async fn get_settings() -> ApiJsonResult<DashboardSettings> {
+    let conn = app_db_conn()?;
+    let settings = nvr_db::config::get_json::<DashboardSettings>(SETTINGS_KEY, &conn)
+        .await?
+        .unwrap_or_default();
+    Ok(ok_json(settings))
+}
+
+/// Persist dashboard settings. Validates the player backend and echoes back the
+/// stored value.
+async fn save_settings(Json(req): Json<DashboardSettings>) -> ApiJsonResult<DashboardSettings> {
+    let player = req.player.trim().to_string();
+    if !matches!(player.as_str(), "mpegts" | "jessibuca" | "auto") {
+        return Err(anyhow::anyhow!("invalid player backend: {player}").into());
+    }
+    let settings = DashboardSettings { player };
+    let conn = app_db_conn()?;
+    nvr_db::config::set_json(SETTINGS_KEY, &settings, &conn).await?;
+    Ok(ok_json(settings))
 }
 
 #[derive(Serialize)]

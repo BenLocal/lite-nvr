@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { ensureFlvJs, type FlvPlayer } from '../utils/flvjs'
+import { createStreamPlayer, type StreamPlayerHandle } from '../utils/streamPlayer'
 import type { DeviceItem } from '../api/device'
 
 const props = defineProps<{
@@ -16,8 +16,12 @@ const emit = defineEmits<{
 }>()
 
 const videoRef = ref<HTMLVideoElement | null>(null)
-const player = ref<FlvPlayer | null>(null)
+const jessibucaRef = ref<HTMLDivElement | null>(null)
+const handle = ref<StreamPlayerHandle | null>(null)
 const error = ref('')
+// Bumped on every stop()/start() so an in-flight async start that is superseded
+// by a newer one tears itself down instead of attaching a stale player.
+let gen = 0
 
 // Same URL rule as DeviceListView: prefer the backend-provided flv_url (GB28181
 // streams live under /media/rtp), fall back to the /media/live proxy path.
@@ -44,43 +48,36 @@ async function start() {
   stop()
   error.value = ''
   const video = videoRef.value
+  const container = jessibucaRef.value
   const source = props.source
-  if (!video || !source) {
+  if (!video || !container || !source) {
     return
   }
 
+  const myGen = ++gen
   const url = flvUrl(source)
   try {
-    const flvjs = await ensureFlvJs()
-    if (!flvjs?.isSupported()) {
-      video.src = url
-      await video.play().catch(() => {})
+    const created = await createStreamPlayer(
+      { video, container },
+      url,
+      { muted: true, onError: (m) => (error.value = m) },
+    )
+    if (myGen !== gen) {
+      // Superseded by a newer start()/stop() while we were awaiting.
+      created.destroy()
       return
     }
-
-    const created = flvjs.createPlayer({ type: 'flv', url, isLive: true })
-    player.value = created
-    created.attachMediaElement(video)
-    created.load()
-    await created.play().catch(() => {})
+    handle.value = created
   } catch (e) {
     error.value = e instanceof Error ? e.message : '播放失败'
   }
 }
 
 function stop() {
-  const video = videoRef.value
-  if (player.value) {
-    player.value.pause?.()
-    player.value.unload?.()
-    player.value.detachMediaElement?.()
-    player.value.destroy()
-    player.value = null
-  }
-  if (video) {
-    video.pause()
-    video.removeAttribute('src')
-    video.load()
+  gen++
+  if (handle.value) {
+    handle.value.destroy()
+    handle.value = null
   }
 }
 </script>
@@ -92,14 +89,16 @@ function stop() {
     @click="emit('select', index)"
     @dblclick="source && emit('enlarge', index)"
   >
-    <video
-      v-show="source"
-      ref="videoRef"
-      class="tile-video"
-      muted
-      autoplay
-      playsinline
-    />
+    <div v-show="source" class="tile-media">
+      <video
+        ref="videoRef"
+        class="tile-video"
+        muted
+        autoplay
+        playsinline
+      />
+      <div ref="jessibucaRef" class="tile-jessibuca" />
+    </div>
 
     <div v-if="!source" class="tile-placeholder">
       <i class="pi pi-plus-circle" />
@@ -147,12 +146,27 @@ function stop() {
   border-style: dashed;
 }
 
+.tile-media {
+  position: absolute;
+  inset: 0;
+}
+
 .tile-video {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: contain;
+  background: #0b111d;
+}
+
+/* Jessibuca mounts its own canvas here; shown only when it is the active backend. */
+.tile-jessibuca {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: none;
   background: #0b111d;
 }
 

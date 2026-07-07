@@ -1,8 +1,8 @@
 import { ref, shallowRef } from 'vue'
 import { startAsr, stopAsr } from '../api/asr'
 
-// Minimal shape of the socket.io-client we use. Loaded at runtime from a CDN
-// (same pattern as flv.js in FlvPreviewPlayer), so it isn't an npm dependency.
+// Minimal shape of the socket.io-client we use. Loaded at runtime from a CDN,
+// so it isn't an npm dependency.
 interface AsrSocket {
   emit: (event: string, ...args: unknown[]) => void
   on: (event: string, cb: (payload: unknown) => void) => void

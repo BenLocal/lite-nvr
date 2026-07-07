@@ -11,7 +11,7 @@ import {
   type CompositorProgram,
   type CompositorRegion,
 } from '../api/compositor'
-import { ensureFlvJs, type FlvPlayer } from '../utils/flvjs'
+import { createStreamPlayer, type StreamPlayerHandle } from '../utils/streamPlayer'
 import SwitcherTile from '../components/SwitcherTile.vue'
 
 interface LayoutDef {
@@ -61,7 +61,10 @@ const program = ref<CompositorProgram | null>(null)
 const programBusy = ref(false)
 const programError = ref('')
 const programVideo = ref<HTMLVideoElement | null>(null)
-let programPlayer: FlvPlayer | null = null
+const programJessibuca = ref<HTMLDivElement | null>(null)
+let programHandle: StreamPlayerHandle | null = null
+// Bumped on every stop/start so a superseded async start tears itself down.
+let programGen = 0
 const copiedKey = ref('')
 let copyTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -286,39 +289,28 @@ const addrRows = computed(() => {
 async function startProgramPlayer(url: string) {
   stopProgramPlayer()
   const video = programVideo.value
-  if (!video) {
+  const container = programJessibuca.value
+  if (!video || !container) {
     return
   }
+  const myGen = ++programGen
   try {
-    const flvjs = await ensureFlvJs()
-    if (!flvjs?.isSupported()) {
-      video.src = url
-      await video.play().catch(() => {})
+    const created = await createStreamPlayer({ video, container }, url, { muted: true })
+    if (myGen !== programGen) {
+      created.destroy()
       return
     }
-    const created = flvjs.createPlayer({ type: 'flv', url, isLive: true })
-    programPlayer = created
-    created.attachMediaElement(video)
-    created.load()
-    await created.play().catch(() => {})
+    programHandle = created
   } catch {
     // playback errors surface as a black preview; the addresses stay valid
   }
 }
 
 function stopProgramPlayer() {
-  const video = programVideo.value
-  if (programPlayer) {
-    programPlayer.pause?.()
-    programPlayer.unload?.()
-    programPlayer.detachMediaElement?.()
-    programPlayer.destroy()
-    programPlayer = null
-  }
-  if (video) {
-    video.pause()
-    video.removeAttribute('src')
-    video.load()
+  programGen++
+  if (programHandle) {
+    programHandle.destroy()
+    programHandle = null
   }
 }
 
@@ -564,6 +556,7 @@ onBeforeUnmount(() => {
     <section v-if="program || programError" class="program-bar data-card">
       <div v-if="program" class="program-preview">
         <video ref="programVideo" class="program-video" muted autoplay playsinline />
+        <div ref="programJessibuca" class="program-jessibuca" />
         <span class="program-badge"><span class="program-dot" />PROGRAM</span>
       </div>
       <div class="program-info">
@@ -952,6 +945,16 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  background: #0b111d;
+}
+
+/* Jessibuca mounts its canvas here; shown only when it is the active backend. */
+.program-jessibuca {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: none;
   background: #0b111d;
 }
 

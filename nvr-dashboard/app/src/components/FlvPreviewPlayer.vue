@@ -2,35 +2,17 @@
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
-
-type FlvPlayer = {
-  attachMediaElement: (element: HTMLVideoElement) => void
-  load: () => void
-  play: () => Promise<void>
-  on?: (event: string, listener: (payload: unknown) => void) => void
-  pause?: () => void
-  unload?: () => void
-  detachMediaElement?: () => void
-  destroy: () => void
-}
-
-type FlvJs = {
-  isSupported: () => boolean
-  createPlayer: (mediaDataSource: { type: 'flv'; url: string; isLive: boolean }) => FlvPlayer
-}
-
-declare global {
-  interface Window {
-    flvjs?: FlvJs
-  }
-}
+import { createStreamPlayer, type StreamPlayerHandle } from '../utils/streamPlayer'
 
 const props = defineProps<{
   url: string
 }>()
 
 const videoRef = ref<HTMLVideoElement | null>(null)
-const flvPlayer = ref<FlvPlayer | null>(null)
+const jessibucaRef = ref<HTMLDivElement | null>(null)
+const handle = ref<StreamPlayerHandle | null>(null)
+// Bumped on every stop/start so a superseded async start tears itself down.
+let gen = 0
 const previewError = ref('')
 const previewMediaInfo = ref<Record<string, unknown>>({})
 const previewStats = ref<Record<string, unknown>>({})
@@ -61,90 +43,54 @@ async function startPreview() {
   stopPreview()
   previewError.value = ''
   const video = videoRef.value
+  const container = jessibucaRef.value
 
-  if (!video || !props.url) {
+  if (!video || !container || !props.url) {
     return
   }
 
+  const myGen = ++gen
+  // Reliable resolution readout on the mpegts/native path (jessibuca reports it
+  // via onMediaInfo instead).
+  video.addEventListener('loadedmetadata', syncVideoMetadata, { once: true })
   try {
-    const flvjs = await ensureFlvJs()
-    if (!flvjs?.isSupported()) {
-      video.src = props.url
-      await video.play()
+    const created = await createStreamPlayer(
+      { video, container },
+      props.url,
+      {
+        muted: true,
+        onMediaInfo: (info) => {
+          previewMediaInfo.value = { ...previewMediaInfo.value, ...info }
+        },
+        onStats: (info) => {
+          previewStats.value = { ...previewStats.value, ...info }
+        },
+        onError: (message) => {
+          previewError.value = message
+        },
+      },
+    )
+    if (myGen !== gen) {
+      created.destroy()
       return
     }
-
-    const player = flvjs.createPlayer({
-      type: 'flv',
-      url: props.url,
-      isLive: true,
-    })
-    player.on?.('media_info', (payload) => {
-      previewMediaInfo.value = {
-        ...previewMediaInfo.value,
-        ...(isRecord(payload) ? payload : {}),
-      }
-    })
-    player.on?.('statistics_info', (payload) => {
-      previewStats.value = {
-        ...previewStats.value,
-        ...(isRecord(payload) ? payload : {}),
-      }
-    })
-    video.addEventListener('loadedmetadata', syncVideoMetadata, { once: true })
-    flvPlayer.value = player
-    player.attachMediaElement(video)
-    player.load()
-    await player.play()
+    handle.value = created
   } catch (error) {
     previewError.value = toErrorMessage(error, 'FLV 预览启动失败')
   }
 }
 
 function stopPreview() {
-  const video = videoRef.value
-  if (flvPlayer.value) {
-    flvPlayer.value.pause?.()
-    flvPlayer.value.unload?.()
-    flvPlayer.value.detachMediaElement?.()
-    flvPlayer.value.destroy()
-    flvPlayer.value = null
+  gen++
+  if (handle.value) {
+    handle.value.destroy()
+    handle.value = null
   }
-
-  if (video) {
-    video.pause()
-    video.removeAttribute('src')
-    video.load()
-  }
+  videoRef.value?.removeEventListener('loadedmetadata', syncVideoMetadata)
 
   previewMediaInfo.value = {}
   previewStats.value = {}
   previewInfoDrag.value = null
-}
-
-async function ensureFlvJs() {
-  if (window.flvjs) {
-    return window.flvjs
-  }
-
-  await new Promise<void>((resolve, reject) => {
-    const existing = document.querySelector<HTMLScriptElement>('script[data-flvjs="true"]')
-    if (existing) {
-      existing.addEventListener('load', () => resolve(), { once: true })
-      existing.addEventListener('error', () => reject(new Error('flv.js load failed')), { once: true })
-      return
-    }
-
-    const script = document.createElement('script')
-    script.src = 'https://cdn.jsdelivr.net/npm/flv.js@1.6.2/dist/flv.min.js'
-    script.async = true
-    script.dataset.flvjs = 'true'
-    script.onload = () => resolve()
-    script.onerror = () => reject(new Error('flv.js load failed'))
-    document.head.appendChild(script)
-  })
-
-  return window.flvjs
 }
 
 function syncVideoMetadata() {
@@ -157,10 +103,6 @@ function syncVideoMetadata() {
     width: Number(video.videoWidth) || previewMediaInfo.value.width,
     height: Number(video.videoHeight) || previewMediaInfo.value.height,
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
 }
 
 function toErrorMessage(error: unknown, fallback: string) {
@@ -340,14 +282,17 @@ function formatAudioCodec(codec: string) {
           </div>
         </div>
       </div>
-      <video
-        ref="videoRef"
-        class="preview-video"
-        controls
-        autoplay
-        muted
-        playsinline
-      />
+      <div class="preview-media">
+        <video
+          ref="videoRef"
+          class="preview-video"
+          controls
+          autoplay
+          muted
+          playsinline
+        />
+        <div ref="jessibucaRef" class="preview-jessibuca" />
+      </div>
     </div>
   </div>
 </template>
@@ -439,16 +384,36 @@ function formatAudioCodec(codec: string) {
   text-overflow: ellipsis;
 }
 
-.preview-video {
+.preview-media {
+  position: relative;
   width: 100%;
   height: min(56vh, 32rem);
   min-height: 16rem;
   max-height: 56vh;
+}
+
+.preview-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   border-radius: 0.75rem;
   object-fit: contain;
   background:
     radial-gradient(circle at top, rgb(41 98 255 / 15%), transparent 55%),
     linear-gradient(180deg, rgb(10 17 29), rgb(20 26 36));
+}
+
+/* Jessibuca mounts its canvas here; shown only when it is the active backend. */
+.preview-jessibuca {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: none;
+  overflow: hidden;
+  border-radius: 0.75rem;
+  background: #0b111d;
 }
 
 @media (width <= 768px) {
@@ -460,7 +425,7 @@ function formatAudioCodec(codec: string) {
     width: calc(100% - 1rem);
   }
 
-  .preview-video {
+  .preview-media {
     height: min(52vh, 20rem);
     min-height: 14rem;
   }
