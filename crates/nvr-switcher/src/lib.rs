@@ -12,8 +12,10 @@
 //! `encoder`, `scaler`, `output`); it does not modify that crate.
 
 pub mod program;
+pub mod sink;
 pub mod source;
 pub mod switcher;
 
 pub use program::ProgramConfig;
+pub use sink::{ProgramSink, ProgramSinkConfig, ScalerCache};
 pub use switcher::Switcher;

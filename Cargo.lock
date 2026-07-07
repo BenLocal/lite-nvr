@@ -2635,6 +2635,7 @@ dependencies = [
  "ffmpeg-bus",
  "ffmpeg-next",
  "log",
+ "nvr-switcher",
  "tokio",
  "tokio-util",
 ]

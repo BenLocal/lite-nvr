@@ -17,6 +17,7 @@ pub fn compositor_router() -> Router {
         .route("/create", post(create))
         .route("/list", get(list))
         .route("/switch/{id}", post(switch))
+        .route("/relayout/{id}", post(relayout))
         .route("/remove/{id}", post(remove))
 }
 
@@ -190,6 +191,29 @@ struct SwitchReq {
 
 async fn switch(Path(id): Path<String>, Json(req): Json<SwitchReq>) -> ApiJsonResult<()> {
     compositor::switch(&id, req.region, &req.to).await?;
+    Ok(ok_empty())
+}
+
+#[derive(Deserialize)]
+struct RelayoutReq {
+    /// New regions (canvas size unchanged). Each region's `source` must be a
+    /// declared source id, or empty for a blank/black region.
+    regions: Vec<RegionReq>,
+}
+
+async fn relayout(Path(id): Path<String>, Json(req): Json<RelayoutReq>) -> ApiJsonResult<()> {
+    let regions: Vec<Region> = req
+        .regions
+        .into_iter()
+        .map(|r| Region {
+            source_id: r.source,
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: r.h,
+        })
+        .collect();
+    compositor::relayout(&id, regions).await?;
     Ok(ok_empty())
 }
 

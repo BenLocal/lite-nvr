@@ -42,6 +42,11 @@ impl CompositorEntry {
     pub fn switch(&self, index: usize, source_id: &str) -> bool {
         self.compositor.switch(index, source_id)
     }
+
+    /// Replace the region layout live (canvas size unchanged).
+    pub fn relayout(&self, layout: &Layout) {
+        self.compositor.relayout(layout);
+    }
 }
 
 pub struct CreateParams {
@@ -169,5 +174,31 @@ pub async fn switch(id: &str, region: usize, source_id: &str) -> Result<()> {
             "switch rejected: region {region} / source '{source_id}' out of range or not in pool"
         );
     }
+    Ok(())
+}
+
+/// Relayout a running compositor's regions live — no stream restart. The canvas
+/// size stays as it was at create; only the region rectangles/sources change.
+pub async fn relayout(id: &str, regions: Vec<Region>) -> Result<()> {
+    if regions.is_empty() {
+        anyhow::bail!("layout has no regions");
+    }
+    let entry = COMPOSITORS
+        .read()
+        .await
+        .get(id)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("compositor {id} not found"))?;
+    // Validate like create: every region references a declared source (an empty
+    // source is a deliberately blank/black region).
+    let known: HashSet<&str> = entry.sources.iter().map(|s| s.id.as_str()).collect();
+    for region in &regions {
+        let sid = region.source_id.as_str();
+        if !sid.is_empty() && !known.contains(sid) {
+            anyhow::bail!("region references unknown source '{}'", region.source_id);
+        }
+    }
+    let layout = Layout::new(entry.layout.width, entry.layout.height, regions);
+    entry.relayout(&layout);
     Ok(())
 }

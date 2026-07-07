@@ -8,23 +8,26 @@
 //! to their region's exact size + YUV420P before entering the graph, so each
 //! region's buffer source is fixed-size — switching to a differently-sized
 //! source never rebuilds the graph and never interrupts the published stream.
+//!
+//! The region *layout* itself can also change live (`Director::relayout`): the
+//! run loop rebuilds the filter graph for the new regions but keeps the same
+//! encoder + muxer, so a layout change never restarts the published stream
+//! either — only the picture rearranges.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
-use ffmpeg_bus::encoder::{Encoder, Settings};
 use ffmpeg_bus::frame::RawFrame;
-use ffmpeg_bus::output::AvOutput;
-use ffmpeg_bus::scaler::Scaler;
 use ffmpeg_bus::stream::AvStream;
 use ffmpeg_next::filter;
 use ffmpeg_next::format::Pixel;
 use ffmpeg_next::frame::Video;
+use nvr_switcher::{ProgramSink, ProgramSinkConfig, ScalerCache};
 use tokio_util::sync::CancellationToken;
 
-use crate::layout::{Layout, even};
+use crate::layout::{Layout, Region, even};
 use crate::source::LatestFrame;
 
 /// Where/how the composited program is encoded and published.
@@ -43,6 +46,7 @@ pub struct SourceFeed {
 }
 
 /// Geometry of one region; its source is chosen at runtime, not fixed here.
+#[derive(Clone)]
 struct RegionGeom {
     x: u32,
     y: u32,
@@ -50,15 +54,38 @@ struct RegionGeom {
     h: u32,
 }
 
-/// A region's cached scaler, keyed by its input `(width, height, pixel format)`
-/// so it is rebuilt only when the active source's geometry changes.
-type RegionScaler = Option<((u32, u32, Pixel), Scaler)>;
+/// The live region layout: geometry + per-region active source. Swapped
+/// wholesale by [`Director::relayout`]; `generation` bumps so the run loop knows
+/// to rebuild its graph.
+struct LayoutState {
+    geoms: Vec<RegionGeom>,
+    slots: Vec<Arc<Mutex<String>>>,
+    generation: u64,
+}
+
+fn geoms_of(regions: &[Region]) -> Vec<RegionGeom> {
+    regions
+        .iter()
+        .map(|r| RegionGeom {
+            x: even(r.x),
+            y: even(r.y),
+            w: even(r.w).max(2),
+            h: even(r.h).max(2),
+        })
+        .collect()
+}
+
+fn slots_of(regions: &[Region]) -> Vec<Arc<Mutex<String>>> {
+    regions
+        .iter()
+        .map(|r| Arc::new(Mutex::new(r.source_id.clone())))
+        .collect()
+}
 
 /// A cheap, cloneable handle to switch a running compositor's regions live.
 #[derive(Clone)]
 pub struct Director {
-    /// Per-region active source id, indexed by region order.
-    slots: Vec<Arc<Mutex<String>>>,
+    state: Arc<Mutex<LayoutState>>,
     pool_ids: Arc<HashSet<String>>,
 }
 
@@ -67,26 +94,46 @@ impl Director {
     /// region to black. Returns false if the index is out of range or (for a
     /// non-empty id) the source is not in the pool.
     pub fn switch(&self, index: usize, source_id: &str) -> bool {
-        if index >= self.slots.len() {
-            return false;
-        }
         if !source_id.is_empty() && !self.pool_ids.contains(source_id) {
             return false;
         }
-        *self.slots[index].lock().unwrap() = source_id.to_string();
+        let slot = {
+            let st = self.state.lock().unwrap();
+            if index >= st.slots.len() {
+                return false;
+            }
+            st.slots[index].clone()
+        };
+        *slot.lock().unwrap() = source_id.to_string();
         true
+    }
+
+    /// Replace the region layout live. The run loop rebuilds its filter graph on
+    /// the next tick without touching the encoder/muxer, so the published stream
+    /// keeps flowing — only the picture rearranges. The canvas size is fixed at
+    /// start and not changed here.
+    pub fn relayout(&self, regions: &[Region]) {
+        let geoms = geoms_of(regions);
+        let slots = slots_of(regions);
+        let mut st = self.state.lock().unwrap();
+        st.geoms = geoms;
+        st.slots = slots;
+        st.generation = st.generation.wrapping_add(1);
     }
 
     /// Current active source id per region, by region order.
     pub fn active(&self) -> Vec<String> {
-        self.slots
+        self.state
+            .lock()
+            .unwrap()
+            .slots
             .iter()
             .map(|s| s.lock().unwrap().clone())
             .collect()
     }
 
     pub fn region_count(&self) -> usize {
-        self.slots.len()
+        self.state.lock().unwrap().slots.len()
     }
 }
 
@@ -109,42 +156,23 @@ impl Compositor {
     ) -> Self {
         let canvas_w = even(layout.width).max(2);
         let canvas_h = even(layout.height).max(2);
-        let geoms: Vec<RegionGeom> = layout
-            .regions
-            .iter()
-            .map(|r| RegionGeom {
-                x: even(r.x),
-                y: even(r.y),
-                w: even(r.w).max(2),
-                h: even(r.h).max(2),
-            })
-            .collect();
-        let slots: Vec<Arc<Mutex<String>>> = layout
-            .regions
-            .iter()
-            .map(|r| Arc::new(Mutex::new(r.source_id.clone())))
-            .collect();
         let pool_ids = Arc::new(pool.iter().map(|f| f.id.clone()).collect::<HashSet<_>>());
         let pool_map: HashMap<String, LatestFrame> =
             pool.into_iter().map(|f| (f.id, f.latest)).collect();
 
+        let state = Arc::new(Mutex::new(LayoutState {
+            geoms: geoms_of(&layout.regions),
+            slots: slots_of(&layout.regions),
+            generation: 0,
+        }));
         let director = Director {
-            slots: slots.clone(),
+            state: state.clone(),
             pool_ids,
         };
         let cancel = CancellationToken::new();
         let loop_cancel = cancel.clone();
         let handle = tokio::task::spawn_blocking(move || {
-            let r = run(
-                cfg,
-                canvas_w,
-                canvas_h,
-                geoms,
-                slots,
-                pool_map,
-                template,
-                loop_cancel,
-            );
+            let r = run(cfg, canvas_w, canvas_h, state, pool_map, template, loop_cancel);
             if let Err(ref e) = r {
                 log::error!("compositor exited: {e:#}");
             }
@@ -166,6 +194,11 @@ impl Compositor {
     /// Switch region `index` to `source_id`. See [`Director::switch`].
     pub fn switch(&self, index: usize, source_id: &str) -> bool {
         self.director.switch(index, source_id)
+    }
+
+    /// Replace the region layout live. See [`Director::relayout`].
+    pub fn relayout(&self, layout: &Layout) {
+        self.director.relayout(&layout.regions);
     }
 
     /// Current active source id per region, by region order.
@@ -190,60 +223,71 @@ impl Compositor {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run(
     cfg: CompositorConfig,
     canvas_w: u32,
     canvas_h: u32,
-    geoms: Vec<RegionGeom>,
-    slots: Vec<Arc<Mutex<String>>>,
+    state: Arc<Mutex<LayoutState>>,
     pool: HashMap<String, LatestFrame>,
     template: AvStream,
     cancel: CancellationToken,
 ) -> Result<()> {
-    if geoms.is_empty() {
-        anyhow::bail!("layout has no regions");
-    }
-    let mut graph = build_graph(canvas_w, canvas_h, cfg.fps, &geoms)?;
-
-    // Persistent encoder + muxer, sized to the canvas.
-    let settings = Settings {
-        width: canvas_w,
-        height: canvas_h,
-        keyframe_interval: cfg.fps.max(1) as u64,
-        codec: Some("h264".to_string()),
-        pixel_format: Pixel::YUV420P,
-    };
-    let mut opts = ffmpeg_next::Dictionary::new();
-    opts.set("preset", "ultrafast");
-    opts.set("tune", "zerolatency");
-    if let Some(b) = cfg.bitrate {
-        opts.set("b", &b.to_string());
-    }
-    let mut encoder = Encoder::new(&template, settings, Some(opts))?;
-    let out_stream = make_out_stream(&template, canvas_w, canvas_h);
-    let mut output = AvOutput::new(&cfg.publish_url, Some(&cfg.format), None)?;
-    output.add_stream(&out_stream)?;
+    // Persistent program sink (encoder + muxer + CFR clock), sized to the
+    // canvas. It outlives any number of layout changes, so the published stream
+    // is continuous across them.
+    let mut sink = ProgramSink::new(
+        &template,
+        &ProgramSinkConfig {
+            publish_url: cfg.publish_url.clone(),
+            format: cfg.format.clone(),
+            width: canvas_w,
+            height: canvas_h,
+            fps: cfg.fps,
+            bitrate: cfg.bitrate,
+        },
+    )?;
     log::info!(
-        "compositor: {canvas_w}x{canvas_h} @ {}fps, {} regions -> {}",
+        "compositor: {canvas_w}x{canvas_h} @ {}fps -> {}",
         cfg.fps,
-        geoms.len(),
         cfg.publish_url
     );
 
-    // Per-region scaler, cached by the active source's (w, h, pixel format);
-    // rebuilt when a region switches to a differently-shaped source.
-    let n = geoms.len();
-    let mut scalers: Vec<RegionScaler> = (0..n).map(|_| None).collect();
-    let in_names: Vec<String> = (0..n).map(|i| format!("in{i}")).collect();
+    // The filter graph and its per-region state are (re)built whenever the
+    // layout generation changes; the encoder/muxer above are not.
+    let mut cur_gen: Option<u64> = None;
+    let mut graph: Option<filter::Graph> = None;
+    let mut geoms: Vec<RegionGeom> = Vec::new();
+    let mut slots: Vec<Arc<Mutex<String>>> = Vec::new();
+    let mut scalers: Vec<ScalerCache> = Vec::new();
+    let mut in_names: Vec<String> = Vec::new();
+    let mut n = 0usize;
 
-    let tick_us = (1_000_000i64 / cfg.fps.max(1) as i64).max(1);
     let interval = Duration::from_secs_f64(1.0 / cfg.fps.max(1) as f64);
     let mut frame_no: i64 = 0;
-    let mut out_pts: i64 = 0;
     let mut next = Instant::now();
 
     while !cancel.is_cancelled() {
+        // Pick up a live layout change: rebuild the graph for the new regions,
+        // keeping the encoder/muxer (and thus the published stream) intact.
+        {
+            let st = state.lock().unwrap();
+            if cur_gen != Some(st.generation) {
+                cur_gen = Some(st.generation);
+                geoms = st.geoms.clone();
+                slots = st.slots.clone();
+                drop(st);
+                n = geoms.len();
+                if n == 0 {
+                    anyhow::bail!("layout has no regions");
+                }
+                graph = Some(build_graph(canvas_w, canvas_h, cfg.fps, &geoms)?);
+                scalers = geoms.iter().map(|g| ScalerCache::new(g.w, g.h)).collect();
+                in_names = (0..n).map(|i| format!("in{i}")).collect();
+                log::info!("compositor: layout -> {n} regions on {canvas_w}x{canvas_h}");
+            }
+        }
+        let graph = graph.as_mut().expect("graph built on first tick");
+
         // Feed the black background then each region's active frame — all with
         // the same pts, so overlay's framesync emits exactly one composited
         // frame per tick.
@@ -262,31 +306,11 @@ fn run(
 
             // Pre-scale the active source frame to this region's exact size +
             // YUV420P; fall back to a black tile if the source has no frame yet.
-            let mut dst = Video::empty();
-            let filled = if let Some(RawFrame::Video(mut rvf)) = cached {
-                let src = rvf.get_mut();
-                let key = (src.width(), src.height(), src.format());
-                let need_new = scalers[i].as_ref().map(|(k, _)| *k != key).unwrap_or(true);
-                if need_new {
-                    let ctx = ffmpeg_next::software::scaling::Context::get(
-                        src.format(),
-                        src.width(),
-                        src.height(),
-                        Pixel::YUV420P,
-                        g.w,
-                        g.h,
-                        ffmpeg_next::software::scaling::flag::Flags::BILINEAR,
-                    )?;
-                    scalers[i] = Some((key, Scaler::new(ctx)));
-                }
-                scalers[i].as_mut().unwrap().1.run(src, &mut dst)?;
-                true
+            let mut dst = if let Some(RawFrame::Video(mut rvf)) = cached {
+                scalers[i].scale(rvf.get_mut())?
             } else {
-                false
+                black_frame(g.w, g.h)
             };
-            if !filled {
-                dst = black_frame(g.w, g.h);
-            }
             dst.set_pts(Some(frame_no));
             graph
                 .get(&in_names[i])
@@ -295,7 +319,7 @@ fn run(
                 .add(&dst)?;
         }
 
-        // Pull the composited frame; encode + mux it.
+        // Pull the composited frame; encode + mux it via the persistent sink.
         let mut out = Video::empty();
         if graph
             .get("out")
@@ -304,12 +328,7 @@ fn run(
             .frame(&mut out)
             .is_ok()
         {
-            out.set_pts(Some(out_pts));
-            encoder.send_frame(RawFrame::Video(out.into()))?;
-            while let Some(pkt) = encoder.encoder_receive_packet()? {
-                output.write_packet(0, pkt)?;
-            }
-            out_pts += tick_us;
+            sink.push(out, false)?;
         }
 
         frame_no += 1;
@@ -323,11 +342,7 @@ fn run(
     }
 
     log::info!("compositor: stopping, flushing");
-    let _ = encoder.send_eof();
-    while let Ok(Some(pkt)) = encoder.encoder_receive_packet() {
-        let _ = output.write_packet(0, pkt);
-    }
-    let _ = output.finish();
+    sink.finish();
     Ok(())
 }
 
@@ -393,19 +408,6 @@ fn buffer_args(w: u32, h: u32, pix: Pixel, fps: u32) -> String {
         pix_int as i32,
         fps.max(1)
     )
-}
-
-/// H.264 output stream descriptor with the canvas dimensions.
-fn make_out_stream(template: &AvStream, w: u32, h: u32) -> AvStream {
-    let s = AvStream::for_encoder_output(template, ffmpeg_next::codec::Id::H264);
-    // for_encoder_output copies the template's (source) dimensions; overwrite
-    // them with the canvas size so the muxed stream advertises the right geometry.
-    unsafe {
-        let p = s.parameters().as_ptr() as *mut ffmpeg_next::ffi::AVCodecParameters;
-        (*p).width = w as i32;
-        (*p).height = h as i32;
-    }
-    s
 }
 
 /// A black YUV420P frame (Y=16, U=V=128, limited range).

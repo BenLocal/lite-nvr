@@ -7,6 +7,8 @@ description = "Multi-view compositor: composite several sources into ONE video v
 
 [dependencies]
 ffmpeg-bus = { path = "../ffmpeg-bus" }
+# Reused for the shared ProgramSink (persistent encoder+muxer+CFR) and ScalerCache.
+nvr-switcher = { path = "../nvr-switcher" }
 ffmpeg-next = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

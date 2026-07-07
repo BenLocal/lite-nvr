@@ -57,6 +57,18 @@ export function switchRegion(id: string, region: number, to: string) {
   })
 }
 
+/**
+ * Live-relayout program `id` to a new set of regions (canvas size unchanged).
+ * The server rebuilds only its filter graph, keeping the encoder/muxer — so the
+ * published stream keeps flowing and the browser preview never reconnects.
+ */
+export function relayoutCompositor(id: string, regions: CompositorRegion[]) {
+  return request<null>(`/compositor/relayout/${encodeURIComponent(id)}`, {
+    method: 'POST',
+    body: { regions },
+  })
+}
+
 export function removeCompositor(id: string) {
   return request<null>(`/compositor/remove/${encodeURIComponent(id)}`, { method: 'POST' })
 }

@@ -5,6 +5,7 @@ import { listDevices, type DeviceItem } from '../api/device'
 import {
   createCompositor,
   listCompositors,
+  relayoutCompositor,
   removeCompositor,
   switchRegion,
   type CompositorProgram,
@@ -121,10 +122,10 @@ async function setLayout(id: string) {
     activeCell.value = 0
   }
   beforeEnlarge.value = null
-  // A layout change alters the region structure, so the filter graph must be
-  // rebuilt — re-create the program (brief reconnect). Source switches stay live.
+  // A layout change is applied live: the server rebuilds only its filter graph
+  // and keeps the same encoder/muxer, so the published stream never restarts.
   if (program.value) {
-    await goLive()
+    await relayoutProgram()
   }
 }
 
@@ -174,7 +175,7 @@ async function enlargeCell(index: number) {
   activeCell.value = 0
   beforeEnlarge.value = prev
   if (program.value) {
-    await goLive()
+    await relayoutProgram()
   }
 }
 
@@ -378,6 +379,20 @@ async function liveSwitch(cell: number, sourceId: string) {
     programError.value = ''
   } catch (e) {
     programError.value = e instanceof Error ? e.message : '切换失败'
+  }
+}
+
+// Apply the current layout to the running program live — the server rebuilds
+// only its filter graph, so the stream (and the browser preview) never restarts.
+async function relayoutProgram() {
+  if (!program.value) {
+    return
+  }
+  try {
+    await relayoutCompositor(PROGRAM_ID, allCellRegions())
+    programError.value = ''
+  } catch (e) {
+    programError.value = e instanceof Error ? e.message : '布局切换失败'
   }
 }
 
