@@ -1,6 +1,7 @@
-// Runtime loader for flv.js. The library is pulled from a CDN on demand (kept
-// out of the bundle) and cached on `window.flvjs`; a single <script> tag is
-// shared across every player, so N tiles never load the script N times.
+// Loader for flv.js, bundled from the npm package (no CDN). It is pulled in via
+// a dynamic import on first use, so it lands in its own chunk (kept out of the
+// initial bundle) and is loaded at most once — the resolved factory is cached
+// and shared across every player.
 
 export type FlvPlayer = {
   attachMediaElement: (element: HTMLVideoElement) => void
@@ -18,35 +19,14 @@ export type FlvJs = {
   createPlayer: (mediaDataSource: { type: 'flv'; url: string; isLive: boolean }) => FlvPlayer
 }
 
-const FLVJS_CDN = 'https://cdn.jsdelivr.net/npm/flv.js@1.6.2/dist/flv.min.js'
+let cached: FlvJs | undefined
 
-function globalFlv(): FlvJs | undefined {
-  return (window as unknown as { flvjs?: FlvJs }).flvjs
-}
-
-/** Load flv.js once and resolve to the global `flvjs` factory. */
+/** Load flv.js once (from the npm bundle) and resolve to its factory. */
 export async function ensureFlvJs(): Promise<FlvJs | undefined> {
-  const existing = globalFlv()
-  if (existing) {
-    return existing
+  if (!cached) {
+    const mod = await import('flv.js')
+    // flv.js exposes its factory as the module's default export.
+    cached = (mod.default ?? mod) as unknown as FlvJs
   }
-
-  await new Promise<void>((resolve, reject) => {
-    const tag = document.querySelector<HTMLScriptElement>('script[data-flvjs="true"]')
-    if (tag) {
-      tag.addEventListener('load', () => resolve(), { once: true })
-      tag.addEventListener('error', () => reject(new Error('flv.js load failed')), { once: true })
-      return
-    }
-
-    const script = document.createElement('script')
-    script.src = FLVJS_CDN
-    script.async = true
-    script.dataset.flvjs = 'true'
-    script.onload = () => resolve()
-    script.onerror = () => reject(new Error('flv.js load failed'))
-    document.head.appendChild(script)
-  })
-
-  return globalFlv()
+  return cached
 }
