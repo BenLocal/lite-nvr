@@ -18,6 +18,7 @@ const userMenu = ref<InstanceType<typeof Menu> | null>(null)
 const menuItems = ref([
   { label: '概览', route: '/', icon: 'pi pi-th-large' },
   { label: '设备', route: '/device', icon: 'pi pi-video' },
+  { label: '导播台', route: '/switcher', icon: 'pi pi-clone' },
   { label: '回放', route: '/playback', icon: 'pi pi-play-circle' },
 ])
 
