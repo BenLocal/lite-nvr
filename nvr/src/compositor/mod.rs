@@ -47,6 +47,12 @@ impl CompositorEntry {
     pub fn relayout(&self, layout: &Layout) {
         self.compositor.relayout(layout);
     }
+
+    /// Current region geometry `(x, y, w, h)` per region — reflects the live
+    /// layout after any [`relayout`](Self::relayout).
+    pub fn geoms(&self) -> Vec<(u32, u32, u32, u32)> {
+        self.compositor.geoms()
+    }
 }
 
 pub struct CreateParams {

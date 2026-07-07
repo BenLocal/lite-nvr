@@ -105,19 +105,18 @@ fn to_dto(entry: &CompositorEntry) -> CompositorDto {
             .collect(),
         width: entry.layout.width,
         height: entry.layout.height,
-        // `source` is the region's *live* active source (may differ from the
-        // initial layout after switching).
+        // Live geometry + live active source per region, so the DTO stays
+        // accurate after a switch or a relayout.
         regions: entry
-            .layout
-            .regions
-            .iter()
+            .geoms()
+            .into_iter()
             .zip(entry.active())
-            .map(|(r, active)| RegionDto {
+            .map(|((x, y, w, h), active)| RegionDto {
                 source: active,
-                x: r.x,
-                y: r.y,
-                w: r.w,
-                h: r.h,
+                x,
+                y,
+                w,
+                h,
             })
             .collect(),
         publish_url: entry.publish_url.clone(),

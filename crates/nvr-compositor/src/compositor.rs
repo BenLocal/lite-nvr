@@ -135,6 +135,18 @@ impl Director {
     pub fn region_count(&self) -> usize {
         self.state.lock().unwrap().slots.len()
     }
+
+    /// Current region geometry `(x, y, w, h)` per region, by region order.
+    /// Reflects the live layout (updated by [`relayout`](Self::relayout)).
+    pub fn geoms(&self) -> Vec<(u32, u32, u32, u32)> {
+        self.state
+            .lock()
+            .unwrap()
+            .geoms
+            .iter()
+            .map(|g| (g.x, g.y, g.w, g.h))
+            .collect()
+    }
 }
 
 /// A running compositor.
@@ -208,6 +220,12 @@ impl Compositor {
 
     pub fn region_count(&self) -> usize {
         self.director.region_count()
+    }
+
+    /// Current region geometry per region, by region order. See
+    /// [`Director::geoms`].
+    pub fn geoms(&self) -> Vec<(u32, u32, u32, u32)> {
+        self.director.geoms()
     }
 
     /// Stop compositing (the loop flushes the encoder and stops publishing).
