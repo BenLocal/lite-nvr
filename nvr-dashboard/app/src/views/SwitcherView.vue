@@ -255,6 +255,38 @@ function allCellRegions(): CompositorRegion[] {
   }))
 }
 
+// Inverse of allCellRegions(): recover the layout id + per-cell sources from a
+// running program's regions, so the monitor wall matches what is actually on
+// air (after a page reload, or a server-side restore on boot).
+function restoreFromRegions(
+  regions: CompositorRegion[],
+): { layoutId: string; assignments: (string | null)[] } | null {
+  if (!Array.isArray(regions) || regions.length === 0) {
+    return null
+  }
+  const sameCount = LAYOUTS.filter((l) => cellRects(l).length === regions.length)
+  if (!sameCount.length) {
+    return null
+  }
+  // The server rounds region geometry to even numbers (geoms_of), so match with
+  // a ±1 tolerance per coordinate — enough to disambiguate distinct layouts
+  // (their rects differ by far more) while forgiving the rounding. Falls back to
+  // the first same-count layout if none matches.
+  const near = (a: number, b: number) => Math.abs(a - b) <= 1
+  const match =
+    sameCount.find((l) =>
+      cellRects(l).every((rc, i) => {
+        const r = regions[i]
+        return !!r && near(r.x, rc.x) && near(r.y, rc.y) && near(r.w, rc.w) && near(r.h, rc.h)
+      }),
+    ) ?? sameCount[0]
+  if (!match) {
+    return null
+  }
+  const assignments = regions.map((r) => (r.source ? r.source : null))
+  return { layoutId: match.id, assignments }
+}
+
 // Playback addresses for the composited program, built from the page host + the
 // well-known ZLM ports. rtsp/rtmp for VLC/OBS; http-flv (and the same-origin
 // /media proxy) for the browser.
@@ -409,6 +441,15 @@ async function refreshProgram() {
     const found = Array.isArray(list) ? (list.find((p) => p.id === PROGRAM_ID) ?? null) : null
     program.value = found
     if (found) {
+      // Restore the monitor wall (layout + per-cell sources) to match what the
+      // program is actually broadcasting, not the default grid from loadSources.
+      const restored = restoreFromRegions(found.regions)
+      if (restored) {
+        layoutId.value = restored.layoutId
+        assignments.value = restored.assignments
+        activeCell.value = 0
+        beforeEnlarge.value = null
+      }
       await nextTick()
       if (addrs.value) {
         await startProgramPlayer(addrs.value.proxy)

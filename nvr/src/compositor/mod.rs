@@ -6,11 +6,17 @@ pub mod api;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use nvr_compositor::{Compositor, CompositorConfig, Layout, Region, Source, SourceFeed};
+
+/// KV config key under which the live compositor programs are persisted so they
+/// can be restored at startup.
+const PERSIST_KEY: &str = "compositor_programs";
 
 /// ZLM RTMP publish endpoint (see `zlm::server`: `rtmp_server_start(8555)`).
 const ZLM_RTMP: &str = "rtmp://127.0.0.1:8555";
@@ -27,6 +33,8 @@ pub struct CompositorEntry {
     pub layout: Layout,
     pub publish_url: String,
     pub fps: u32,
+    /// Retained so the program can be persisted/restored verbatim.
+    bitrate: Option<u64>,
     compositor: Compositor,
     // Kept alive (decoding) for the lifetime of the entry.
     _sources: Vec<Source>,
@@ -143,10 +151,12 @@ pub async fn create(params: CreateParams) -> Result<Arc<CompositorEntry>> {
         layout,
         publish_url,
         fps: params.fps,
+        bitrate: params.bitrate,
         compositor,
         _sources: started,
     });
     COMPOSITORS.write().await.insert(id, entry.clone());
+    persist_all().await;
     Ok(entry)
 }
 
@@ -158,9 +168,12 @@ pub async fn list() -> Vec<Arc<CompositorEntry>> {
 /// flushes and stops publishing); dropping the entry stops its sources. Returns
 /// false if not found.
 pub async fn remove(id: &str) -> bool {
-    match COMPOSITORS.write().await.remove(id) {
+    // Bind the removal so the write guard drops before persist_all() read-locks.
+    let removed = COMPOSITORS.write().await.remove(id);
+    match removed {
         Some(entry) => {
             entry.compositor.stop();
+            persist_all().await;
             true
         }
         None => false,
@@ -180,6 +193,7 @@ pub async fn switch(id: &str, region: usize, source_id: &str) -> Result<()> {
             "switch rejected: region {region} / source '{source_id}' out of range or not in pool"
         );
     }
+    persist_all().await;
     Ok(())
 }
 
@@ -206,5 +220,171 @@ pub async fn relayout(id: &str, regions: Vec<Region>) -> Result<()> {
     }
     let layout = Layout::new(entry.layout.width, entry.layout.height, regions);
     entry.relayout(&layout);
+    persist_all().await;
     Ok(())
+}
+
+// ---- Persistence ------------------------------------------------------------
+// Keep the KV store in sync with the live programs so they restore on the next
+// startup.
+
+#[derive(Serialize, Deserialize, Clone)]
+struct PersistedRegion {
+    source: String,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct PersistedSource {
+    id: String,
+    url: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct PersistedCompositor {
+    id: String,
+    sources: Vec<PersistedSource>,
+    width: u32,
+    height: u32,
+    fps: u32,
+    #[serde(default)]
+    bitrate: Option<u64>,
+    #[serde(default)]
+    publish_url: Option<String>,
+    regions: Vec<PersistedRegion>,
+}
+
+impl CompositorEntry {
+    /// Snapshot the entry's current state (live geometry + active source per
+    /// region) into its persistable form.
+    fn to_persisted(&self) -> PersistedCompositor {
+        let regions = self
+            .geoms()
+            .into_iter()
+            .zip(self.active())
+            .map(|((x, y, w, h), source)| PersistedRegion { source, x, y, w, h })
+            .collect();
+        PersistedCompositor {
+            id: self.id.clone(),
+            sources: self
+                .sources
+                .iter()
+                .map(|s| PersistedSource {
+                    id: s.id.clone(),
+                    url: s.url.clone(),
+                })
+                .collect(),
+            width: self.layout.width,
+            height: self.layout.height,
+            fps: self.fps,
+            bitrate: self.bitrate,
+            publish_url: Some(self.publish_url.clone()),
+            regions,
+        }
+    }
+}
+
+impl PersistedCompositor {
+    fn into_params(self) -> CreateParams {
+        CreateParams {
+            id: self.id,
+            sources: self
+                .sources
+                .into_iter()
+                .map(|s| SourceInfo { id: s.id, url: s.url })
+                .collect(),
+            width: self.width,
+            height: self.height,
+            regions: self
+                .regions
+                .into_iter()
+                .map(|r| Region {
+                    source_id: r.source,
+                    x: r.x,
+                    y: r.y,
+                    w: r.w,
+                    h: r.h,
+                })
+                .collect(),
+            fps: self.fps,
+            bitrate: self.bitrate,
+            publish_url: self.publish_url,
+        }
+    }
+}
+
+/// Serialize every live program to the KV store. Best-effort: a failure is
+/// logged but never breaks the live operation that triggered it.
+async fn persist_all() {
+    let list: Vec<PersistedCompositor> = {
+        let guard = COMPOSITORS.read().await;
+        guard.values().map(|e| e.to_persisted()).collect()
+    };
+    if let Err(e) = save_persisted(list).await {
+        log::warn!("compositor: failed to persist programs: {e:#}");
+    }
+}
+
+async fn save_persisted(list: Vec<PersistedCompositor>) -> Result<()> {
+    let conn = crate::db::app_db_conn()?;
+    nvr_db::config::set_json(PERSIST_KEY, &list, &conn).await?;
+    Ok(())
+}
+
+async fn load_persisted() -> Result<Vec<PersistedCompositor>> {
+    let conn = crate::db::app_db_conn()?;
+    Ok(
+        nvr_db::config::get_json::<Vec<PersistedCompositor>>(PERSIST_KEY, &conn)
+            .await?
+            .unwrap_or_default(),
+    )
+}
+
+/// Restore persisted compositor programs at startup. Call AFTER the device pipes
+/// have started so the sources' ZLM streams exist (compositors pull
+/// `rtsp://127.0.0.1:8554/live/{id}`). Best-effort, with a short grace period
+/// and a few retries since streams may still be coming up.
+pub async fn restore_all() {
+    let saved = match load_persisted().await {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("compositor restore: failed to load saved programs: {e:#}");
+            return;
+        }
+    };
+    if saved.is_empty() {
+        return;
+    }
+    log::info!("compositor restore: {} program(s) to restore", saved.len());
+    // Give device pipelines a moment to publish their streams to ZLM first.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    for pc in saved {
+        let id = pc.id.clone();
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+            match create(pc.clone().into_params()).await {
+                Ok(_) => {
+                    log::info!("compositor restore: started '{id}'");
+                    break;
+                }
+                Err(e) if attempt < 3 => {
+                    log::warn!(
+                        "compositor restore: '{id}' attempt {attempt} failed ({e:#}); retrying"
+                    );
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+                Err(e) => {
+                    log::error!(
+                        "compositor restore: '{id}' gave up after {attempt} attempts: {e:#}"
+                    );
+                    break;
+                }
+            }
+        }
+    }
 }

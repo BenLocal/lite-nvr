@@ -42,6 +42,13 @@ async fn init_device_pipes_inner() -> anyhow::Result<()> {
     }
 
     log::info!("Device pipe initialization finished, total={}", total);
+
+    // Restore persisted compositor programs now that device streams are being
+    // published to ZLM. Spawned so its grace period / retries don't block.
+    tokio::spawn(async {
+        crate::compositor::restore_all().await;
+    });
+
     Ok(())
 }
 
