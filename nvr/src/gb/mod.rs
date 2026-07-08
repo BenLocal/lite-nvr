@@ -50,6 +50,28 @@ pub async fn init(cfg: GbConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Best-effort shutdown of the GB28181 subsystem for a clean process exit. Tears
+/// down every on-demand pull (BYE the media dialog and drop the ZLM RtpServer
+/// receiver, releasing its port) so no RTP receiver is still pushing into ZLM
+/// when its C runtime is torn down, then fires the GbServer cancel token so its
+/// SIP pump tasks exit. The in-memory stream mappings are left intact (they are
+/// rebuilt from config on the next start). No-op when GB is disabled/uninited.
+pub async fn shutdown() {
+    let Some(bridge) = bridge() else {
+        return;
+    };
+    // Release any live pulls. `handle_media_no_reader` runs the same teardown as
+    // ZLM's `on_media_no_reader` hook: it BYEs the media dialog and drops the
+    // receiver handle, which fires CloseRtp to release the RtpServer port. Safe
+    // (a no-op) for a stream that isn't currently pulling.
+    for s in bridge.stream_status().await {
+        bridge.handle_media_no_reader(&s.stream_id).await;
+    }
+    // Stop the GbServer SIP pump tasks (main/state/sweep loops); idempotent, so
+    // a later `GbServer::drop` stays safe.
+    bridge.server().shutdown();
+}
+
 /// Drain GbServer events for observability (device online/offline, session end).
 fn spawn_event_logger(mut events: tokio::sync::mpsc::UnboundedReceiver<GbEvent>) {
     tokio::spawn(async move {

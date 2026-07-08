@@ -108,6 +108,22 @@ pub async fn list() -> Vec<Arc<ProgramEntry>> {
     PROGRAMS.read().await.values().cloned().collect()
 }
 
+/// Stop every running program (each program's `Switcher`: its hot sources plus
+/// the program loop that publishes to ZLM) for a clean process shutdown.
+/// Programs are not persisted, so there is nothing to preserve. Call before the
+/// process exits so no program thread is still writing into ZLM when its C
+/// runtime is torn down.
+pub async fn shutdown() {
+    // Draining drops every entry — the same teardown `remove` relies on, done
+    // for all programs at once. Each dropped `ProgramEntry` drops its `Switcher`,
+    // which drops its sources (`Source::drop` stops the input/decoder tasks); the
+    // program loop's input channel then closes, ending the loop and stopping the
+    // publish to ZLM. Collect out of the lock so the drops run after the guard.
+    let entries: Vec<Arc<ProgramEntry>> =
+        { PROGRAMS.write().await.drain().map(|(_, e)| e).collect() };
+    drop(entries);
+}
+
 /// Remove and stop a program. Dropping the entry stops its sources, which ends
 /// the program task and stops publishing to ZLM. Returns false if not found.
 pub async fn remove(program_id: &str) -> bool {
