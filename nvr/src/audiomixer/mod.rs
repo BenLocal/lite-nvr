@@ -15,7 +15,7 @@ use nvr_audio_mixer::{AudioMixer, DEFAULT_VOLUME, MixerSnapshot};
 
 /// KV key under which the live buses are persisted for restore.
 const PERSIST_KEY: &str = "audio_mixer_buses";
-/// ZLM RTSP pull endpoint — device streams are published here as app `live`.
+/// ZLM RTSP pull endpoint — device streams are published here under app `device`.
 const ZLM_RTSP: &str = "rtsp://127.0.0.1:8554";
 /// ZLM RTMP publish endpoint (see `zlm::server`: `rtmp_server_start(8555)`).
 const ZLM_RTMP: &str = "rtmp://127.0.0.1:8555";
@@ -164,6 +164,15 @@ async fn load_persisted() -> Result<Vec<PersistedBus>> {
     )
 }
 
+/// Rewrite a pre-rename persisted publish URL onto the current app so old saved
+/// buses restore to the right stream: mixer output moved from the `live` app to
+/// `mixer` (RTMP, port 8555). Port-anchored, a no-op for URLs already on `mixer`.
+/// Inputs need no migration — their device pull URLs are rebuilt from
+/// `device_audio_url` (the `device` app) on restore.
+fn migrate_publish_url(url: &str) -> String {
+    url.replace(":8555/live/", ":8555/mixer/")
+}
+
 /// Restore persisted buses at startup. Call AFTER device pipes have started so
 /// the sources' ZLM streams exist (buses pull `rtsp://127.0.0.1:8554/device/{id}`).
 /// Best-effort, with a short grace period and a few retries.
@@ -188,7 +197,7 @@ pub async fn restore_all() {
             .iter()
             .map(|i| (i.source_id.clone(), i.volume))
             .collect();
-        let publish = Some(bus.publish_url.clone()).filter(|u| !u.trim().is_empty());
+        let publish = Some(migrate_publish_url(&bus.publish_url)).filter(|u| !u.trim().is_empty());
         let mut attempt = 0u32;
         loop {
             attempt += 1;

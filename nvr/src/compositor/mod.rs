@@ -287,6 +287,17 @@ impl CompositorEntry {
     }
 }
 
+/// Rewrite a pre-rename persisted URL onto the current ZLM app layout so old
+/// saved programs restore correctly instead of pulling/publishing dead `live`
+/// streams: device source pulls moved from the `live` app to `device` (RTSP,
+/// port 8554), and the program publish from `live` to `switcher` (RTMP, port
+/// 8555). Port-anchored so only local ZLM URLs are touched — a no-op for URLs
+/// already on the new apps or on other apps (e.g. GB28181 `rtp` pulls).
+fn migrate_url(url: &str) -> String {
+    url.replace(":8554/live/", ":8554/device/")
+        .replace(":8555/live/", ":8555/switcher/")
+}
+
 impl PersistedCompositor {
     fn into_params(self) -> CreateParams {
         CreateParams {
@@ -294,7 +305,7 @@ impl PersistedCompositor {
             sources: self
                 .sources
                 .into_iter()
-                .map(|s| SourceInfo { id: s.id, url: s.url })
+                .map(|s| SourceInfo { id: s.id, url: migrate_url(&s.url) })
                 .collect(),
             width: self.width,
             height: self.height,
@@ -311,7 +322,7 @@ impl PersistedCompositor {
                 .collect(),
             fps: self.fps,
             bitrate: self.bitrate,
-            publish_url: self.publish_url,
+            publish_url: self.publish_url.as_deref().map(migrate_url),
         }
     }
 }
