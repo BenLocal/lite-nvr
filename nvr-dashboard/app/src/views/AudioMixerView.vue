@@ -154,9 +154,74 @@ async function onMute(busId: string, sourceId: string, muted: boolean) {
 const listeningId = ref<string | null>(null)
 const monitorVideo = ref<HTMLVideoElement | null>(null)
 const monitorContainer = ref<HTMLElement | null>(null)
+const waveCanvas = ref<HTMLCanvasElement | null>(null)
 let monitorHandle: StreamPlayerHandle | null = null
 
+// Web Audio taps the monitor <video> to draw a live waveform. A
+// MediaElementSource can be created only once per element, so the context /
+// source / analyser are built lazily and reused across listen sessions.
+let audioCtx: AudioContext | null = null
+let sourceNode: MediaElementAudioSourceNode | null = null
+let analyser: AnalyserNode | null = null
+let waveData: Uint8Array<ArrayBuffer> | null = null
+let rafId = 0
+
+function startWaveform() {
+  const video = monitorVideo.value
+  if (!video || !waveCanvas.value) return
+  try {
+    if (!audioCtx) audioCtx = new AudioContext()
+    void audioCtx.resume()
+    if (!sourceNode) {
+      sourceNode = audioCtx.createMediaElementSource(video)
+      analyser = audioCtx.createAnalyser()
+      analyser.fftSize = 1024
+      // source -> analyser -> speakers (must reach destination or it goes mute).
+      sourceNode.connect(analyser)
+      analyser.connect(audioCtx.destination)
+      waveData = new Uint8Array(analyser.frequencyBinCount)
+    }
+    drawWaveform()
+  } catch {
+    // Best-effort (e.g. a non-<video> player backend); ignore failures.
+  }
+}
+
+function drawWaveform() {
+  const canvas = waveCanvas.value
+  if (!canvas || !analyser || !waveData) return
+  analyser.getByteTimeDomainData(waveData)
+  const ctx = canvas.getContext('2d')
+  if (ctx) {
+    const { width, height } = canvas
+    ctx.clearRect(0, 0, width, height)
+    ctx.lineWidth = 2
+    ctx.strokeStyle = '#38bdf8'
+    ctx.beginPath()
+    const step = width / waveData.length
+    for (let i = 0; i < waveData.length; i++) {
+      const y = ((waveData[i] ?? 128) / 128) * (height / 2) // 128 = centre
+      const x = i * step
+      if (i === 0) ctx.moveTo(x, y)
+      else ctx.lineTo(x, y)
+    }
+    ctx.stroke()
+  }
+  rafId = requestAnimationFrame(drawWaveform)
+}
+
+function stopWaveform() {
+  if (rafId) {
+    cancelAnimationFrame(rafId)
+    rafId = 0
+  }
+  const canvas = waveCanvas.value
+  const ctx = canvas?.getContext('2d')
+  if (canvas && ctx) ctx.clearRect(0, 0, canvas.width, canvas.height)
+}
+
 async function stopListen() {
+  stopWaveform()
   monitorHandle?.destroy()
   monitorHandle = null
   listeningId.value = null
@@ -177,6 +242,7 @@ async function toggleListen(bus: MixerBus) {
       muted: false,
       onError: (message) => appToast.error('试听失败', message),
     })
+    startWaveform()
   } catch (error) {
     listeningId.value = null
     appToast.errorFrom('试听失败', error, '无法播放混音输出')
@@ -185,6 +251,7 @@ async function toggleListen(bus: MixerBus) {
 
 onBeforeUnmount(() => {
   void stopListen()
+  void audioCtx?.close()
 })
 </script>
 
@@ -206,6 +273,7 @@ onBeforeUnmount(() => {
       <span v-if="listeningId" class="monitor-label">
         <i class="pi pi-volume-up" /> 正在试听：{{ listeningId }}
       </span>
+      <canvas v-show="listeningId" ref="waveCanvas" class="wave" width="360" height="44" />
       <Button
         v-if="listeningId"
         label="停止"
@@ -356,6 +424,14 @@ onBeforeUnmount(() => {
   gap: 0.4rem;
   font-size: 0.85rem;
   color: #7dd3fc;
+}
+
+.wave {
+  width: 360px;
+  height: 44px;
+  max-width: 100%;
+  background: rgb(15 23 42 / 60%);
+  border-radius: 0.375rem;
 }
 
 .empty-hint,
