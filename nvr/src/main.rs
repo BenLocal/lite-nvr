@@ -26,6 +26,10 @@ fn init_logging() {
         .filter_level(log::LevelFilter::Info)
         //.filter_module("ffmpeg_next", log::LevelFilter::Trace)
         //.filter_module("ffmpeg_bus", log::LevelFilter::Trace)
+        // Drop the noisy span-enter INFO records that libsql/turso emit through
+        // tracing's log bridge (target `tracing::span`: _prepare, consume_stmt,
+        // _connect, connect_with_encryption, …); keep any real warnings/errors.
+        .filter_module("tracing", log::LevelFilter::Warn)
         .init();
 }
 
