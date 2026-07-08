@@ -101,5 +101,29 @@ async fn main() -> ! {
         }
     }
 
+    // Graceful shutdown. `std::process::exit` runs ZLM/ffmpeg C static
+    // destructors immediately; if a media thread is still writing into ZLM at
+    // that moment it touches freed memory and segfaults. So first stop every
+    // producer that feeds ffmpeg/ZLM (compositor programs, mixer buses, device
+    // pipes) and let their threads unwind, THEN exit. None of these clear their
+    // persisted config, so everything restores on the next start. A timeout
+    // guards against a stuck teardown hanging the exit.
+    log::info!("shutting down: stopping media producers…");
+    let teardown = async {
+        crate::compositor::shutdown().await;
+        crate::audiomixer::shutdown();
+        crate::manager::shutdown().await;
+    };
+    if tokio::time::timeout(std::time::Duration::from_secs(5), teardown)
+        .await
+        .is_err()
+    {
+        log::warn!("shutdown: media teardown timed out; exiting anyway");
+    }
+    // Brief settle for any in-flight ZLM writes/callbacks to drain before the
+    // C runtime is torn down.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    log::info!("shutdown complete");
+
     std::process::exit(0);
 }

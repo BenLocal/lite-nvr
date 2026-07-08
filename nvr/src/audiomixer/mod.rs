@@ -42,6 +42,20 @@ pub fn snapshot() -> MixerSnapshot {
     MIXER.snapshot()
 }
 
+/// Stop every mixer bus and source (their tasks are cancelled on Drop) for a
+/// clean process shutdown. Does NOT clear the persisted buses — they restore on
+/// the next start. Call before the process exits so no mixer/publish thread is
+/// still writing into ZLM when its C runtime is torn down.
+pub fn shutdown() {
+    let snap = MIXER.snapshot();
+    for b in &snap.buses {
+        MIXER.remove_bus(&b.id);
+    }
+    for s in &snap.sources {
+        MIXER.remove_source(&s.id);
+    }
+}
+
 /// Create a bus mixing the given `(device_id, volume)` inputs, publishing to ZLM.
 pub async fn create_bus(
     bus_id: &str,

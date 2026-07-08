@@ -183,6 +183,22 @@ pub async fn list() -> Vec<Arc<CompositorEntry>> {
     COMPOSITORS.read().await.values().cloned().collect()
 }
 
+/// Stop every running compositor (compositing loop + source decoders +
+/// reconnectors) for a clean process shutdown. Does NOT clear the persisted
+/// config, so the programs restore on the next start. Call before the process
+/// exits so no compositor thread is still writing into ZLM when its C runtime
+/// is torn down.
+pub async fn shutdown() {
+    let entries: Vec<Arc<CompositorEntry>> =
+        { COMPOSITORS.write().await.drain().map(|(_, e)| e).collect() };
+    for e in &entries {
+        e.compositor.stop();
+        e.reconnect_cancel.cancel();
+    }
+    // `entries` drops here → each entry's sources drop → their input/decoder
+    // tasks stop (Source::drop).
+}
+
 /// Remove and stop a compositor. Cancelling stops the compositing loop (which
 /// flushes and stops publishing); dropping the entry stops its sources. Returns
 /// false if not found.

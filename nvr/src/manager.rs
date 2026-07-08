@@ -173,6 +173,19 @@ pub(crate) async fn remove_pipe(id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Stop and join every managed pipe/worker for a clean process shutdown, so no
+/// pipe thread is still pushing into a ZLM `Media` when the process tears down
+/// its C runtime.
+pub(crate) async fn shutdown() {
+    let entries: Vec<Entry> = { PIPE_MANAGER.write().await.drain().map(|(_, e)| e).collect() };
+    for e in &entries {
+        e.stop();
+    }
+    for e in entries {
+        e.join().await;
+    }
+}
+
 /// Running status for any entry: `Some(true/false)` for a pipe (false = not yet
 /// started), `Some(true)` for a worker, `None` if absent.
 pub(crate) async fn status(id: &str) -> Option<bool> {
