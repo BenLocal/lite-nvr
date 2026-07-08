@@ -17,4 +17,4 @@ pub mod source;
 
 pub use compositor::{Compositor, CompositorConfig, Director, SourceFeed};
 pub use layout::{Layout, Region};
-pub use source::Source;
+pub use source::{Source, spawn_reconnecting};

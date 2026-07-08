@@ -11,6 +11,7 @@ use std::time::Duration;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 use nvr_compositor::{Compositor, CompositorConfig, Layout, Region, Source, SourceFeed};
 
@@ -36,6 +37,9 @@ pub struct CompositorEntry {
     /// Retained so the program can be persisted/restored verbatim.
     bitrate: Option<u64>,
     compositor: Compositor,
+    /// Cancels the background reconnect tasks for sources that were offline at
+    /// create time, when the program is removed.
+    reconnect_cancel: CancellationToken,
     // Kept alive (decoding) for the lifetime of the entry.
     _sources: Vec<Source>,
 }
@@ -108,29 +112,43 @@ pub async fn create(params: CreateParams) -> Result<Arc<CompositorEntry>> {
         }
     }
 
-    // Start every source hot. A source that can't start (e.g. an offline camera)
-    // is skipped rather than failing the whole program — its regions stay black
-    // until it comes up and is switched in.
+    // Start every source hot. A source that can't start yet (e.g. a camera
+    // still coming up, or its ZLM stream not republished after a restart) is
+    // NOT dropped: it stays in the switchable pool with an empty frame cell and
+    // reconnects in the background, so it appears — and becomes switchable — the
+    // moment it comes online (its regions stay black until then). At least one
+    // source must start: its stream seeds the encoder.
+    let reconnect_cancel = CancellationToken::new();
     let mut started = Vec::with_capacity(params.sources.len());
+    let mut feeds: Vec<SourceFeed> = Vec::with_capacity(params.sources.len());
     for s in &params.sources {
         match Source::start(&s.id, &s.url).await {
-            Ok(src) => started.push(src),
+            Ok(src) => {
+                feeds.push(SourceFeed {
+                    id: src.id.clone(),
+                    latest: src.latest.clone(),
+                });
+                started.push(src);
+            }
             Err(e) => {
-                log::warn!("compositor '{id}' source '{}' failed to start, skipping: {e:#}", s.id)
+                log::warn!(
+                    "compositor '{id}' source '{}' offline, keeping in pool and reconnecting: {e:#}",
+                    s.id
+                );
+                let latest =
+                    nvr_compositor::spawn_reconnecting(&s.id, &s.url, reconnect_cancel.clone());
+                feeds.push(SourceFeed {
+                    id: s.id.clone(),
+                    latest,
+                });
             }
         }
     }
     if started.is_empty() {
+        reconnect_cancel.cancel();
         anyhow::bail!("no source could be started");
     }
     let template = started[0].video_stream.clone();
-    let feeds: Vec<SourceFeed> = started
-        .iter()
-        .map(|s| SourceFeed {
-            id: s.id.clone(),
-            latest: s.latest.clone(),
-        })
-        .collect();
 
     let publish_url = params
         .publish_url
@@ -153,6 +171,7 @@ pub async fn create(params: CreateParams) -> Result<Arc<CompositorEntry>> {
         fps: params.fps,
         bitrate: params.bitrate,
         compositor,
+        reconnect_cancel,
         _sources: started,
     });
     COMPOSITORS.write().await.insert(id, entry.clone());
@@ -173,6 +192,7 @@ pub async fn remove(id: &str) -> bool {
     match removed {
         Some(entry) => {
             entry.compositor.stop();
+            entry.reconnect_cancel.cancel();
             persist_all().await;
             true
         }
