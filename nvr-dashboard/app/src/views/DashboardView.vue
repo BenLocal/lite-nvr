@@ -50,6 +50,39 @@ const stats = computed(() => {
 
 const recentDevices = computed(() => (overview.value?.devices ?? []).slice(0, 6))
 
+// Friendly Chinese labels for the backend `input_type` values.
+const TYPE_LABELS: Record<string, string> = {
+  net: '网络 (RTSP/RTMP)',
+  rtsp: '网络 (RTSP)',
+  rtmp: '网络 (RTMP)',
+  file: '文件',
+  v4l2: 'V4L2 采集卡',
+  x11grab: '屏幕采集',
+  lavfi: '测试源',
+  gb28181: 'GB28181',
+  xiaomi: '小米摄像头',
+}
+function typeLabel(t: string): string {
+  return TYPE_LABELS[t] ?? (t || '未知')
+}
+
+// Device counts grouped by input type (total + online), most-common first.
+const deviceTypeDist = computed(() => {
+  const map = new Map<string, { total: number; online: number }>()
+  for (const d of overview.value?.devices ?? []) {
+    const label = typeLabel(d.input_type)
+    const e = map.get(label) ?? { total: 0, online: 0 }
+    e.total++
+    if (d.online) e.online++
+    map.set(label, e)
+  }
+  return [...map.entries()]
+    .map(([label, v]) => ({ label, total: v.total, online: v.online }))
+    .sort((a, b) => b.total - a.total)
+})
+
+const maxTypeCount = computed(() => Math.max(1, ...deviceTypeDist.value.map((t) => t.total)))
+
 async function load() {
   loading.value = true
   try {
@@ -218,32 +251,25 @@ onUnmounted(() => {
         <template #header>
           <div class="card-header">
             <div class="card-header-left">
-              <i class="pi pi-clock card-header-icon" />
-              <span class="card-header-title">最近活动</span>
+              <i class="pi pi-sitemap card-header-icon" />
+              <span class="card-header-title">设备类型分布</span>
             </div>
+            <span class="card-header-hint">共 {{ overview?.device_total ?? 0 }} 台</span>
           </div>
         </template>
         <template #content>
-          <div class="activity-list">
-            <div class="activity-item">
-              <div class="activity-time">10:23</div>
-              <div class="activity-content">
-                <div class="activity-title">设备上线</div>
-                <div class="activity-desc">前门摄像头重新连接</div>
+          <div v-if="!deviceTypeDist.length" class="device-empty">暂无设备</div>
+          <div v-else class="dist-list">
+            <div v-for="t in deviceTypeDist" :key="t.label" class="dist-item">
+              <div class="dist-head">
+                <span class="dist-label">{{ t.label }}</span>
+                <span class="dist-count">{{ t.online }}/{{ t.total }} 在线</span>
               </div>
-            </div>
-            <div class="activity-item">
-              <div class="activity-time">09:45</div>
-              <div class="activity-content">
-                <div class="activity-title">录像完成</div>
-                <div class="activity-desc">停车场摄像头录像已保存</div>
-              </div>
-            </div>
-            <div class="activity-item">
-              <div class="activity-time">08:12</div>
-              <div class="activity-content">
-                <div class="activity-title">系统启动</div>
-                <div class="activity-desc">NVR 系统正常启动</div>
+              <div class="dist-bar-track">
+                <div
+                  class="dist-bar"
+                  :style="{ width: (t.total / maxTypeCount) * 100 + '%' }"
+                />
               </div>
             </div>
           </div>
@@ -664,51 +690,54 @@ onUnmounted(() => {
   font-variant-numeric: tabular-nums;
 }
 
-.activity-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.activity-item {
-  display: flex;
-  gap: 1rem;
-  padding: 0.875rem;
-  background: rgb(30 41 59 / 40%);
-  border: 1px solid rgb(148 163 184 / 8%);
-  border-radius: 0.5rem;
-  transition: all 0.2s;
-}
-
-.activity-item:hover {
-  background: rgb(30 41 59 / 60%);
-  border-color: rgb(148 163 184 / 15%);
-}
-
-.activity-time {
+.card-header-hint {
   font-size: 0.6875rem;
   color: #64748b;
-  font-weight: 600;
   font-variant-numeric: tabular-nums;
-  flex-shrink: 0;
-  padding-top: 0.125rem;
 }
 
-.activity-content {
-  flex: 1;
-  min-width: 0;
+.dist-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
 }
 
-.activity-title {
+.dist-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.dist-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.dist-label {
   font-size: 0.8125rem;
   font-weight: 500;
   color: #e2e8f0;
-  margin-bottom: 0.125rem;
 }
 
-.activity-desc {
+.dist-count {
   font-size: 0.6875rem;
-  color: #64748b;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+}
+
+.dist-bar-track {
+  height: 0.5rem;
+  border-radius: 0.25rem;
+  background: rgb(148 163 184 / 12%);
+  overflow: hidden;
+}
+
+.dist-bar {
+  height: 100%;
+  border-radius: 0.25rem;
+  background: linear-gradient(90deg, #3b82f6, #38bdf8);
+  transition: width 0.4s ease;
 }
 
 @media (width <= 768px) {
