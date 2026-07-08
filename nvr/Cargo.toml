@@ -25,6 +25,8 @@ tokio-util = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
+# System performance metrics (CPU / memory / network) for the dashboard homepage.
+sysinfo = "0.33"
 ffmpeg-bus = { path = "../crates/ffmpeg-bus" }
 ffmpeg-next = { workspace = true }
 nvr-db = { path = "../nvr-db" }

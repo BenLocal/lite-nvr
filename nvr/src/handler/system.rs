@@ -12,6 +12,7 @@ pub fn system_router() -> Router {
     Router::new()
         .route("/", get(index))
         .route("/overview", get(overview))
+        .route("/metrics", get(metrics))
         .route("/list/device/formats", get(list_device_formats))
         .route("/list/v4l2/devices", get(list_v4l2_device))
         .route("/list/x11grab/devices", get(list_x11grab_device))
@@ -137,6 +138,12 @@ async fn overview() -> ApiJsonResult<OverviewResponse> {
         record_total_bytes,
         devices: items,
     }))
+}
+
+/// Latest sampled host performance metrics (CPU / memory / network). Served from
+/// the in-memory cache the background sampler fills, so it's cheap to poll.
+async fn metrics() -> ApiJsonResult<crate::metrics::SystemMetrics> {
+    Ok(ok_json(crate::metrics::snapshot()))
 }
 
 #[derive(Serialize, Deserialize)]

@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import Card from 'primevue/card'
-import { computed, onMounted, ref } from 'vue'
-import { getOverview, type SystemOverview } from '../api/system'
+import ProgressBar from 'primevue/progressbar'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { getMetrics, getOverview, type SystemMetrics, type SystemOverview } from '../api/system'
 import { useAppToast } from '../utils/toast'
 
 const appToast = useAppToast()
 const overview = ref<SystemOverview | null>(null)
 const loading = ref(false)
+const metrics = ref<SystemMetrics | null>(null)
 
 function formatBytes(bytes: number): string {
   if (!bytes || bytes <= 0) return '0 B'
@@ -15,6 +17,26 @@ function formatBytes(bytes: number): string {
   const val = bytes / Math.pow(1024, i)
   return `${val.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
 }
+
+function formatRate(bps: number): string {
+  return `${formatBytes(bps)}/s`
+}
+
+const cpuPercent = computed(() => Math.min(100, Math.max(0, Math.round(metrics.value?.cpu_usage ?? 0))))
+const memPercent = computed(() => {
+  const m = metrics.value
+  if (!m || m.mem_total <= 0) return 0
+  return Math.min(100, Math.round((m.mem_used / m.mem_total) * 100))
+})
+const loadText = computed(() => {
+  const m = metrics.value
+  if (!m) return '— / — / —'
+  return `${m.load_one.toFixed(2)} / ${m.load_five.toFixed(2)} / ${m.load_fifteen.toFixed(2)}`
+})
+const metricsUpdatedText = computed(() => {
+  const ts = metrics.value?.sampled_at_ms ?? 0
+  return ts > 0 ? new Date(ts).toLocaleTimeString('zh-CN', { hour12: false }) : '—'
+})
 
 const stats = computed(() => {
   const o = overview.value
@@ -39,8 +61,27 @@ async function load() {
   }
 }
 
+// Polled every few seconds. A transient failure just keeps the last snapshot —
+// a background poll shouldn't spam error toasts.
+async function loadMetrics() {
+  try {
+    metrics.value = await getMetrics()
+  } catch {
+    /* keep the previous sample */
+  }
+}
+
+const METRICS_POLL_MS = 2000
+let metricsTimer: number | undefined
+
 onMounted(() => {
   void load()
+  void loadMetrics()
+  metricsTimer = window.setInterval(loadMetrics, METRICS_POLL_MS)
+})
+
+onUnmounted(() => {
+  if (metricsTimer !== undefined) window.clearInterval(metricsTimer)
 })
 </script>
 
@@ -73,6 +114,64 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <Card class="data-card perf-card">
+      <template #header>
+        <div class="card-header">
+          <div class="card-header-left">
+            <i class="pi pi-server card-header-icon" />
+            <span class="card-header-title">系统性能</span>
+          </div>
+          <span class="perf-updated">
+            <span class="perf-dot" />更新于 {{ metricsUpdatedText }}
+          </span>
+        </div>
+      </template>
+      <template #content>
+        <div class="perf-grid">
+          <div class="perf-item">
+            <div class="perf-item-head">
+              <span class="perf-label">CPU 使用率</span>
+              <span class="perf-num">{{ cpuPercent }}%</span>
+            </div>
+            <ProgressBar :value="cpuPercent" :show-value="false" class="perf-bar" />
+            <div class="perf-sub">{{ metrics?.cpu_core_count ?? 0 }} 核</div>
+          </div>
+
+          <div class="perf-item">
+            <div class="perf-item-head">
+              <span class="perf-label">内存</span>
+              <span class="perf-num">{{ memPercent }}%</span>
+            </div>
+            <ProgressBar :value="memPercent" :show-value="false" class="perf-bar" />
+            <div class="perf-sub">
+              {{ formatBytes(metrics?.mem_used ?? 0) }} / {{ formatBytes(metrics?.mem_total ?? 0) }}
+            </div>
+          </div>
+
+          <div class="perf-item">
+            <div class="perf-item-head">
+              <span class="perf-label">网络</span>
+            </div>
+            <div class="perf-net">
+              <span class="net-rate net-down"><i class="pi pi-arrow-down" />{{ formatRate(metrics?.net_rx_bps ?? 0) }}</span>
+              <span class="net-rate net-up"><i class="pi pi-arrow-up" />{{ formatRate(metrics?.net_tx_bps ?? 0) }}</span>
+            </div>
+            <div class="perf-sub">
+              总 ↓{{ formatBytes(metrics?.net_rx_total ?? 0) }} · ↑{{ formatBytes(metrics?.net_tx_total ?? 0) }}
+            </div>
+          </div>
+
+          <div class="perf-item">
+            <div class="perf-item-head">
+              <span class="perf-label">系统负载</span>
+            </div>
+            <div class="perf-load">{{ loadText }}</div>
+            <div class="perf-sub">1 / 5 / 15 分钟</div>
+          </div>
+        </div>
+      </template>
+    </Card>
 
     <div class="content-grid">
       <Card class="data-card">
@@ -297,6 +396,114 @@ onMounted(() => {
 
 .data-card {
   animation: slide-up 0.5s ease-out 0.25s backwards;
+}
+
+.perf-card {
+  margin-bottom: 1.5rem;
+  animation: slide-up 0.5s ease-out 0.22s backwards;
+}
+
+.perf-updated {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.6875rem;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+}
+
+.perf-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 8px rgb(16 185 129 / 60%);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.perf-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.perf-item {
+  padding: 1rem;
+  background: rgb(30 41 59 / 40%);
+  border: 1px solid rgb(148 163 184 / 8%);
+  border-radius: 0.5rem;
+}
+
+.perf-item-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.625rem;
+}
+
+.perf-label {
+  font-size: 0.6875rem;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.perf-num {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #e2e8f0;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.perf-bar {
+  margin-bottom: 0.5rem;
+}
+
+.perf-bar :deep(.p-progressbar) {
+  height: 0.5rem;
+  background: rgb(148 163 184 / 12%);
+}
+
+.perf-sub {
+  font-size: 0.6875rem;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+}
+
+.perf-net {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.net-rate {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.net-rate i {
+  font-size: 0.75rem;
+}
+
+.net-down {
+  color: #38bdf8;
+}
+
+.net-up {
+  color: #f59e0b;
+}
+
+.perf-load {
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: #e2e8f0;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 0.5rem;
 }
 
 /* Card header styles */

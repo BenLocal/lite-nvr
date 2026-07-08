@@ -14,6 +14,7 @@ mod gb;
 mod handler;
 mod init;
 mod manager;
+mod metrics;
 mod program;
 mod proxy;
 mod transport;
@@ -76,6 +77,10 @@ async fn main() -> ! {
     // start the record-segment retention cleanup worker (deletes old segments
     // per the policy configured on the dashboard Settings page)
     cleanup::spawn_worker(cancel.clone());
+
+    // start the system-metrics sampler (CPU / memory / network into a cache the
+    // dashboard homepage polls)
+    metrics::spawn_worker(cancel.clone());
 
     // start api server
     let cancel_clone = cancel.clone();
