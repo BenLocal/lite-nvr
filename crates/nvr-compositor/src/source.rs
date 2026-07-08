@@ -1,13 +1,18 @@
 //! One input, kept hot: reads + decodes continuously and publishes its *latest*
 //! decoded video frame into a shared cell. The compositor samples that cell on
 //! its own output clock (hold-last-frame), so sources may run at any frame rate.
+//!
+//! The background frame pump is *reconnecting*: after a stream ends or drops it
+//! reopens the URL, so a source that was online at create time self-heals if it
+//! later goes away, exactly like one that was offline at create time (see
+//! [`spawn_reconnecting`]). Both paths share the one [`reconnect_loop`].
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
 use ffmpeg_bus::decoder::{Decoder, DecoderTask};
-use ffmpeg_bus::frame::{RawFrame, RawFrameCmd};
+use ffmpeg_bus::frame::{RawFrame, RawFrameCmd, RawFrameReceiver};
 use ffmpeg_bus::input::{AvInput, AvInputTask};
 use ffmpeg_bus::stream::AvStream;
 use tokio::sync::broadcast::error::RecvError;
@@ -20,65 +25,45 @@ pub struct Source {
     pub id: String,
     pub video_stream: AvStream,
     pub latest: LatestFrame,
-    input_task: AvInputTask,
-    decoder_task: DecoderTask,
+    /// Cancels the background reconnecting pump; fired on [`Drop`].
+    cancel: CancellationToken,
 }
 
 impl Source {
+    /// Open `url` once (fails if that first open fails) and keep the returned
+    /// [`Source`] hot: the initial connection's video stream is exposed as
+    /// [`video_stream`](Self::video_stream) for the encoder template, while a
+    /// background [`reconnect_loop`] pumps decoded frames into `latest` and
+    /// reconnects on EOF/error until the `Source` is dropped.
     pub async fn start(id: &str, url: &str) -> Result<Self> {
-        let input = AvInput::new(url, None, None)?;
-        let video_stream = input
-            .streams()
-            .values()
-            .find(|s| s.is_video())
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("source {id}: no video stream in {url}"))?;
-
-        let input_task = AvInputTask::new();
-        let decoder = Decoder::new(&video_stream)?;
-        let decoder_task = DecoderTask::new();
-        // Compositor keeps only the latest frame per source, so lossy is fine.
-        decoder_task.start(decoder, input_task.subscribe(), false).await;
-
-        let mut frames = decoder_task.subscribe();
-        input_task.start(input).await;
+        // First open must succeed: it yields the encoder's stream template.
+        let conn = open_connection(id, url).await?;
+        let video_stream = conn.video_stream.clone();
 
         let latest: LatestFrame = Arc::new(Mutex::new(None));
-        let sink = latest.clone();
-        let id_owned = id.to_string();
-        tokio::spawn(async move {
-            loop {
-                match frames.recv().await {
-                    Ok(RawFrameCmd::Data(frame @ RawFrame::Video(_))) => {
-                        *sink.lock().unwrap() = Some(frame);
-                    }
-                    Ok(RawFrameCmd::Data(_)) => {} // ignore audio
-                    Ok(RawFrameCmd::EOF) => {
-                        log::info!("source {id_owned}: end of stream");
-                        break;
-                    }
-                    Err(RecvError::Lagged(n)) => {
-                        log::warn!("source {id_owned}: decoder lagged, dropped {n} frames");
-                    }
-                    Err(RecvError::Closed) => break,
-                }
-            }
-        });
+        let cancel = CancellationToken::new();
+        // Pump the connection we just opened, then reconnect on any later drop.
+        tokio::spawn(reconnect_loop(
+            id.to_string(),
+            url.to_string(),
+            latest.clone(),
+            cancel.clone(),
+            Some(conn),
+        ));
 
         Ok(Self {
             id: id.to_string(),
             video_stream,
             latest,
-            input_task,
-            decoder_task,
+            cancel,
         })
     }
 }
 
 impl Drop for Source {
     fn drop(&mut self) {
-        self.input_task.stop();
-        self.decoder_task.stop();
+        // Stops the reconnect loop, which stops the live connection's tasks.
+        self.cancel.cancel();
     }
 }
 
@@ -93,38 +78,64 @@ const RECONNECT_RETRY: Duration = Duration::from_secs(3);
 /// compositor sources that were offline when the program was created. The cell
 /// is placed in the pool up-front so the source is switchable right away, and
 /// its picture appears the moment it comes up (and recovers if it later drops).
-/// Open/decode errors are logged and retried.
+/// Open/decode errors are logged and retried. Both this and [`Source::start`]
+/// drive the same [`reconnect_loop`]; they differ only in whether the first
+/// open is required to succeed.
 pub fn spawn_reconnecting(id: &str, url: &str, cancel: CancellationToken) -> LatestFrame {
     let latest: LatestFrame = Arc::new(Mutex::new(None));
-    let cell = latest.clone();
-    let id = id.to_string();
-    let url = url.to_string();
-    tokio::spawn(async move {
-        while !cancel.is_cancelled() {
-            if let Err(e) = pump_once(&id, &url, &cell, &cancel).await {
-                log::warn!(
-                    "compositor source {id}: connect failed ({e:#}); retry in {}s",
-                    RECONNECT_RETRY.as_secs()
-                );
-            }
-            tokio::select! {
-                _ = cancel.cancelled() => break,
-                _ = tokio::time::sleep(RECONNECT_RETRY) => {}
-            }
-        }
-        log::info!("compositor source {id}: reconnect loop stopped");
-    });
+    tokio::spawn(reconnect_loop(
+        id.to_string(),
+        url.to_string(),
+        latest.clone(),
+        cancel,
+        None,
+    ));
     latest
 }
 
-/// One connection: open `url` and decode video into `latest` until EOF, a fatal
-/// error, or `cancel`. `Ok` on a clean end; `Err` if the input could not open.
-async fn pump_once(
-    id: &str,
-    url: &str,
-    latest: &LatestFrame,
-    cancel: &CancellationToken,
-) -> Result<()> {
+/// A single open input + its running decode tasks and frame stream.
+struct Connection {
+    video_stream: AvStream,
+    input_task: AvInputTask,
+    decoder_task: DecoderTask,
+    frames: RawFrameReceiver,
+}
+
+/// Reconnecting pump shared by [`Source::start`] and [`spawn_reconnecting`]:
+/// pump each connection's frames into `latest`, and when it ends (EOF/error)
+/// reopen `url` after [`RECONNECT_RETRY`], until `cancel` fires. `first` is an
+/// already-open connection to pump before the first reopen (used by
+/// [`Source::start`], whose first open must succeed up-front); pass `None` to
+/// open lazily inside the loop (used by [`spawn_reconnecting`]).
+async fn reconnect_loop(
+    id: String,
+    url: String,
+    latest: LatestFrame,
+    cancel: CancellationToken,
+    mut first: Option<Connection>,
+) {
+    while !cancel.is_cancelled() {
+        match first.take() {
+            Some(conn) => pump_connection(&id, conn, &latest, &cancel).await,
+            None => match open_connection(&id, &url).await {
+                Ok(conn) => pump_connection(&id, conn, &latest, &cancel).await,
+                Err(e) => log::warn!(
+                    "compositor source {id}: connect failed ({e:#}); retry in {}s",
+                    RECONNECT_RETRY.as_secs()
+                ),
+            },
+        }
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            _ = tokio::time::sleep(RECONNECT_RETRY) => {}
+        }
+    }
+    log::info!("compositor source {id}: reconnect loop stopped");
+}
+
+/// Open `url`, start its input + decoder tasks, and return the live connection.
+/// `Err` if the input can't open or has no video stream.
+async fn open_connection(id: &str, url: &str) -> Result<Connection> {
     let input = AvInput::new(url, None, None)?;
     let video_stream = input
         .streams()
@@ -136,11 +147,34 @@ async fn pump_once(
     let input_task = AvInputTask::new();
     let decoder = Decoder::new(&video_stream)?;
     let decoder_task = DecoderTask::new();
+    // Compositor keeps only the latest frame per source, so lossy is fine.
     decoder_task.start(decoder, input_task.subscribe(), false).await;
-    let mut frames = decoder_task.subscribe();
+    let frames = decoder_task.subscribe();
     input_task.start(input).await;
     log::info!("compositor source {id}: connected");
 
+    Ok(Connection {
+        video_stream,
+        input_task,
+        decoder_task,
+        frames,
+    })
+}
+
+/// Pump one connection's decoded video into `latest` until EOF, a fatal error,
+/// or `cancel`, then stop its input/decoder tasks.
+async fn pump_connection(
+    id: &str,
+    conn: Connection,
+    latest: &LatestFrame,
+    cancel: &CancellationToken,
+) {
+    let Connection {
+        input_task,
+        decoder_task,
+        mut frames,
+        ..
+    } = conn;
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
@@ -162,5 +196,4 @@ async fn pump_once(
     }
     input_task.stop();
     decoder_task.stop();
-    Ok(())
 }

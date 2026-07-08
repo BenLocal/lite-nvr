@@ -22,6 +22,18 @@ const PERSIST_KEY: &str = "compositor_programs";
 /// ZLM RTMP publish endpoint (see `zlm::server`: `rtmp_server_start(8555)`).
 const ZLM_RTMP: &str = "rtmp://127.0.0.1:8555";
 
+/// Grace period before the first restore attempt, letting device pipelines
+/// publish their ZLM streams.
+const RESTORE_GRACE: Duration = Duration::from_secs(3);
+/// Restore retry backoff bounds and total budget: retry `create()` with
+/// exponential backoff from MIN to MAX until BUDGET has elapsed. With sources
+/// now self-healing, `create()` only hard-fails while ALL of a program's
+/// sources are still offline, so a slow boot just needs a wider retry window —
+/// its remaining offline sources then reconnect on their own.
+const RESTORE_RETRY_MIN: Duration = Duration::from_secs(2);
+const RESTORE_RETRY_MAX: Duration = Duration::from_secs(8);
+const RESTORE_RETRY_BUDGET: Duration = Duration::from_secs(60);
+
 #[derive(Clone)]
 pub struct SourceInfo {
     pub id: String,
@@ -392,8 +404,10 @@ async fn load_persisted() -> Result<Vec<PersistedCompositor>> {
 
 /// Restore persisted compositor programs at startup. Call AFTER the device pipes
 /// have started so the sources' ZLM streams exist (compositors pull
-/// `rtsp://127.0.0.1:8554/device/{id}`). Best-effort, with a short grace period
-/// and a few retries since streams may still be coming up.
+/// `rtsp://127.0.0.1:8554/device/{id}`). Best-effort: a short grace period, then
+/// retry each program's `create()` with backing-off attempts over a ~1-minute
+/// window so a program whose cameras are slow to come up still restores (its
+/// still-offline sources then self-heal via `spawn_reconnecting`).
 pub async fn restore_all() {
     let saved = match load_persisted().await {
         Ok(s) => s,
@@ -407,27 +421,31 @@ pub async fn restore_all() {
     }
     log::info!("compositor restore: {} program(s) to restore", saved.len());
     // Give device pipelines a moment to publish their streams to ZLM first.
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(RESTORE_GRACE).await;
 
     for pc in saved {
         let id = pc.id.clone();
-        let mut attempt = 0u32;
+        let mut backoff = RESTORE_RETRY_MIN;
+        let mut elapsed = Duration::ZERO;
         loop {
-            attempt += 1;
             match create(pc.clone().into_params()).await {
                 Ok(_) => {
                     log::info!("compositor restore: started '{id}'");
                     break;
                 }
-                Err(e) if attempt < 3 => {
+                Err(e) if elapsed < RESTORE_RETRY_BUDGET => {
                     log::warn!(
-                        "compositor restore: '{id}' attempt {attempt} failed ({e:#}); retrying"
+                        "compositor restore: '{id}' not ready yet ({e:#}); retry in {}s",
+                        backoff.as_secs()
                     );
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    tokio::time::sleep(backoff).await;
+                    elapsed += backoff;
+                    backoff = (backoff * 2).min(RESTORE_RETRY_MAX);
                 }
                 Err(e) => {
                     log::error!(
-                        "compositor restore: '{id}' gave up after {attempt} attempts: {e:#}"
+                        "compositor restore: '{id}' gave up after ~{}s: {e:#}",
+                        elapsed.as_secs()
                     );
                     break;
                 }

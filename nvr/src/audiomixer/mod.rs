@@ -20,6 +20,16 @@ const ZLM_RTSP: &str = "rtsp://127.0.0.1:8554";
 /// ZLM RTMP publish endpoint (see `zlm::server`: `rtmp_server_start(8555)`).
 const ZLM_RTMP: &str = "rtmp://127.0.0.1:8555";
 
+/// Grace period before the first restore attempt, letting device pipelines
+/// publish their ZLM streams.
+const RESTORE_GRACE: Duration = Duration::from_secs(3);
+/// Restore retry backoff bounds and total budget: retry `create_bus()` with
+/// exponential backoff from MIN to MAX until BUDGET has elapsed, so a bus whose
+/// device streams are slow to come up on a cold boot still restores.
+const RESTORE_RETRY_MIN: Duration = Duration::from_secs(2);
+const RESTORE_RETRY_MAX: Duration = Duration::from_secs(8);
+const RESTORE_RETRY_BUDGET: Duration = Duration::from_secs(60);
+
 static MIXER: LazyLock<AudioMixer> = LazyLock::new(AudioMixer::new);
 
 /// A device's audio stream URL on ZLM (source id == device id).
@@ -189,7 +199,9 @@ fn migrate_publish_url(url: &str) -> String {
 
 /// Restore persisted buses at startup. Call AFTER device pipes have started so
 /// the sources' ZLM streams exist (buses pull `rtsp://127.0.0.1:8554/device/{id}`).
-/// Best-effort, with a short grace period and a few retries.
+/// Best-effort: a short grace period, then retry each bus's `create_bus()` with
+/// backing-off attempts over a ~1-minute window so a bus whose device streams
+/// are slow to come up on a cold boot still restores.
 pub async fn restore_all() {
     let saved = match load_persisted().await {
         Ok(s) => s,
@@ -202,7 +214,7 @@ pub async fn restore_all() {
         return;
     }
     log::info!("audio mixer restore: {} bus(es) to restore", saved.len());
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(RESTORE_GRACE).await;
 
     for bus in saved {
         let id = bus.id.clone();
@@ -212,9 +224,9 @@ pub async fn restore_all() {
             .map(|i| (i.source_id.clone(), i.volume))
             .collect();
         let publish = Some(migrate_publish_url(&bus.publish_url)).filter(|u| !u.trim().is_empty());
-        let mut attempt = 0u32;
+        let mut backoff = RESTORE_RETRY_MIN;
+        let mut elapsed = Duration::ZERO;
         loop {
-            attempt += 1;
             match create_bus(&id, publish.clone(), inputs.clone()).await {
                 Ok(()) => {
                     for input in &bus.inputs {
@@ -225,14 +237,17 @@ pub async fn restore_all() {
                     log::info!("audio mixer restore: started '{id}'");
                     break;
                 }
-                Err(e) if attempt < 3 => {
+                Err(e) if elapsed < RESTORE_RETRY_BUDGET => {
                     log::warn!(
-                        "audio mixer restore: '{id}' attempt {attempt} failed ({e:#}); retrying"
+                        "audio mixer restore: '{id}' not ready yet ({e:#}); retry in {}s",
+                        backoff.as_secs()
                     );
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    tokio::time::sleep(backoff).await;
+                    elapsed += backoff;
+                    backoff = (backoff * 2).min(RESTORE_RETRY_MAX);
                 }
                 Err(e) => {
-                    log::error!("audio mixer restore: '{id}' gave up after {attempt}: {e:#}");
+                    log::error!("audio mixer restore: '{id}' gave up after ~{}s: {e:#}", elapsed.as_secs());
                     break;
                 }
             }
