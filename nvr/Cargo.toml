@@ -32,6 +32,7 @@ nvr-dashboard = { path = "../nvr-dashboard" }
 nvr-asr = { path = "../crates/nvr-asr" }
 nvr-switcher = { path = "../crates/nvr-switcher" }
 nvr-compositor = { path = "../crates/nvr-compositor" }
+nvr-audio-mixer = { path = "../crates/nvr-audio-mixer" }
 media-pipe-core = { path = "../crates/media-pipe-core" }
 media-pipe-zlm = { path = "../crates/media-pipe-zlm" }
 xiaomi = { path = "../crates/xiaomi" }

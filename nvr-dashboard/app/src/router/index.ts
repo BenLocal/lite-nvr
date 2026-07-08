@@ -32,6 +32,11 @@ const router = createRouter({
           component: () => import('../views/SwitcherView.vue'),
         },
         {
+          path: 'mixer',
+          name: 'mixer',
+          component: () => import('../views/AudioMixerView.vue'),
+        },
+        {
           path: 'playback',
           name: 'playback',
           component: () => import('../views/PlaybackView.vue'),

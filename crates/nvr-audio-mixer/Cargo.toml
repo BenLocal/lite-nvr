@@ -1,0 +1,15 @@
+[package]
+name = "nvr-audio-mixer"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Dynamic audio mixing console: mix several source audio streams into one or more independently-published output buses, with live per-input add/remove, volume and mute."
+
+[dependencies]
+ffmpeg-bus = { path = "../ffmpeg-bus" }
+ffmpeg-next = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }

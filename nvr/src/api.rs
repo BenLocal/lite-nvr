@@ -14,6 +14,7 @@ pub(crate) fn start_api_server(cancel: CancellationToken, port: u16) {
             .nest("/transport", crate::transport::api::transport_router())
             .nest("/program", crate::program::api::program_router())
             .nest("/compositor", crate::compositor::api::compositor_router())
+            .nest("/audiomixer", crate::audiomixer::api::audiomixer_router())
             .nest("/asr", crate::asr::api::asr_router());
 
         let (asr_layer, asr_io) = crate::asr::build_socketio();

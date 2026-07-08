@@ -2593,6 +2593,7 @@ dependencies = [
  "media-pipe-core",
  "media-pipe-zlm",
  "nvr-asr",
+ "nvr-audio-mixer",
  "nvr-compositor",
  "nvr-dashboard",
  "nvr-db",
@@ -2623,6 +2624,19 @@ dependencies = [
  "hound",
  "log",
  "sherpa-onnx",
+]
+
+[[package]]
+name = "nvr-audio-mixer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ffmpeg-bus",
+ "ffmpeg-next",
+ "log",
+ "serde",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

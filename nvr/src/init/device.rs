@@ -49,6 +49,11 @@ async fn init_device_pipes_inner() -> anyhow::Result<()> {
         crate::compositor::restore_all().await;
     });
 
+    // Same for the audio mixer buses (they pull the same device streams).
+    tokio::spawn(async {
+        crate::audiomixer::restore_all().await;
+    });
+
     Ok(())
 }
 

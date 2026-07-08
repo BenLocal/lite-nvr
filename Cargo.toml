@@ -9,6 +9,7 @@ members = [
     "crates/media-pipe-zlm",
     "crates/nvr-compositor",
     "crates/nvr-switcher",
+    "crates/nvr-audio-mixer",
     "crates/nvr-asr",
     "crates/xiaomi",
     "examples/dummy-camera",

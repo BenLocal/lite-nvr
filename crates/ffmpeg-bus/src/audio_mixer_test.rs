@@ -1,141 +1,86 @@
 use super::*;
 
+// ---- pure PCM helpers -----------------------------------------------------
+
 #[test]
-fn test_dynamic_mixer_new() -> anyhow::Result<()> {
-    let _mixer = DynamicMixer::new(2, 48_000)?;
-    Ok(())
+fn gain_unity_mute_and_scale() {
+    assert_eq!(gain_factor(100, false), 1.0);
+    assert_eq!(gain_factor(0, false), 0.0);
+    assert_eq!(gain_factor(100, true), 0.0);
+    assert_eq!(gain_factor(50, false), 0.5);
+    // Runaway volume is capped at 4x.
+    assert_eq!(gain_factor(10_000, false), 4.0);
 }
 
 #[test]
-fn test_dynamic_mixer_push_silence_and_pull() -> anyhow::Result<()> {
-    let mixer = DynamicMixer::new(2, 48_000)?;
-    let (read, write) = mixer.split();
-    let samples_per_channel = 1024_usize;
-    let pts = 0_i64;
+fn accumulate_sums_multiple_inputs_with_gain() {
+    let mut acc = vec![0i32; 4];
+    accumulate(&mut acc, &[100, -100, 100, -100], 1.0);
+    accumulate(&mut acc, &[50, 50, 50, 50], 1.0);
+    assert_eq!(acc, vec![150, -50, 150, -50]);
 
-    write.push_silence(0, samples_per_channel, pts)?;
-    write.push_silence(1, samples_per_channel, pts)?;
-
-    let mut out_count = 0_usize;
-    while let Some(frame) = read.pull_frame()? {
-        out_count += 1;
-        assert!(frame.samples() > 0, "mixed frame should carry samples");
-        if out_count >= 10 {
-            break;
-        }
-    }
-    assert!(out_count >= 1, "expected at least one mixed output frame");
-    Ok(())
+    let mut acc = vec![0i32; 2];
+    accumulate(&mut acc, &[100, 200], 0.5);
+    assert_eq!(acc, vec![50, 100]);
 }
 
 #[test]
-fn test_dynamic_mixer_push_audio_and_pull() -> anyhow::Result<()> {
-    let mixer = DynamicMixer::new(2, 48_000)?;
-    let (read, write) = mixer.split();
-    let samples_per_channel = 512_usize;
-    let make_silence_frame = || {
-        let mut frame = Audio::new(
-            Sample::I16(ffmpeg_next::format::sample::Type::Packed),
-            samples_per_channel,
-            ChannelLayout::STEREO,
-        );
-        frame.set_rate(48_000);
-        frame.set_pts(Some(0));
-        for plane in 0..frame.planes() {
-            for b in frame.data_mut(plane) {
-                *b = 0;
-            }
-        }
-        frame
-    };
+fn clamp_saturates_instead_of_wrapping() {
+    let acc = vec![40_000, -40_000, 100, i16::MAX as i32];
+    assert_eq!(clamp_to_i16(&acc), vec![i16::MAX, i16::MIN, 100, i16::MAX]);
 
-    write.push_audio(0, &make_silence_frame())?;
-    write.push_audio(1, &make_silence_frame())?;
-
-    let mut out_count = 0_usize;
-    while let Some(out_frame) = read.pull_frame()? {
-        out_count += 1;
-        assert!(out_frame.samples() > 0);
-        if out_count >= 5 {
-            break;
-        }
-    }
-    assert!(out_count >= 1);
-    Ok(())
+    // Two near-full-scale inputs must clip to the rail, never wrap negative.
+    let mut acc = vec![0i32; 2];
+    accumulate(&mut acc, &[30_000, 30_000], 1.0);
+    accumulate(&mut acc, &[30_000, 30_000], 1.0);
+    assert_eq!(clamp_to_i16(&acc), vec![i16::MAX, i16::MAX]);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_dynamic_mixer_task() -> anyhow::Result<()> {
-    let mixer = DynamicMixer::new(2, 48_000)?;
-    let mut task = DynamicMixerTask::new();
+#[test]
+fn take_frame_pads_short_buffer_with_silence() {
+    let mut buf: VecDeque<i16> = VecDeque::from(vec![1, 2, 3]);
+    let frame = take_frame(&mut buf);
+    assert_eq!(frame.len(), FRAME_LEN);
+    assert_eq!(&frame[..3], &[1, 2, 3]);
+    assert!(frame[3..].iter().all(|&s| s == 0));
+    assert!(buf.is_empty());
+}
 
-    let mut out_rx = task.subscribe();
-    task.start(mixer).await?;
+// ---- task control surface (no running loop required) ----------------------
 
-    let (input0_tx, _) = tokio::sync::broadcast::channel::<RawFrameCmd>(32);
-    let (input1_tx, _) = tokio::sync::broadcast::channel::<RawFrameCmd>(32);
+#[test]
+fn add_set_and_remove_inputs_tracks_controls() {
+    let task = DynamicMixerTask::new(48_000);
+    let (_tx_a, rx_a) = tokio::sync::broadcast::channel::<RawFrameCmd>(8);
+    let (_tx_b, rx_b) = tokio::sync::broadcast::channel::<RawFrameCmd>(8);
 
-    task.add_input(0, input0_tx.subscribe()).await?;
-    task.add_input(1, input1_tx.subscribe()).await?;
-    tokio::task::yield_now().await;
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    task.add_input("a", rx_a, DEFAULT_VOLUME);
+    task.add_input("b", rx_b, 40);
 
-    let make_silence = || {
-        let mut frame = Audio::new(
-            Sample::I16(ffmpeg_next::format::sample::Type::Packed),
-            512,
-            ChannelLayout::STEREO,
-        );
-        frame.set_rate(48_000);
-        frame.set_pts(Some(0));
-        for plane in 0..frame.planes() {
-            for b in frame.data_mut(plane) {
-                *b = 0;
-            }
-        }
-        RawFrameCmd::Data(RawFrame::Audio(frame.into()))
-    };
-
-    for _ in 0..8 {
-        let _ = input0_tx.send(make_silence());
-        let _ = input1_tx.send(make_silence());
-    }
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
-    let mut out_count = 0_usize;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-    while tokio::time::Instant::now() < deadline && out_count < 3 {
-        match tokio::time::timeout(std::time::Duration::from_millis(500), out_rx.recv()).await {
-            Ok(Ok(RawFrameCmd::Data(RawFrame::Audio(_)))) => out_count += 1,
-            Ok(Ok(RawFrameCmd::Data(RawFrame::Video(_)))) => {}
-            Ok(Ok(RawFrameCmd::EOF)) => break,
-            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
-            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
-            Err(_) => continue,
-        }
-    }
-
-    task.cancel();
-    assert!(
-        out_count >= 1,
-        "expected at least one mixed output frame, got out_count={}",
-        out_count
+    let mut inputs = task.inputs();
+    inputs.sort_by(|x, y| x.0.cmp(&y.0));
+    assert_eq!(
+        inputs,
+        vec![("a".to_string(), 100, false), ("b".to_string(), 40, false),]
     );
-    Ok(())
+
+    task.set_volume("a", 25).unwrap();
+    task.set_muted("b", true).unwrap();
+    let mut inputs = task.inputs();
+    inputs.sort_by(|x, y| x.0.cmp(&y.0));
+    assert_eq!(
+        inputs,
+        vec![("a".to_string(), 25, false), ("b".to_string(), 40, true),]
+    );
+
+    task.remove_input("a").unwrap();
+    assert_eq!(task.inputs(), vec![("b".to_string(), 40, true)]);
 }
 
-#[tokio::test]
-async fn test_dynamic_mixer_task_add_input_before_start_returns_error() {
-    let task = DynamicMixerTask::new();
-    let (_, rx) = tokio::sync::broadcast::channel::<RawFrameCmd>(8);
-    let err = task.add_input(0, rx).await.err();
-    assert!(err.is_some());
+#[test]
+fn control_of_missing_input_errors() {
+    let task = DynamicMixerTask::new(48_000);
+    assert!(task.remove_input("nope").is_err());
+    assert!(task.set_volume("nope", 50).is_err());
+    assert!(task.set_muted("nope", true).is_err());
 }
-
-#[tokio::test]
-async fn test_dynamic_mixer_task_remove_input_before_start_returns_error() {
-    let task = DynamicMixerTask::new();
-    let err = task.remove_input(0).await.err();
-    assert!(err.is_some());
-}
-
