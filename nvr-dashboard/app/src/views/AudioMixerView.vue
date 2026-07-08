@@ -165,6 +165,10 @@ let sourceNode: MediaElementAudioSourceNode | null = null
 let analyser: AnalyserNode | null = null
 let waveData: Uint8Array<ArrayBuffer> | null = null
 let rafId = 0
+// Current volume level 0–100 (VU meter beside the waveform), with a decaying
+// peak hold so it doesn't flicker.
+const meterLevel = ref(0)
+let meterSmooth = 0
 
 function startWaveform() {
   const video = monitorVideo.value
@@ -191,6 +195,18 @@ function drawWaveform() {
   const canvas = waveCanvas.value
   if (!canvas || !analyser || !waveData) return
   analyser.getByteTimeDomainData(waveData)
+
+  // Volume level (0–100) from RMS; full-scale sine (~0.707 RMS) maps to ~100.
+  // Fast attack, slow decay for a readable VU-style meter.
+  let sumSq = 0
+  for (let i = 0; i < waveData.length; i++) {
+    const d = ((waveData[i] ?? 128) - 128) / 128
+    sumSq += d * d
+  }
+  const level = Math.min(100, Math.round(Math.sqrt(sumSq / waveData.length) * 141))
+  meterSmooth = level > meterSmooth ? level : meterSmooth * 0.9
+  meterLevel.value = Math.round(meterSmooth)
+
   const ctx = canvas.getContext('2d')
   if (ctx) {
     const { width, height } = canvas
@@ -215,6 +231,8 @@ function stopWaveform() {
     cancelAnimationFrame(rafId)
     rafId = 0
   }
+  meterLevel.value = 0
+  meterSmooth = 0
   const canvas = waveCanvas.value
   const ctx = canvas?.getContext('2d')
   if (canvas && ctx) ctx.clearRect(0, 0, canvas.width, canvas.height)
@@ -268,12 +286,23 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- Single monitor player: audio-only, one bus at a time. -->
-    <div ref="monitorContainer" class="monitor" :class="{ 'monitor-active': listeningId }">
+    <div class="monitor" :class="{ 'monitor-active': listeningId }">
       <video ref="monitorVideo" class="monitor-video" autoplay playsinline />
+      <!-- Separate mount point for the Jessibuca backend; the stream player
+           toggles its display, so it must NOT be the bar wrapping the waveform. -->
+      <div ref="monitorContainer" class="monitor-jbc" />
       <span v-if="listeningId" class="monitor-label">
         <i class="pi pi-volume-up" /> 正在试听：{{ listeningId }}
       </span>
       <canvas v-show="listeningId" ref="waveCanvas" class="wave" width="360" height="44" />
+      <div v-show="listeningId" class="meter" title="音量 0–100">
+        <span class="meter-end">0</span>
+        <div class="meter-track">
+          <div class="meter-cover" :style="{ width: 100 - meterLevel + '%' }" />
+        </div>
+        <span class="meter-end">100</span>
+        <span class="meter-value">{{ meterLevel }}</span>
+      </div>
       <Button
         v-if="listeningId"
         label="停止"
@@ -413,7 +442,8 @@ onBeforeUnmount(() => {
   border-radius: 0.5rem;
 }
 
-.monitor-video {
+.monitor-video,
+.monitor-jbc {
   width: 0;
   height: 0;
 }
@@ -432,6 +462,47 @@ onBeforeUnmount(() => {
   max-width: 100%;
   background: rgb(15 23 42 / 60%);
   border-radius: 0.375rem;
+}
+
+.meter {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 44px;
+  font-size: 0.65rem;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+}
+
+.meter-end {
+  line-height: 1;
+}
+
+.meter-track {
+  position: relative;
+  width: 180px;
+  max-width: 40vw;
+  height: 12px;
+  border-radius: 3px;
+  overflow: hidden;
+
+  /* green (left) -> yellow -> red (right); filled up to the current level */
+  background: linear-gradient(to right, #22c55e, #eab308 55%, #ef4444);
+}
+
+.meter-cover {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  background: rgb(15 23 42 / 85%);
+  transition: width 0.05s linear;
+}
+
+.meter-value {
+  min-width: 1.6rem;
+  font-size: 0.8rem;
+  color: #94a3b8;
 }
 
 .empty-hint,

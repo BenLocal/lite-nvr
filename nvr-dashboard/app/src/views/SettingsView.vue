@@ -224,6 +224,11 @@ onMounted(async () => {
   max-width: 44rem;
 }
 
+/* keep 10px between stacked setting cards (global .data-card has no margin) */
+.settings-card + .settings-card {
+  margin-top: 10px;
+}
+
 .settings-card-header {
   display: flex;
   align-items: center;
