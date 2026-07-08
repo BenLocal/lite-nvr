@@ -65,7 +65,7 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
         let cfg: crate::xiaomi::XiaomiConfig = serde_json::from_str(&device.input_value)
             .map_err(|e| anyhow::anyhow!("invalid xiaomi device config: {e}"))?;
         let media = Arc::new(rszlm::media::Media::new_with_default_vhost(
-            "live",
+            DEVICE_APP,
             device.id.as_str(),
             0.0,
             device.record,
@@ -135,7 +135,7 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
     // get archived (on_record_ts) when this is on. Live view uses FLV, which
     // is independent, so disabling HLS just turns recording off.
     let media = Arc::new(rszlm::media::Media::new_with_default_vhost(
-        "live",
+        DEVICE_APP,
         device.id.as_str(),
         0.0,
         device.record,
@@ -151,8 +151,13 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
 /// proxy (see `proxy.rs`), not ZLM's direct `127.0.0.1:8553`. A relative path
 /// keeps playback working behind port-forwarding / remote access, where only
 /// the API port is reachable and ZLM's port is not.
+/// ZLM app name under which regular device streams are published. Kept distinct
+/// from the compositor (`switcher`), audio-mixer (`mixer`), and GB28181 (`rtp`)
+/// apps so the four stream families never collide.
+pub(crate) const DEVICE_APP: &str = "device";
+
 pub(crate) fn build_flv_url(device_id: &str) -> String {
-    format!("/media/live/{}.live.flv", device_id)
+    format!("/media/{}/{}.live.flv", DEVICE_APP, device_id)
 }
 
 /// GB28181 streams are published by ZLM's RtpServer under the `rtp` app (not

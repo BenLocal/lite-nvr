@@ -41,7 +41,7 @@ pub struct CreateParams {
     pub sources: Vec<SourceInfo>,
     pub fps: u32,
     pub bitrate: Option<u64>,
-    /// Publish URL override; default `rtmp://127.0.0.1:8555/live/{id}`.
+    /// Publish URL override; default `rtmp://127.0.0.1:8555/switcher/{id}`.
     pub publish_url: Option<String>,
 }
 
@@ -65,7 +65,7 @@ pub async fn create(params: CreateParams) -> Result<Arc<ProgramEntry>> {
         .publish_url
         .clone()
         .filter(|u| !u.trim().is_empty())
-        .unwrap_or_else(|| format!("{ZLM_RTMP}/live/{id}"));
+        .unwrap_or_else(|| format!("{ZLM_RTMP}/switcher/{id}"));
     let cfg = ProgramConfig {
         publish_url: publish_url.clone(),
         format: "flv".to_string(),

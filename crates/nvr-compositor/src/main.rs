@@ -6,7 +6,7 @@
 //!   --source a=rtsp://.../a --source b=rtsp://.../b \
 //!   --source c=rtsp://.../c --source d=rtsp://.../d \
 //!   --canvas 1280x720 \
-//!   --publish rtmp://127.0.0.1:8555/live/mosaic
+//!   --publish rtmp://127.0.0.1:8555/switcher/mosaic
 //! # 4 sources -> 2x2 grid. Play http://127.0.0.1:8553/live/mosaic.live.flv
 //!
 //! # picture-in-picture via explicit regions:
@@ -40,7 +40,7 @@ struct Args {
     regions: Vec<Region>,
 
     /// Publish URL for the composited stream (ZLM).
-    #[arg(long, default_value = "rtmp://127.0.0.1:8555/live/mosaic")]
+    #[arg(long, default_value = "rtmp://127.0.0.1:8555/switcher/mosaic")]
     publish: String,
 
     /// Mux format for the publish URL.

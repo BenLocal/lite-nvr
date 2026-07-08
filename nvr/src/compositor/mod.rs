@@ -136,7 +136,7 @@ pub async fn create(params: CreateParams) -> Result<Arc<CompositorEntry>> {
         .publish_url
         .clone()
         .filter(|u| !u.trim().is_empty())
-        .unwrap_or_else(|| format!("{ZLM_RTMP}/live/{id}"));
+        .unwrap_or_else(|| format!("{ZLM_RTMP}/switcher/{id}"));
     let cfg = CompositorConfig {
         publish_url: publish_url.clone(),
         format: "flv".to_string(),
@@ -345,7 +345,7 @@ async fn load_persisted() -> Result<Vec<PersistedCompositor>> {
 
 /// Restore persisted compositor programs at startup. Call AFTER the device pipes
 /// have started so the sources' ZLM streams exist (compositors pull
-/// `rtsp://127.0.0.1:8554/live/{id}`). Best-effort, with a short grace period
+/// `rtsp://127.0.0.1:8554/device/{id}`). Best-effort, with a short grace period
 /// and a few retries since streams may still be coming up.
 pub async fn restore_all() {
     let saved = match load_persisted().await {

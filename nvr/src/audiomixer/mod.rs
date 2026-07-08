@@ -24,17 +24,18 @@ static MIXER: LazyLock<AudioMixer> = LazyLock::new(AudioMixer::new);
 
 /// A device's audio stream URL on ZLM (source id == device id).
 fn device_audio_url(source_id: &str) -> String {
-    format!("{ZLM_RTSP}/live/{source_id}")
+    let app = crate::init::device::DEVICE_APP;
+    format!("{ZLM_RTSP}/{app}/{source_id}")
 }
 
 /// Default publish URL for a bus when the caller doesn't give one.
 fn default_publish_url(bus_id: &str) -> String {
-    format!("{ZLM_RTMP}/live/{bus_id}")
+    format!("{ZLM_RTMP}/mixer/{bus_id}")
 }
 
 /// The bus's FLV playback path on the dashboard's ZLM HTTP proxy.
 pub fn bus_flv_url(bus_id: &str) -> String {
-    format!("/media/live/{bus_id}.live.flv")
+    format!("/media/mixer/{bus_id}.live.flv")
 }
 
 pub fn snapshot() -> MixerSnapshot {
@@ -164,7 +165,7 @@ async fn load_persisted() -> Result<Vec<PersistedBus>> {
 }
 
 /// Restore persisted buses at startup. Call AFTER device pipes have started so
-/// the sources' ZLM streams exist (buses pull `rtsp://127.0.0.1:8554/live/{id}`).
+/// the sources' ZLM streams exist (buses pull `rtsp://127.0.0.1:8554/device/{id}`).
 /// Best-effort, with a short grace period and a few retries.
 pub async fn restore_all() {
     let saved = match load_persisted().await {

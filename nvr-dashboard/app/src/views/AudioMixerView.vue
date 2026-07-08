@@ -408,7 +408,7 @@ onBeforeUnmount(() => {
       <div class="field">
         <label for="bus-id">总线名称</label>
         <InputText id="bus-id" v-model="newBusId" placeholder="例如 hall / stream" class="field-input" />
-        <p class="field-hint">推流地址为 rtmp://…/live/{名称}，也是试听用的流名。</p>
+        <p class="field-hint">推流地址为 rtmp://…/mixer/{名称}，也是试听用的流名。</p>
       </div>
       <div class="field">
         <label>选择输入（设备音频，至少一路）</label>

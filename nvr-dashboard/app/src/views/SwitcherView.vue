@@ -239,9 +239,9 @@ function cellRects(layout: LayoutDef): Rect[] {
 // app/stream as its FLV). The compositor runs on the server, so it always pulls
 // from local ZLM regardless of how the browser reaches the dashboard.
 function sourceRtsp(d: DeviceItem): string {
-  const flv = d.flv_url || `/media/live/${encodeURIComponent(d.id)}.live.flv`
+  const flv = d.flv_url || `/media/device/${encodeURIComponent(d.id)}.live.flv`
   const m = flv.match(/\/media\/([^/]+)\/(.+)\.live\.flv$/)
-  const app = m?.[1] ?? 'live'
+  const app = m?.[1] ?? 'device'
   const stream = m?.[2] ?? d.id
   return `rtsp://127.0.0.1:8554/${app}/${stream}`
 }
@@ -297,7 +297,7 @@ const addrs = computed(() => {
   }
   const host = window.location.hostname || '127.0.0.1'
   const m = (p.publish_url || '').match(/^\w+:\/\/[^/]+\/(.+)$/)
-  const path = m?.[1] ?? `live/${p.id}`
+  const path = m?.[1] ?? `switcher/${p.id}`
   return {
     rtsp: `rtsp://${host}:8554/${path}`,
     rtmp: `rtmp://${host}:8555/${path}`,

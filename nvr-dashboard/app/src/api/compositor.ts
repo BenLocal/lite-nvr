@@ -24,7 +24,7 @@ export interface CompositorProgram {
   width: number
   height: number
   regions: CompositorRegion[]
-  /** e.g. rtmp://127.0.0.1:8555/live/{id} — where the server publishes it. */
+  /** e.g. rtmp://127.0.0.1:8555/switcher/{id} — where the server publishes it. */
   publish_url: string
   fps: number
 }

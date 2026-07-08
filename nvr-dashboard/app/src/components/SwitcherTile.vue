@@ -24,9 +24,9 @@ const error = ref('')
 let gen = 0
 
 // Same URL rule as DeviceListView: prefer the backend-provided flv_url (GB28181
-// streams live under /media/rtp), fall back to the /media/live proxy path.
+// streams live under /media/rtp), fall back to the /media/device proxy path.
 function flvUrl(source: DeviceItem): string {
-  return source.flv_url || `/media/live/${encodeURIComponent(source.id)}.live.flv`
+  return source.flv_url || `/media/device/${encodeURIComponent(source.id)}.live.flv`
 }
 
 watch(

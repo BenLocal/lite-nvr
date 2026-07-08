@@ -19,7 +19,7 @@ use ffmpeg_next::frame::Video;
 /// Where/how the single program stream is encoded and published.
 #[derive(Clone)]
 pub struct ProgramSinkConfig {
-    /// Publish URL, e.g. `rtmp://127.0.0.1:8555/live/program`.
+    /// Publish URL, e.g. `rtmp://127.0.0.1:8555/switcher/program`.
     pub publish_url: String,
     /// Mux format for the URL, e.g. `"flv"` for RTMP.
     pub format: String,

@@ -478,7 +478,7 @@ function inputValueDisplay(device: DeviceItem) {
 function buildFlvUrl(deviceId: string) {
   // Same-origin path through the `/media` reverse proxy, not ZLM's direct
   // 127.0.0.1:8553 — so playback works behind port-forwarding / remote access.
-  return `/media/live/${encodeURIComponent(deviceId)}.live.flv`;
+  return `/media/device/${encodeURIComponent(deviceId)}.live.flv`;
 }
 
 async function copyText(value: string, label: string) {

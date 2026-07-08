@@ -5,7 +5,7 @@
 //! nvr-switcher \
 //!   --source camA=rtsp://127.0.0.1/live/a \
 //!   --source camB=rtsp://127.0.0.1/live/b \
-//!   --publish rtmp://127.0.0.1:8555/live/program
+//!   --publish rtmp://127.0.0.1:8555/switcher/program
 //! # then type `camB` <Enter> to cut to B; playback of live/program never breaks.
 //! ```
 
@@ -25,7 +25,7 @@ struct Args {
     sources: Vec<(String, String)>,
 
     /// Publish URL for the program stream (ZLM).
-    #[arg(long, default_value = "rtmp://127.0.0.1:8555/live/program")]
+    #[arg(long, default_value = "rtmp://127.0.0.1:8555/switcher/program")]
     publish: String,
 
     /// Mux format for the publish URL.
