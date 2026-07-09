@@ -24,9 +24,17 @@ fn main() {
     if should_build {
         println!("cargo:warning=Building frontend assets...");
 
-        // Install dependencies if node_modules doesn't exist
+        // Install dependencies if node_modules doesn't exist or is older
+        // than package-lock.json (covers new deps after git pull).
         let node_modules = Path::new("app/node_modules");
-        if !node_modules.exists() {
+        let lock_file = Path::new("app/package-lock.json");
+        let need_install = !node_modules.exists()
+            || newest_mtime(lock_file)
+                .is_some_and(|lock_mtime| {
+                    newest_mtime(node_modules)
+                        .is_none_or(|nm_mtime| lock_mtime > nm_mtime)
+                });
+        if need_install {
             println!("cargo:warning=Installing npm dependencies...");
             let npm_install = Command::new("npm")
                 .args(["ci"])
