@@ -155,6 +155,7 @@ function ptzRelease() {
 const inputTypeOptions = [
   { label: "RTSP", value: "rtsp" },
   { label: "RTMP", value: "rtmp" },
+  { label: "平台直播", value: "stream" },
   { label: "文件", value: "file" },
   { label: "V4L2", value: "v4l2" },
   { label: "X11 Grab", value: "x11grab" },
@@ -842,17 +843,27 @@ async function copyText(value: string, label: string) {
         </template>
 
         <div v-else class="field">
-          <label for="input_value">输入地址/标识</label>
+          <label for="input_value">{{
+            $form.input_type?.value === "stream" ? "直播间地址" : "输入地址/标识"
+          }}</label>
           <InputText
             id="input_value"
             name="input_value"
             class="field-input"
-            placeholder="如 rtsp://camera/live"
+            :placeholder="
+              $form.input_type?.value === 'stream'
+                ? '如 https://www.twitch.tv/xxx 或 https://live.bilibili.com/123'
+                : '如 rtsp://camera/live'
+            "
             :invalid="$form.input_value?.invalid"
           />
           <Message v-if="$form.input_value?.invalid" severity="error" size="small" variant="simple">
             {{ $form.input_value.error?.message }}
           </Message>
+          <span v-if="$form.input_type?.value === 'stream'" class="field-hint">
+            填直播间页面地址（B站/虎牙/斗鱼/Twitch/YouTube 等）。拉流地址由 yt-dlp
+            在启动和每次重连时自动重新解析（地址带签名会过期），服务器需已安装 yt-dlp。
+          </span>
         </div>
 
         <div class="field field-inline">

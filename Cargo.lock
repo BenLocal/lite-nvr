@@ -2607,6 +2607,7 @@ dependencies = [
  "nvr-dashboard",
  "nvr-db",
  "nvr-switcher",
+ "nvr-yt-dlp",
  "pavao",
  "reqwest",
  "rszlm",

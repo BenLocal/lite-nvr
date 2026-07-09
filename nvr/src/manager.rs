@@ -20,6 +20,12 @@ enum Entry {
         cancel: CancellationToken,
         handle: std::thread::JoinHandle<()>,
     },
+    /// An async supervisor task (e.g. a platform live-stream worker that
+    /// re-resolves its pull URL and re-runs an inner pipe on every reconnect).
+    Task {
+        cancel: CancellationToken,
+        handle: JoinHandle<()>,
+    },
 }
 
 impl Entry {
@@ -28,6 +34,7 @@ impl Entry {
         match self {
             Entry::Pipe { pipe, .. } => pipe.cancel(),
             Entry::Worker { cancel, .. } => cancel.cancel(),
+            Entry::Task { cancel, .. } => cancel.cancel(),
         }
     }
 
@@ -57,13 +64,20 @@ impl Entry {
                     log::warn!("worker did not stop within 3s; detaching");
                 }
             }
+            Entry::Task { handle, .. } => {
+                if let Err(e) = handle.await {
+                    if !e.is_cancelled() {
+                        log::warn!("stream worker task ended with error: {}", e);
+                    }
+                }
+            }
         }
     }
 
     fn is_started(&self) -> bool {
         match self {
             Entry::Pipe { pipe, .. } => pipe.is_started(),
-            Entry::Worker { .. } => true,
+            Entry::Worker { .. } | Entry::Task { .. } => true,
         }
     }
 }
@@ -161,6 +175,35 @@ pub(crate) async fn upsert_xiaomi(
     .await
 }
 
+/// Start (or replace) a platform live-stream worker: it resolves the room/page
+/// URL via yt-dlp and (re)runs an inner pipe into `media`, re-resolving on
+/// every reconnect because the pull addresses are signed and expire.
+pub(crate) async fn upsert_stream(
+    id: &str,
+    media: Arc<rszlm::media::Media>,
+    page_url: String,
+    include_audio: bool,
+    update_if_exists: bool,
+) -> anyhow::Result<()> {
+    let device_id = id.to_string();
+    upsert_entry(
+        id,
+        move || {
+            let cancel = CancellationToken::new();
+            let handle = crate::livestream::spawn_stream_device(
+                device_id,
+                page_url,
+                media,
+                include_audio,
+                cancel.clone(),
+            );
+            Entry::Task { cancel, handle }
+        },
+        update_if_exists,
+    )
+    .await
+}
+
 pub(crate) async fn remove_pipe(id: &str) -> anyhow::Result<()> {
     let entry = {
         let mut pipes = PIPE_MANAGER.write().await;
@@ -201,6 +244,6 @@ pub(crate) async fn list_pipe_ids() -> Vec<String> {
 pub(crate) async fn get_pipe(id: &str) -> Option<Arc<Pipe>> {
     PIPE_MANAGER.read().await.get(id).and_then(|e| match e {
         Entry::Pipe { pipe, .. } => Some(pipe.clone()),
-        Entry::Worker { .. } => None,
+        Entry::Worker { .. } | Entry::Task { .. } => None,
     })
 }

@@ -13,6 +13,7 @@ mod db;
 mod gb;
 mod handler;
 mod init;
+mod livestream;
 mod manager;
 mod metrics;
 mod program;

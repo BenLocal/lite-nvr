@@ -112,6 +112,28 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
         return Ok(());
     }
 
+    // Platform live streams (Douyin/Bilibili/Twitch… room pages): there is no
+    // stable URL to hand to ffmpeg — the pull address is temporary and signed.
+    // `input_value` stores the room/page URL; a supervisor worker resolves it
+    // via yt-dlp right before opening and again on every reconnect.
+    if device.input_type == "stream" {
+        let media = Arc::new(rszlm::media::Media::new_with_default_vhost(
+            DEVICE_APP,
+            device.id.as_str(),
+            0.0,
+            device.record,
+            false,
+        ));
+        return manager::upsert_stream(
+            &device.id,
+            media,
+            device.input_value.clone(),
+            device.include_audio,
+            true,
+        )
+        .await;
+    }
+
     let input = match device.input_type.as_str() {
         "net" | "rtsp" | "rtmp" => InputConfig::Network {
             url: device.input_value.clone(),

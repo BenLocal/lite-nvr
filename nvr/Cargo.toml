@@ -36,6 +36,7 @@ nvr-switcher = { path = "../crates/nvr-switcher" }
 nvr-compositor = { path = "../crates/nvr-compositor" }
 nvr-audio-mixer = { path = "../crates/nvr-audio-mixer" }
 media-pipe-core = { path = "../crates/media-pipe-core" }
+nvr-yt-dlp = { path = "../crates/nvr-yt-dlp" }
 media-pipe-zlm = { path = "../crates/media-pipe-zlm" }
 xiaomi = { path = "../crates/xiaomi" }
 gb28181 = { path = "../crates/gb28181" }
