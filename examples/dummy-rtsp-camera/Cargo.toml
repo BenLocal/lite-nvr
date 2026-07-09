@@ -1,0 +1,18 @@
+[package]
+name = "dummy-rtsp-camera"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "A minimal RTSP camera emulator: serves a looping H.264 test pattern over RTSP/RTP/UDP."
+
+[dependencies]
+tokio = { workspace = true, features = ["full"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+bytes = { workspace = true }
+oddity-rtsp-protocol = "0.2"
+tokio-util = { version = "0.7", features = ["codec"] }
+futures = "0.3"
+rand = "0.8"

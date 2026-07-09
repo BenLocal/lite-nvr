@@ -14,6 +14,7 @@ members = [
     "crates/xiaomi",
     "crates/nvr-yt-dlp",
     "examples/dummy-camera",
+    "examples/dummy-rtsp-camera",
 ]
 resolver = "1"
 

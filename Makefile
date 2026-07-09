@@ -37,8 +37,12 @@ endif
 # Prebuilt sherpa-onnx libs for crates/nvr-asr. When fetched via
 # `make download-asr-libs`, auto-wire SHERPA_ONNX_LIB_DIR so the workspace
 # build links them offline (static libs; no runtime LD_LIBRARY_PATH needed).
-SHERPA_ONNX_LIB_DIR ?= $(firstword $(wildcard $(PROJECT_ROOT)/third_party/sherpa-onnx/*/lib))
-ifneq ($(strip $(SHERPA_ONNX_LIB_DIR)),)
+# Only set when prebuilt libs actually exist — an empty value would still be
+# exported (due to the blanket `export` above) and cause sherpa-onnx-sys to
+# fail, because it treats any set value as a directory path.
+_SH_ONNX_LIBS := $(firstword $(wildcard $(PROJECT_ROOT)/third_party/sherpa-onnx/*/lib))
+ifneq ($(strip $(_SH_ONNX_LIBS)),)
+SHERPA_ONNX_LIB_DIR := $(_SH_ONNX_LIBS)
 export SHERPA_ONNX_LIB_DIR
 endif
 
