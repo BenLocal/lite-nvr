@@ -67,8 +67,25 @@ impl Drop for Source {
     }
 }
 
-/// Delay between a compositor source's reconnection attempts.
-const RECONNECT_RETRY: Duration = Duration::from_secs(3);
+/// Base delay before a compositor source's first reconnection attempts; the
+/// backoff starts here right after a drop and doubles per consecutive failure.
+const RECONNECT_BASE: Duration = Duration::from_secs(3);
+/// Ceiling for the reconnect backoff, so a long-dead source is retried at most
+/// this often (and stays quiet in the logs).
+const RECONNECT_MAX: Duration = Duration::from_secs(30);
+/// Cap on the backoff exponent so the `1 << exp` shift can never overflow;
+/// `RECONNECT_MAX` clamps the result well before this is reached anyway.
+const RECONNECT_BACKOFF_EXP_CAP: u32 = 16;
+
+/// Delay before the next reconnect attempt given the count of *consecutive*
+/// failed opens so far. `fails == 0` (a fresh drop, or right after a success)
+/// waits [`RECONNECT_BASE`] for a fast reconnect; each further consecutive
+/// failure doubles the delay, capped at [`RECONNECT_MAX`].
+fn backoff_delay(fails: u32) -> Duration {
+    let exp = fails.saturating_sub(1).min(RECONNECT_BACKOFF_EXP_CAP);
+    let factor = 1u32 << exp; // 2^exp; exp <= cap, so this never overflows.
+    RECONNECT_BASE.saturating_mul(factor).min(RECONNECT_MAX)
+}
 
 /// Keep a frame cell fed from `url`, reconnecting until `cancel` fires. Returns
 /// the shared [`LatestFrame`] immediately (initially empty → a black tile) and
@@ -103,10 +120,15 @@ struct Connection {
 
 /// Reconnecting pump shared by [`Source::start`] and [`spawn_reconnecting`]:
 /// pump each connection's frames into `latest`, and when it ends (EOF/error)
-/// reopen `url` after [`RECONNECT_RETRY`], until `cancel` fires. `first` is an
+/// reopen `url` after a [`backoff_delay`], until `cancel` fires. `first` is an
 /// already-open connection to pump before the first reopen (used by
 /// [`Source::start`], whose first open must succeed up-front); pass `None` to
 /// open lazily inside the loop (used by [`spawn_reconnecting`]).
+///
+/// The backoff keeps a long-dead source (and the external `404`/`no such
+/// stream` noise its opens provoke) quiet: the first failure logs at `warn!`
+/// (so a drop is visible), later consecutive failures at `debug!`, and the
+/// retry interval grows from [`RECONNECT_BASE`] up to [`RECONNECT_MAX`].
 async fn reconnect_loop(
     id: String,
     url: String,
@@ -114,20 +136,38 @@ async fn reconnect_loop(
     cancel: CancellationToken,
     mut first: Option<Connection>,
 ) {
+    let mut fails: u32 = 0;
     while !cancel.is_cancelled() {
         match first.take() {
-            Some(conn) => pump_connection(&id, conn, &latest, &cancel).await,
+            Some(conn) => {
+                // The already-open connection counts as a success.
+                fails = 0;
+                pump_connection(&id, conn, &latest, &cancel).await;
+            }
             None => match open_connection(&id, &url).await {
-                Ok(conn) => pump_connection(&id, conn, &latest, &cancel).await,
-                Err(e) => log::warn!(
-                    "compositor source {id}: connect failed ({e:#}); retry in {}s",
-                    RECONNECT_RETRY.as_secs()
-                ),
+                Ok(conn) => {
+                    fails = 0;
+                    pump_connection(&id, conn, &latest, &cancel).await;
+                }
+                Err(e) => {
+                    fails = fails.saturating_add(1);
+                    if fails == 1 {
+                        log::warn!("compositor source {id}: connect failed ({e:#})");
+                    } else {
+                        log::debug!(
+                            "compositor source {id}: connect failed ({e:#}), attempt {fails}"
+                        );
+                    }
+                }
             },
         }
+        // Back off before the next attempt: fast right after a drop
+        // (`fails == 0`), then exponentially up to `RECONNECT_MAX` while it
+        // keeps failing. Cancellation stays instant.
+        let delay = backoff_delay(fails);
         tokio::select! {
             _ = cancel.cancelled() => break,
-            _ = tokio::time::sleep(RECONNECT_RETRY) => {}
+            _ = tokio::time::sleep(delay) => {}
         }
     }
     log::info!("compositor source {id}: reconnect loop stopped");
@@ -197,3 +237,7 @@ async fn pump_connection(
     input_task.stop();
     decoder_task.stop();
 }
+
+#[cfg(test)]
+#[path = "source_test.rs"]
+mod source_test;
