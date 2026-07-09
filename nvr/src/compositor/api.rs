@@ -18,6 +18,8 @@ pub fn compositor_router() -> Router {
         .route("/list", get(list))
         .route("/switch/{id}", post(switch))
         .route("/relayout/{id}", post(relayout))
+        .route("/add-source/{id}", post(add_source))
+        .route("/remove-source/{id}", post(remove_source))
         .route("/remove/{id}", post(remove))
 }
 
@@ -96,10 +98,10 @@ fn to_dto(entry: &CompositorEntry) -> CompositorDto {
     CompositorDto {
         id: entry.id.clone(),
         sources: entry
-            .sources
-            .iter()
+            .source_infos()
+            .into_iter()
             .map(|s| SourceDto {
-                id: s.id.clone(),
+                id: s.id,
                 url: redact_url(&s.url),
             })
             .collect(),
@@ -214,6 +216,49 @@ async fn relayout(Path(id): Path<String>, Json(req): Json<RelayoutReq>) -> ApiJs
         .collect();
     compositor::relayout(&id, regions).await?;
     Ok(ok_empty())
+}
+
+#[derive(Deserialize)]
+struct AddSourceReq {
+    /// Id for the new source (must be unique within the program).
+    source_id: String,
+    /// The source's input URL (RTSP/RTMP/etc.).
+    url: String,
+}
+
+async fn add_source(
+    Path(id): Path<String>,
+    Json(req): Json<AddSourceReq>,
+) -> ApiJsonResult<CompositorDto> {
+    compositor::add_source(
+        &id,
+        SourceInfo {
+            id: req.source_id,
+            url: req.url,
+        },
+    )
+    .await?;
+    let entry = compositor::get(&id)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("compositor {id} not found"))?;
+    Ok(ok_json(to_dto(&entry)))
+}
+
+#[derive(Deserialize)]
+struct RemoveSourceReq {
+    /// Id of the source to remove from the program's pool.
+    source_id: String,
+}
+
+async fn remove_source(
+    Path(id): Path<String>,
+    Json(req): Json<RemoveSourceReq>,
+) -> ApiJsonResult<CompositorDto> {
+    compositor::remove_source(&id, &req.source_id).await?;
+    let entry = compositor::get(&id)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("compositor {id} not found"))?;
+    Ok(ok_json(to_dto(&entry)))
 }
 
 async fn remove(Path(id): Path<String>) -> ApiJsonResult<()> {

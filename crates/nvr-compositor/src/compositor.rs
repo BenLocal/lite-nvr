@@ -14,7 +14,7 @@
 //! encoder + muxer, so a layout change never restarts the published stream
 //! either — only the picture rearranges.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -86,15 +86,18 @@ fn slots_of(regions: &[Region]) -> Vec<Arc<Mutex<String>>> {
 #[derive(Clone)]
 pub struct Director {
     state: Arc<Mutex<LayoutState>>,
-    pool_ids: Arc<HashSet<String>>,
+    /// The live source pool, shared with the run loop. Sources can be added or
+    /// removed while the program keeps publishing, so membership is checked
+    /// against this map (not a frozen id set).
+    pool: Arc<Mutex<HashMap<String, LatestFrame>>>,
 }
 
 impl Director {
     /// Switch region `index` to `source_id`. An empty `source_id` clears the
     /// region to black. Returns false if the index is out of range or (for a
-    /// non-empty id) the source is not in the pool.
+    /// non-empty id) the source is not in the live pool.
     pub fn switch(&self, index: usize, source_id: &str) -> bool {
-        if !source_id.is_empty() && !self.pool_ids.contains(source_id) {
+        if !source_id.is_empty() && !self.pool.lock().unwrap().contains_key(source_id) {
             return false;
         }
         let slot = {
@@ -106,6 +109,29 @@ impl Director {
         };
         *slot.lock().unwrap() = source_id.to_string();
         true
+    }
+
+    /// Add a source to the live pool, making it switchable without interrupting
+    /// the published stream. A later `switch` shows it; its picture appears once
+    /// it has decoded a frame.
+    pub fn add_source(&self, id: String, latest: LatestFrame) {
+        self.pool.lock().unwrap().insert(id, latest);
+    }
+
+    /// Remove a source from the live pool and clear it out of any region slot it
+    /// currently occupies (to black, `""`), so a removed source isn't left
+    /// displayed. The published stream keeps flowing.
+    pub fn remove_source(&self, id: &str) {
+        self.pool.lock().unwrap().remove(id);
+        // Clone the slot handles out (like `switch`) so we never hold the state
+        // lock and a slot lock at once.
+        let slots: Vec<Arc<Mutex<String>>> = self.state.lock().unwrap().slots.clone();
+        for slot in slots {
+            let mut s = slot.lock().unwrap();
+            if *s == id {
+                *s = String::new();
+            }
+        }
     }
 
     /// Replace the region layout live. The run loop rebuilds its filter graph on
@@ -168,9 +194,10 @@ impl Compositor {
     ) -> Self {
         let canvas_w = even(layout.width).max(2);
         let canvas_h = even(layout.height).max(2);
-        let pool_ids = Arc::new(pool.iter().map(|f| f.id.clone()).collect::<HashSet<_>>());
-        let pool_map: HashMap<String, LatestFrame> =
-            pool.into_iter().map(|f| (f.id, f.latest)).collect();
+        // The pool is shared (and mutable) between the run loop and the Director,
+        // so sources can be added/removed live without restarting the stream.
+        let pool_map: Arc<Mutex<HashMap<String, LatestFrame>>> =
+            Arc::new(Mutex::new(pool.into_iter().map(|f| (f.id, f.latest)).collect()));
 
         let state = Arc::new(Mutex::new(LayoutState {
             geoms: geoms_of(&layout.regions),
@@ -179,7 +206,7 @@ impl Compositor {
         }));
         let director = Director {
             state: state.clone(),
-            pool_ids,
+            pool: pool_map.clone(),
         };
         let cancel = CancellationToken::new();
         let loop_cancel = cancel.clone();
@@ -211,6 +238,17 @@ impl Compositor {
     /// Replace the region layout live. See [`Director::relayout`].
     pub fn relayout(&self, layout: &Layout) {
         self.director.relayout(&layout.regions);
+    }
+
+    /// Add a source to the live pool. See [`Director::add_source`].
+    pub fn add_source(&self, id: String, latest: LatestFrame) {
+        self.director.add_source(id, latest);
+    }
+
+    /// Remove a source from the live pool (clearing its region slots). See
+    /// [`Director::remove_source`].
+    pub fn remove_source(&self, id: &str) {
+        self.director.remove_source(id);
     }
 
     /// Current active source id per region, by region order.
@@ -246,7 +284,7 @@ fn run(
     canvas_w: u32,
     canvas_h: u32,
     state: Arc<Mutex<LayoutState>>,
-    pool: HashMap<String, LatestFrame>,
+    pool: Arc<Mutex<HashMap<String, LatestFrame>>>,
     template: AvStream,
     cancel: CancellationToken,
 ) -> Result<()> {
@@ -320,7 +358,11 @@ fn run(
         for i in 0..n {
             let g = &geoms[i];
             let src_id = slots[i].lock().unwrap().clone();
-            let cached = pool.get(&src_id).and_then(|c| c.lock().unwrap().clone());
+            // Sample the live pool: grab the frame cell under the pool lock, then
+            // read its latest frame after releasing it (the pool may gain/lose
+            // sources between ticks; a missing source falls back to black).
+            let latest = pool.lock().unwrap().get(&src_id).cloned();
+            let cached = latest.and_then(|c| c.lock().unwrap().clone());
 
             // Pre-scale the active source frame to this region's exact size +
             // YUV420P; fall back to a black tile if the source has no frame yet.
@@ -436,3 +478,7 @@ fn black_frame(w: u32, h: u32) -> Video {
     v.data_mut(2).fill(128);
     v
 }
+
+#[cfg(test)]
+#[path = "compositor_test.rs"]
+mod compositor_test;

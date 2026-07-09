@@ -5,7 +5,7 @@
 pub mod api;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -40,23 +40,45 @@ pub struct SourceInfo {
     pub url: String,
 }
 
+/// One source of a running program plus the handle that keeps it alive and lets
+/// it be removed on its own, without disturbing the other sources.
+struct SourceHandle {
+    info: SourceInfo,
+    /// Cancels THIS source's reconnect loop. For an offline source it drives the
+    /// [`nvr_compositor::spawn_reconnecting`] loop; for an online source the loop
+    /// is owned by the `Source` (stopped when `_src` drops), so firing this token
+    /// is a harmless no-op there.
+    cancel: CancellationToken,
+    /// `Some` for a source that started online — kept decoding, and stops its own
+    /// reconnect loop on drop. `None` for one that was offline at add time (driven
+    /// purely by `cancel` + `spawn_reconnecting`).
+    _src: Option<Source>,
+}
+
 pub struct CompositorEntry {
     pub id: String,
-    pub sources: Vec<SourceInfo>,
+    /// The program's sources, mutable behind a lock so they can be added/removed
+    /// live (the entry itself is shared as an `Arc`).
+    sources: Mutex<Vec<SourceHandle>>,
     pub layout: Layout,
     pub publish_url: String,
     pub fps: u32,
     /// Retained so the program can be persisted/restored verbatim.
     bitrate: Option<u64>,
     compositor: Compositor,
-    /// Cancels the background reconnect tasks for sources that were offline at
-    /// create time, when the program is removed.
-    reconnect_cancel: CancellationToken,
-    // Kept alive (decoding) for the lifetime of the entry.
-    _sources: Vec<Source>,
 }
 
 impl CompositorEntry {
+    /// The program's sources (id + url), by add order. Locks the source list.
+    pub fn source_infos(&self) -> Vec<SourceInfo> {
+        self.sources
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|h| h.info.clone())
+            .collect()
+    }
+
     /// Current active source id per region, by region order.
     pub fn active(&self) -> Vec<String> {
         self.compositor.active()
@@ -130,37 +152,56 @@ pub async fn create(params: CreateParams) -> Result<Arc<CompositorEntry>> {
     // reconnects in the background, so it appears — and becomes switchable — the
     // moment it comes online (its regions stay black until then). At least one
     // source must start: its stream seeds the encoder.
-    let reconnect_cancel = CancellationToken::new();
-    let mut started = Vec::with_capacity(params.sources.len());
+    // Each source gets its OWN cancel token, so one source can later be removed
+    // without disturbing the others. Online → keep the `Source` alive (its drop
+    // stops its loop); offline → drive its `spawn_reconnecting` loop by its token
+    // and leave it in the switchable pool (black tile) until it comes up.
+    let mut handles: Vec<SourceHandle> = Vec::with_capacity(params.sources.len());
     let mut feeds: Vec<SourceFeed> = Vec::with_capacity(params.sources.len());
+    let mut template = None;
     for s in &params.sources {
         match Source::start(&s.id, &s.url).await {
             Ok(src) => {
+                template.get_or_insert_with(|| src.video_stream.clone());
                 feeds.push(SourceFeed {
                     id: src.id.clone(),
                     latest: src.latest.clone(),
                 });
-                started.push(src);
+                handles.push(SourceHandle {
+                    info: s.clone(),
+                    cancel: CancellationToken::new(),
+                    _src: Some(src),
+                });
             }
             Err(e) => {
                 log::warn!(
                     "compositor '{id}' source '{}' offline, keeping in pool and reconnecting: {e:#}",
                     s.id
                 );
-                let latest =
-                    nvr_compositor::spawn_reconnecting(&s.id, &s.url, reconnect_cancel.clone());
+                let cancel = CancellationToken::new();
+                let latest = nvr_compositor::spawn_reconnecting(&s.id, &s.url, cancel.clone());
                 feeds.push(SourceFeed {
                     id: s.id.clone(),
                     latest,
                 });
+                handles.push(SourceHandle {
+                    info: s.clone(),
+                    cancel,
+                    _src: None,
+                });
             }
         }
     }
-    if started.is_empty() {
-        reconnect_cancel.cancel();
-        anyhow::bail!("no source could be started");
-    }
-    let template = started[0].video_stream.clone();
+    // At least one source must start: its stream seeds the encoder template.
+    let template = match template {
+        Some(t) => t,
+        None => {
+            for h in &handles {
+                h.cancel.cancel();
+            }
+            anyhow::bail!("no source could be started");
+        }
+    };
 
     let publish_url = params
         .publish_url
@@ -177,18 +218,21 @@ pub async fn create(params: CreateParams) -> Result<Arc<CompositorEntry>> {
 
     let entry = Arc::new(CompositorEntry {
         id: id.clone(),
-        sources: params.sources,
+        sources: Mutex::new(handles),
         layout,
         publish_url,
         fps: params.fps,
         bitrate: params.bitrate,
         compositor,
-        reconnect_cancel,
-        _sources: started,
     });
     COMPOSITORS.write().await.insert(id, entry.clone());
     persist_all().await;
     Ok(entry)
+}
+
+/// Fetch a running program by id (e.g. to build a response after a mutation).
+pub async fn get(id: &str) -> Option<Arc<CompositorEntry>> {
+    COMPOSITORS.read().await.get(id).cloned()
 }
 
 pub async fn list() -> Vec<Arc<CompositorEntry>> {
@@ -205,7 +249,11 @@ pub async fn shutdown() {
         { COMPOSITORS.write().await.drain().map(|(_, e)| e).collect() };
     for e in &entries {
         e.compositor.stop();
-        e.reconnect_cancel.cancel();
+        // Cancel every source's reconnect loop (offline handles); online sources
+        // also stop when the entry (and thus its `Source`s) drop below.
+        for h in e.sources.lock().unwrap().iter() {
+            h.cancel.cancel();
+        }
     }
     // `entries` drops here → each entry's sources drop → their input/decoder
     // tasks stop (Source::drop).
@@ -220,7 +268,9 @@ pub async fn remove(id: &str) -> bool {
     match removed {
         Some(entry) => {
             entry.compositor.stop();
-            entry.reconnect_cancel.cancel();
+            for h in entry.sources.lock().unwrap().iter() {
+                h.cancel.cancel();
+            }
             persist_all().await;
             true
         }
@@ -259,7 +309,8 @@ pub async fn relayout(id: &str, regions: Vec<Region>) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("compositor {id} not found"))?;
     // Validate like create: every region references a declared source (an empty
     // source is a deliberately blank/black region).
-    let known: HashSet<&str> = entry.sources.iter().map(|s| s.id.as_str()).collect();
+    let infos = entry.source_infos();
+    let known: HashSet<&str> = infos.iter().map(|s| s.id.as_str()).collect();
     for region in &regions {
         let sid = region.source_id.as_str();
         if !sid.is_empty() && !known.contains(sid) {
@@ -268,6 +319,90 @@ pub async fn relayout(id: &str, regions: Vec<Region>) -> Result<()> {
     }
     let layout = Layout::new(entry.layout.width, entry.layout.height, regions);
     entry.relayout(&layout);
+    persist_all().await;
+    Ok(())
+}
+
+/// Add a source to a running program's pool, live — the published stream keeps
+/// flowing; the source becomes switchable at once (its picture appears once it
+/// decodes a frame). Errors if the program is missing or `src.id` already
+/// exists in the program.
+pub async fn add_source(program_id: &str, src: SourceInfo) -> Result<()> {
+    let entry = COMPOSITORS
+        .read()
+        .await
+        .get(program_id)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("compositor {program_id} not found"))?;
+    if entry
+        .sources
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|h| h.info.id == src.id)
+    {
+        anyhow::bail!("source '{}' already in compositor '{program_id}'", src.id);
+    }
+
+    // Start it hot; if it can't come up yet, keep it in the pool and reconnect in
+    // the background (a black tile until it appears) — same policy as `create`.
+    let handle = match Source::start(&src.id, &src.url).await {
+        Ok(source) => {
+            entry
+                .compositor
+                .add_source(src.id.clone(), source.latest.clone());
+            SourceHandle {
+                info: src.clone(),
+                cancel: CancellationToken::new(),
+                _src: Some(source),
+            }
+        }
+        Err(e) => {
+            log::warn!(
+                "compositor '{program_id}' source '{}' offline, keeping in pool and reconnecting: {e:#}",
+                src.id
+            );
+            let cancel = CancellationToken::new();
+            let latest = nvr_compositor::spawn_reconnecting(&src.id, &src.url, cancel.clone());
+            entry.compositor.add_source(src.id.clone(), latest);
+            SourceHandle {
+                info: src.clone(),
+                cancel,
+                _src: None,
+            }
+        }
+    };
+    entry.sources.lock().unwrap().push(handle);
+    persist_all().await;
+    Ok(())
+}
+
+/// Remove a source from a running program's pool, live — the published stream
+/// keeps flowing and the source is cleared out of any region it occupies (to
+/// black). Errors if the program/source is missing, or if it is the program's
+/// last source (remove the program instead).
+pub async fn remove_source(program_id: &str, source_id: &str) -> Result<()> {
+    let entry = COMPOSITORS
+        .read()
+        .await
+        .get(program_id)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("compositor {program_id} not found"))?;
+    {
+        let mut guard = entry.sources.lock().unwrap();
+        let Some(pos) = guard.iter().position(|h| h.info.id == source_id) else {
+            anyhow::bail!("source '{source_id}' not found in compositor '{program_id}'");
+        };
+        if guard.len() == 1 {
+            anyhow::bail!("cannot remove the last source; remove the program instead");
+        }
+        // Drop it from the live pool + any region slots it holds BEFORE dropping
+        // its feed, so it can't linger on screen.
+        entry.compositor.remove_source(source_id);
+        let handle = guard.remove(pos);
+        handle.cancel.cancel();
+        // `handle` drops here → an online `Source` stops its own reconnect loop.
+    }
     persist_all().await;
     Ok(())
 }
@@ -318,12 +453,9 @@ impl CompositorEntry {
         PersistedCompositor {
             id: self.id.clone(),
             sources: self
-                .sources
-                .iter()
-                .map(|s| PersistedSource {
-                    id: s.id.clone(),
-                    url: s.url.clone(),
-                })
+                .source_infos()
+                .into_iter()
+                .map(|s| PersistedSource { id: s.id, url: s.url })
                 .collect(),
             width: self.layout.width,
             height: self.layout.height,
