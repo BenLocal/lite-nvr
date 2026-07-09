@@ -72,3 +72,26 @@ export function relayoutCompositor(id: string, regions: CompositorRegion[]) {
 export function removeCompositor(id: string) {
   return request<null>(`/compositor/remove/${encodeURIComponent(id)}`, { method: 'POST' })
 }
+
+/**
+ * Add a source to program `id`'s pool live (no stream interruption). The added
+ * source can then be switched into any region. Returns the updated program.
+ */
+export function addCompositorSource(id: string, source_id: string, url: string) {
+  return request<CompositorProgram>(`/compositor/add-source/${encodeURIComponent(id)}`, {
+    method: 'POST',
+    body: { source_id, url },
+  })
+}
+
+/**
+ * Remove a source from program `id`'s pool live; it is cleared out of any region
+ * to black. The server rejects removing the program's last source. Returns the
+ * updated program.
+ */
+export function removeCompositorSource(id: string, source_id: string) {
+  return request<CompositorProgram>(`/compositor/remove-source/${encodeURIComponent(id)}`, {
+    method: 'POST',
+    body: { source_id },
+  })
+}

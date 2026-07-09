@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import Button from 'primevue/button'
+import Select from 'primevue/select'
 import { listDevices, type DeviceItem } from '../api/device'
 import {
+  addCompositorSource,
   createCompositor,
   listCompositors,
   relayoutCompositor,
   removeCompositor,
+  removeCompositorSource,
   switchRegion,
   type CompositorProgram,
   type CompositorRegion,
@@ -420,6 +423,59 @@ async function relayoutProgram() {
   }
 }
 
+// Display name for a program source id: prefer the matching device's name, then
+// its id, then the bare source id (a source may outlive its device row).
+function sourceLabel(id: string): string {
+  const d = sourceById(id)
+  return d?.name || d?.id || id
+}
+
+// Devices in the left pool that are NOT yet in the running program's source
+// pool — the candidates the "+ 加源" picker offers.
+const addableDevices = computed<DeviceItem[]>(() => {
+  const p = program.value
+  if (!p) {
+    return []
+  }
+  const inPool = new Set(p.sources.map((s) => s.id))
+  return sources.value.filter((d) => !inPool.has(d.id))
+})
+
+// Add a device to the running program's pool live. It can then be switched into
+// any region. Duplicates are prevented (only addable devices are offered).
+async function addSource(device: DeviceItem | null | undefined) {
+  if (!program.value || !device) {
+    return
+  }
+  programBusy.value = true
+  programError.value = ''
+  try {
+    program.value = await addCompositorSource(PROGRAM_ID, device.id, sourceRtsp(device))
+  } catch (e) {
+    programError.value = e instanceof Error ? e.message : '加源失败'
+  } finally {
+    programBusy.value = false
+  }
+}
+
+// Remove a source from the running program's pool live. The server clears it out
+// of any region to black and rejects removing the last source — that error is
+// surfaced via programError.
+async function removeSource(sourceId: string) {
+  if (!program.value) {
+    return
+  }
+  programBusy.value = true
+  programError.value = ''
+  try {
+    program.value = await removeCompositorSource(PROGRAM_ID, sourceId)
+  } catch (e) {
+    programError.value = e instanceof Error ? e.message : '删源失败'
+  } finally {
+    programBusy.value = false
+  }
+}
+
 async function stopLive() {
   stopProgramPlayer()
   const had = program.value
@@ -608,6 +664,36 @@ onBeforeUnmount(() => {
           <span v-if="program" class="program-dims">
             {{ program.width }}×{{ program.height }} · {{ program.fps }}fps
           </span>
+        </div>
+        <div v-if="isLive && program" class="source-pool">
+          <span class="pool-label">信号源池</span>
+          <ul class="pool-list">
+            <li v-for="s in program.sources" :key="s.id" class="pool-chip">
+              <span class="pool-name ellipsis-text">{{ sourceLabel(s.id) }}</span>
+              <button
+                type="button"
+                class="pool-remove"
+                :disabled="programBusy || program.sources.length <= 1"
+                :title="program.sources.length <= 1 ? '至少保留一个信号源' : '移除信号源'"
+                @click="removeSource(s.id)"
+              >
+                <i class="pi pi-times" />
+              </button>
+            </li>
+          </ul>
+          <Select
+            :model-value="null"
+            :options="addableDevices"
+            option-label="name"
+            :disabled="programBusy || !addableDevices.length"
+            :placeholder="addableDevices.length ? '+ 加源' : '无可添加设备'"
+            class="pool-add"
+            @update:model-value="addSource"
+          >
+            <template #option="{ option }">
+              <span class="ellipsis-text">{{ option.name || option.id }}</span>
+            </template>
+          </Select>
         </div>
         <p v-if="programError" class="program-error">{{ programError }}</p>
         <ul v-if="addrRows.length" class="addr-list">
@@ -1060,6 +1146,76 @@ onBeforeUnmount(() => {
   margin: 0;
   color: #fca5a5;
   font-size: 0.78rem;
+}
+
+.source-pool {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.pool-label {
+  flex: none;
+  color: #94a3b8;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.pool-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 10rem;
+  padding: 0.15rem 0.2rem 0.15rem 0.45rem;
+  border: 1px solid rgb(148 163 184 / 16%);
+  border-radius: 0.4rem;
+  background: rgb(30 41 59 / 55%);
+}
+
+.pool-name {
+  min-width: 0;
+  color: #e2e8f0;
+  font-size: 0.74rem;
+}
+
+.pool-remove {
+  flex: none;
+  width: 1.15rem;
+  height: 1.15rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 0.3rem;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.pool-remove:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.pool-remove:hover:not(:disabled) {
+  background: rgb(239 68 68 / 20%);
+  color: #fca5a5;
+}
+
+.pool-add {
+  min-width: 8rem;
 }
 
 .addr-list {
