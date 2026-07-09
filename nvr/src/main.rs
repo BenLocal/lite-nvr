@@ -117,6 +117,11 @@ async fn main() -> ! {
         crate::audiomixer::shutdown();
         crate::gb::shutdown().await;
         crate::manager::shutdown().await;
+        // With every producer stopped, tear ZLM's servers/sessions down while
+        // the process is still fully alive. Leaving live sessions (external
+        // RTSP pushers, players) to exit-time C++ static destruction is what
+        // kept segfaulting after the producer-side fixes.
+        let _ = tokio::task::spawn_blocking(crate::zlm::server::stop_all).await;
     };
     if tokio::time::timeout(std::time::Duration::from_secs(5), teardown)
         .await

@@ -6,6 +6,28 @@ use std::path::{Path, PathBuf};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
+/// ZLM invokers wrap a C++ `shared_ptr` and are documented callable from any
+/// thread; the rszlm binding just holds a raw pointer, so it isn't auto-Send.
+struct SendPublishInvoker(rszlm::event::PublishAuthInvoker);
+unsafe impl Send for SendPublishInvoker {}
+
+impl SendPublishInvoker {
+    /// Whole-struct receiver so async blocks capture the Send wrapper, not the
+    /// non-Send inner field (Rust 2021 captures fields individually).
+    fn call(&self, err_msg: &str, enable_mp4: bool, enable_hls: bool) -> anyhow::Result<()> {
+        self.0.call(err_msg, enable_mp4, enable_hls)
+    }
+}
+
+/// Stop every ZLM listener and kill its sessions NOW, on a fully-alive
+/// process. Leaving that to exit-time C++ static destruction meant live
+/// sessions (e.g. an external RTSP pusher) were torn down while the statics
+/// they touch were half-destroyed — the recurring shutdown segfault. Call
+/// after all media producers are stopped, right before process exit.
+pub(crate) fn stop_all() {
+    rszlm::server::stop_all_server();
+}
+
 pub(crate) fn start_zlm_server(
     cancel: CancellationToken,
     ready_tx: oneshot::Sender<()>,
@@ -32,7 +54,8 @@ pub(crate) fn start_zlm_server(
 
             {
                 let mut events = rszlm::event::EVENTS.write().unwrap();
-                events.on_media_publish(|media| {
+                let runtime_pub = runtime.clone();
+                events.on_media_publish(move |media| {
                     let url_info = format!(
                         "{}://{}:{}/{}/{}/{}",
                         media.url_info.schema(),
@@ -47,9 +70,26 @@ pub(crate) fn start_zlm_server(
                     // pushes such as a GB28181 pull's RtpProcess — without it ZLM
                     // buffers frames waiting on this hook, then times out and
                     // detaches, so the stream never goes live.
-                    if let Err(e) = media.auth_invoker.call("", false, false) {
-                        log::warn!("ZLM: publish auth invoke failed: {e:#}");
-                    }
+                    //
+                    // MUST NOT run on this thread: the hook fires on the session's
+                    // own event-poller thread, and ZLM's invoker `async()`s the
+                    // ANNOUNCE continuation back to that same poller — which
+                    // executes it INLINE, right above these Rust frames. When the
+                    // continuation throws (e.g. pushing a stream name that already
+                    // exists → "already publishing" shutdown), the C++ exception
+                    // unwinds through Rust and aborts the whole process ("Rust
+                    // cannot catch foreign exceptions"). Invoking from a tokio
+                    // thread makes ZLM post the continuation instead, so any throw
+                    // stays on a pure C++ stack and is handled by ZLM itself.
+                    // The hook's invoker pointer is only valid during the
+                    // callback; clone (mk_publish_auth_invoker_clone) takes an
+                    // owned copy that stays valid for the deferred call.
+                    let invoker = SendPublishInvoker(media.auth_invoker.clone());
+                    runtime_pub.spawn(async move {
+                        if let Err(e) = invoker.call("", false, false) {
+                            log::warn!("ZLM: publish auth invoke failed: {e:#}");
+                        }
+                    });
                 });
                 let runtime_nf = runtime.clone();
                 events.on_media_not_found(move |media| {
