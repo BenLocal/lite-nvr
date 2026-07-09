@@ -13,6 +13,9 @@ const controlRoot = {
   focusBorderColor: controlFocus,
   color: '#e2e8f0',
   placeholderColor: '#64748b',
+  // 未覆盖时会回落到 Aura 亮色默认 {surface.200},在暗色主题里是一块亮灰
+  disabledBackground: 'rgb(30 41 59 / 30%)',
+  disabledColor: '#64748b',
   shadow: 'inset 0 1px 0 rgb(226 232 240 / 4%)',
   focusRing: {
     width: '0',
