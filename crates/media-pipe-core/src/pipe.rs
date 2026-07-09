@@ -133,39 +133,48 @@ impl Pipe {
             }
         }
 
-        // Second pass: spawn forwarder tasks.
-        let mut join_handles = Vec::new();
+        // Second pass: spawn forwarder tasks into a JoinSet so the wait below
+        // can observe the first one ending, then drain the rest on shutdown.
+        let mut outputs = tokio::task::JoinSet::new();
         for (_, av, stream, output_config) in accepted {
             match &output_config.dest {
-                OutputDest::RawFrame { sink } => {
+                OutputDest::RawFrame { sink } | OutputDest::RawPacket { sink } => {
                     let sink = Arc::clone(sink);
-                    let handle = tokio::spawn(async move {
+                    outputs.spawn(async move {
                         forward_frame_stream_to_sink(stream, sink).await;
                     });
-                    join_handles.push(handle);
-                }
-                OutputDest::RawPacket { sink } => {
-                    let sink = Arc::clone(sink);
-                    let handle = tokio::spawn(async move {
-                        forward_frame_stream_to_sink(stream, sink).await;
-                    });
-                    join_handles.push(handle);
                 }
                 OutputDest::Demuxed { sink } => {
-                    join_handles.push(sink.start(av, stream));
+                    let handle = sink.start(av, stream);
+                    outputs.spawn(async move {
+                        let _ = handle.await;
+                    });
                 }
                 OutputDest::Network { .. } => {}
             }
         }
 
-        if join_handles.is_empty() && !self.config.outputs.is_empty() {
+        if outputs.is_empty() && !self.config.outputs.is_empty() {
             log::warn!("Pipe: no output task running");
         }
 
-        // Wait for cancellation
-        tokio::select! {
-            _ = cancel.cancelled() => {
-                log::info!("Pipe: cancelled");
+        // Wait for cancellation — or for an output task to end. Forwarders only
+        // end when the input side is done (EOF, read error, sink gone), so the
+        // first completion means the session is dead and start() must unwind
+        // instead of idling forever; that lets a supervisor observe stream
+        // death and restart (e.g. re-resolving an expired live-stream URL).
+        // Pipes whose outputs are all in-bus (Network) keep the cancel-only wait.
+        if outputs.is_empty() {
+            cancel.cancelled().await;
+            log::info!("Pipe: cancelled");
+        } else {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    log::info!("Pipe: cancelled");
+                }
+                _ = outputs.join_next() => {
+                    log::info!("Pipe: output ended (input finished), stopping");
+                }
             }
         }
 
@@ -176,9 +185,7 @@ impl Pipe {
         bus.stop();
         // Unpublish before dropping the last handle; new subscribers now error.
         *self.bus.lock().unwrap() = None;
-        for h in join_handles {
-            let _ = h.await;
-        }
+        while outputs.join_next().await.is_some() {}
 
         self.started.store(false, Ordering::Relaxed);
     }
