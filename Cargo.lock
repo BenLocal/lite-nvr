@@ -330,7 +330,7 @@ dependencies = [
  "rustc-hash 1.1.0",
  "shlex 1.3.0",
  "syn",
- "which",
+ "which 4.4.2",
 ]
 
 [[package]]
@@ -2701,6 +2701,18 @@ dependencies = [
  "ffmpeg-next",
  "log",
  "tokio",
+]
+
+[[package]]
+name = "nvr-yt-dlp"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "which 8.0.4",
 ]
 
 [[package]]
@@ -5193,6 +5205,15 @@ dependencies = [
  "home",
  "once_cell",
  "rustix 0.38.44",
+]
+
+[[package]]
+name = "which"
+version = "8.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "48d7cd18d4acb58fb3cdfe9ea54e6cd96a4e7d4cc45c56338b236e82dad47248"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
