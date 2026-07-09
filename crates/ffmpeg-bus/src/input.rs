@@ -144,16 +144,11 @@ impl AvInput {
     }
 
     pub fn read_packet(&mut self) -> Option<RawPacket> {
-        loop {
-            match self.inner.packets().next() {
-                Some((stream, packet)) => {
-                    return Some((packet, stream.time_base()).into());
-                }
-                None => {
-                    // End of stream, break the loop
-                    return None;
-                }
-            }
-        }
+        // One packet per call, or None at end of stream. No loop here: both match
+        // arms returned, so a `loop` never actually iterated (clippy::never_loop).
+        self.inner
+            .packets()
+            .next()
+            .map(|(stream, packet)| (packet, stream.time_base()).into())
     }
 }
