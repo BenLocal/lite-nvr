@@ -1,49 +1,13 @@
 import { ref, shallowRef } from 'vue'
+import type { Socket } from 'socket.io-client'
 import { startAsr, stopAsr } from '../api/asr'
 
-// Minimal shape of the socket.io-client we use. Loaded at runtime from a CDN,
-// so it isn't an npm dependency.
-interface AsrSocket {
-  emit: (event: string, ...args: unknown[]) => void
-  on: (event: string, cb: (payload: unknown) => void) => void
-  disconnect: () => void
-}
-type IoFactory = (uri: string, opts?: Record<string, unknown>) => AsrSocket
-
-declare global {
-  interface Window {
-    io?: IoFactory
-  }
-}
-
-const SOCKETIO_CDN = 'https://cdn.jsdelivr.net/npm/socket.io-client@4.8.1/dist/socket.io.min.js'
-
-/** Load socket.io-client from CDN once and return the global `io` factory. */
-async function ensureIo(): Promise<IoFactory> {
-  if (window.io) {
-    return window.io
-  }
-  await new Promise<void>((resolve, reject) => {
-    const existing = document.querySelector<HTMLScriptElement>('script[data-socketio="true"]')
-    if (existing) {
-      existing.addEventListener('load', () => resolve(), { once: true })
-      existing.addEventListener('error', () => reject(new Error('socket.io-client 加载失败')), {
-        once: true,
-      })
-      return
-    }
-    const script = document.createElement('script')
-    script.src = SOCKETIO_CDN
-    script.async = true
-    script.dataset.socketio = 'true'
-    script.onload = () => resolve()
-    script.onerror = () => reject(new Error('socket.io-client 加载失败'))
-    document.head.appendChild(script)
-  })
-  if (!window.io) {
-    throw new Error('socket.io-client 加载后未找到全局 io')
-  }
-  return window.io
+// socket.io-client is a bundled dependency loaded via a dynamic import, so Vite
+// code-splits it into its own chunk served from our own origin — lazy-loaded on
+// first use and available offline (the NVR is typically deployed on an isolated
+// network), instead of a public CDN.
+async function ensureIo() {
+  return (await import('socket.io-client')).io
 }
 
 export interface CaptionEntry {
@@ -69,7 +33,7 @@ export function useAsrCaptions() {
   const error = ref('')
   const entries = ref<CaptionEntry[]>([])
   const partial = ref('')
-  const socket = shallowRef<AsrSocket | null>(null)
+  const socket = shallowRef<Socket | null>(null)
   let seq = 0
   let currentPipe = ''
 

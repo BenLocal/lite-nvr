@@ -25,29 +25,12 @@ import {
   type PlaybackSegmentItem,
 } from '../api/playback'
 import { useAppToast } from '../utils/toast'
+import type Hls from 'hls.js'
 
 const DAY_SECONDS = 24 * 60 * 60
 const TIMELINE_MAX_ZOOM = 48
 
 type PlaybackMode = 'segment' | 'playlist'
-type HlsErrorData = { fatal?: boolean; type?: string; details?: string }
-type HlsPlayer = {
-  loadSource: (url: string) => void
-  attachMedia: (element: HTMLVideoElement) => void
-  on: (event: string, callback: (event: string, data: HlsErrorData) => void) => void
-  destroy: () => void
-}
-type HlsJs = {
-  isSupported: () => boolean
-  Events: { ERROR: string }
-  new (): HlsPlayer
-}
-
-declare global {
-  interface Window {
-    Hls?: HlsJs
-  }
-}
 
 const appToast = useAppToast()
 const confirm = useConfirm()
@@ -60,7 +43,7 @@ const playerRef = ref<HTMLVideoElement | null>(null)
 const timelineTrackRef = ref<HTMLDivElement | null>(null)
 const timelineScrollRef = ref<HTMLDivElement | null>(null)
 const timelineZoom = ref(1)
-const hlsPlayerRef = ref<HlsPlayer | null>(null)
+const hlsPlayerRef = ref<Hls | null>(null)
 const currentSegmentId = ref('')
 const currentPlayerUrl = ref('')
 const currentPlaybackSecond = ref(0)
@@ -450,29 +433,13 @@ function buildTimelineBackground(segments: PlaybackSegmentItem[]) {
   return `linear-gradient(90deg, ${stops.join(', ')})`
 }
 
+// hls.js is a bundled dependency loaded via a dynamic import, so Vite
+// code-splits it into its own chunk served from our own origin — lazy-loaded
+// on first playback, and available offline (the NVR is typically deployed on
+// an isolated network). Both playback modes go through HLS on non-Safari
+// browsers, so a missing hls.js used to break ALL playback.
 async function ensureHlsJs() {
-  if (window.Hls) {
-    return window.Hls
-  }
-
-  await new Promise<void>((resolve, reject) => {
-    const existing = document.querySelector<HTMLScriptElement>('script[data-hlsjs="true"]')
-    if (existing) {
-      existing.addEventListener('load', () => resolve(), { once: true })
-      existing.addEventListener('error', () => reject(new Error('hls.js load failed')), { once: true })
-      return
-    }
-
-    const script = document.createElement('script')
-    script.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.18/dist/hls.min.js'
-    script.async = true
-    script.dataset.hlsjs = 'true'
-    script.onload = () => resolve()
-    script.onerror = () => reject(new Error('hls.js load failed'))
-    document.head.appendChild(script)
-  })
-
-  return window.Hls
+  return (await import('hls.js')).default
 }
 
 function stopPlayer() {
@@ -1091,8 +1058,9 @@ function formatDaySecond(second: number) {
             ref="playerRef"
             class="video-player"
             controls
+            autoplay
             playsinline
-            preload="metadata"
+            preload="auto"
             @loadedmetadata="onVideoLoadedMetadata"
             @timeupdate="onVideoTimeUpdate"
             @ended="onVideoEnded"
