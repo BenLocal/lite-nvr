@@ -396,12 +396,24 @@ async function goLive() {
   }
 }
 
-// Swap one region's source on the running program — no stream restart.
+// Swap one region's source on the running program — no stream restart. The
+// backend only switches to pool members, so a device that isn't in the
+// program's pool yet is added live first, then switched in (its picture
+// appears once the fresh source delivers frames).
 async function liveSwitch(cell: number, sourceId: string) {
-  if (!program.value) {
+  const p = program.value
+  if (!p) {
     return
   }
   try {
+    if (!p.sources.some((s) => s.id === sourceId)) {
+      const device = sourceById(sourceId)
+      if (!device) {
+        programError.value = `信号源 ${sourceId} 不在节目池中，且没有对应设备可自动添加`
+        return
+      }
+      program.value = await addCompositorSource(PROGRAM_ID, device.id, sourceRtsp(device))
+    }
     await switchRegion(PROGRAM_ID, cell, sourceId)
     programError.value = ''
   } catch (e) {
