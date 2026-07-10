@@ -13,15 +13,6 @@ use crate::{
     handler::{ApiJsonResult, ApiResult, ok_json},
 };
 
-const PLAYBACK_BYTERANGE_SEGMENT_SECONDS: f64 = 5.0;
-
-#[derive(Debug, Clone, Copy)]
-struct ByteRangeSegment {
-    offset: usize,
-    length: usize,
-    duration: f32,
-}
-
 async fn segment_file_exists(path: &str) -> bool {
     tokio::fs::metadata(path).await.is_ok()
 }
@@ -271,10 +262,9 @@ async fn play_segment(headers: HeaderMap, Path(id): Path<String>) -> ApiResult<R
         HeaderValue::from_str(&response_len.to_string())?,
     );
     if let Some(content_range) = content_range {
-        response.headers_mut().insert(
-            header::CONTENT_RANGE,
-            HeaderValue::from_str(&content_range)?,
-        );
+        response
+            .headers_mut()
+            .insert(header::CONTENT_RANGE, HeaderValue::from_str(&content_range)?);
     }
     response
         .headers_mut()
@@ -393,93 +383,32 @@ fn parse_range_header(range: &str, content_len: usize) -> Result<(usize, usize),
     Ok((start, end))
 }
 
-fn detect_ts_packet_size(content: &[u8]) -> Option<usize> {
-    [188usize, 192, 204].into_iter().find(|packet_size| {
-        if content.len() < packet_size * 3 {
-            return false;
-        }
-        (0..3).all(|index| content[index * packet_size] == 0x47)
-    })
-}
-
-fn build_even_byterange_segments(
-    content_len: usize,
-    packet_size: usize,
-    total_duration: f32,
-) -> Vec<ByteRangeSegment> {
-    let segment_count = ((total_duration.max(1.0) as f64) / PLAYBACK_BYTERANGE_SEGMENT_SECONDS)
-        .ceil()
-        .max(1.0) as usize;
-    let aligned_total = content_len - (content_len % packet_size);
-    let approx_aligned =
-        ((aligned_total / segment_count.max(1)) / packet_size).max(1) * packet_size;
-
-    let mut segments = Vec::new();
-    let mut offset = 0usize;
-    while offset < aligned_total {
-        let remaining = aligned_total - offset;
-        let length = if remaining <= approx_aligned {
-            remaining
-        } else {
-            approx_aligned
-        };
-        segments.push(ByteRangeSegment {
-            offset,
-            length,
-            duration: (total_duration / segment_count.max(1) as f32).max(0.1),
-        });
-        offset += length;
-    }
-
-    if segments.is_empty() {
-        segments.push(ByteRangeSegment {
-            offset: 0,
-            length: content_len,
-            duration: total_duration.max(0.1),
-        });
-    }
-
-    segments
-}
-
 async fn segment_playlist(Path(id): Path<String>) -> ApiResult<Response> {
     let conn = app_db_conn()?;
     let segment = nvr_db::record_segment::get(&id, &conn)
         .await?
         .ok_or_else(|| anyhow::anyhow!("record segment not found"))?;
-    let content_len = match tokio::fs::metadata(&segment.file_path).await {
-        Ok(meta) => meta.len() as usize,
-        Err(_) => {
-            return Err(
-                anyhow::anyhow!("record segment file not found: {}", segment.file_path).into(),
-            );
-        }
-    };
-    // Detect the TS packet size from a small head read and split by size, instead
-    // of reading and PCR-scanning the whole file (which slowed playback opening).
-    let head = read_file_range(&segment.file_path, 0, content_len.min(4096)).await?;
-    let packet_size = detect_ts_packet_size(&head).unwrap_or(188);
-    let sub_segments = build_even_byterange_segments(content_len, packet_size, segment.duration);
+    if !segment_file_exists(&segment.file_path).await {
+        return Err(anyhow::anyhow!("record segment file not found: {}", segment.file_path).into());
+    }
 
-    let target_duration = sub_segments
-        .iter()
-        .map(|item| item.duration.ceil() as i32)
-        .max()
-        .unwrap_or(1)
-        .max(1);
-    let mut lines = vec![
+    // A single-entry VOD playlist: one #EXTINF spanning the whole .ts file, no
+    // byte-range splitting. hls.js reads the real duration straight from EXTINF
+    // (so the seekbar is a proper VOD bar immediately, not a live one) and
+    // decodes one contiguous segment — there are no mid-GOP byte-range
+    // boundaries for it to stutter on. Byte-level seeking is still available
+    // because /api/playback/segment/{id} honors Range requests.
+    let target_duration = (segment.duration.ceil() as i32).max(1);
+    let lines = vec![
         "#EXTM3U".to_string(),
-        "#EXT-X-VERSION:4".to_string(),
+        "#EXT-X-VERSION:3".to_string(),
         format!("#EXT-X-TARGETDURATION:{}", target_duration),
         "#EXT-X-MEDIA-SEQUENCE:0".to_string(),
         "#EXT-X-PLAYLIST-TYPE:VOD".to_string(),
+        format!("#EXTINF:{:.3},", segment.duration),
+        format!("/api/playback/segment/{}", segment.id),
+        "#EXT-X-ENDLIST".to_string(),
     ];
-    for item in sub_segments {
-        lines.push(format!("#EXTINF:{:.3},", item.duration));
-        lines.push(format!("#EXT-X-BYTERANGE:{}@{}", item.length, item.offset));
-        lines.push(format!("/api/playback/segment/{}", segment.id));
-    }
-    lines.push("#EXT-X-ENDLIST".to_string());
     let body = lines.join("\n");
 
     let mut response = Response::new(Body::from(body));

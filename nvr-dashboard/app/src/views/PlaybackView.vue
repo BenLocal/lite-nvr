@@ -461,27 +461,29 @@ async function attachPlayerSource() {
   }
   stopPlayer()
 
-  if (playbackMode.value === 'playlist' || playbackMode.value === 'segment') {
-    if (player.canPlayType('application/vnd.apple.mpegurl')) {
-      player.src = currentPlayerUrl.value
-      player.load()
-      return
-    }
-    const Hls = await ensureHlsJs()
-    if (!Hls?.isSupported()) {
-      throw new Error('当前浏览器不支持 HLS 播放')
-    }
-    const hls = new Hls()
-    hls.on(Hls.Events.ERROR, (_event, data) => {
-      if (data.fatal) {
-        onPlaybackError()
-      }
-    })
-    hls.loadSource(currentPlayerUrl.value)
-    hls.attachMedia(player)
-    hlsPlayerRef.value = hls
+  // Both modes play an m3u8 over HLS. A single segment is a one-entry VOD
+  // playlist (the whole .ts, no byte-range split): hls.js reads the duration
+  // from EXTINF so the seekbar is a proper VOD bar, and one contiguous segment
+  // means no mid-GOP boundaries to stutter on. Daily playback is the multi-entry
+  // playlist. Safari plays m3u8 natively; everyone else goes through hls.js.
+  if (player.canPlayType('application/vnd.apple.mpegurl')) {
+    player.src = currentPlayerUrl.value
+    player.load()
     return
   }
+  const Hls = await ensureHlsJs()
+  if (!Hls?.isSupported()) {
+    throw new Error('当前浏览器不支持 HLS 播放')
+  }
+  const hls = new Hls()
+  hls.on(Hls.Events.ERROR, (_event, data) => {
+    if (data.fatal) {
+      onPlaybackError()
+    }
+  })
+  hls.loadSource(currentPlayerUrl.value)
+  hls.attachMedia(player)
+  hlsPlayerRef.value = hls
 }
 
 function onPlaybackError() {
