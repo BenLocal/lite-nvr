@@ -1043,15 +1043,9 @@ name = "dummy-rtsp-camera"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bytes",
  "clap",
- "futures",
- "oddity-rtsp-protocol",
- "rand 0.8.6",
  "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
+ "which 8.0.4",
 ]
 
 [[package]]
@@ -2730,17 +2724,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "which 8.0.4",
-]
-
-[[package]]
-name = "oddity-rtsp-protocol"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "206da70a7e71e5c260489c23e84082f94f94670cd27e04399447568a19262892"
-dependencies = [
- "bytes",
- "http",
- "tokio-util",
 ]
 
 [[package]]
