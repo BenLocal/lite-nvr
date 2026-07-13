@@ -1,7 +1,5 @@
 use std::path::Path;
 
-use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
-
 use crate::db::{DatabaseConfig, NvrDatabase};
 
 const MIGRATIONS_TABLE_SQL: &str = r#"
@@ -53,7 +51,7 @@ pub async fn ensure_default_admin_user(url: &str) -> anyhow::Result<()> {
     let now = chrono::Utc::now();
     let user = crate::user::UserInfo {
         username: "admin".to_string(),
-        password_hash: hash_password("admin")?,
+        password_hash: crate::user::hash_password("admin")?,
         metadata: std::collections::HashMap::new(),
         create_time: now,
         update_time: now,
@@ -119,13 +117,4 @@ fn load_migrations() -> anyhow::Result<Vec<Migration>> {
         }
     }
     Ok(migrations)
-}
-
-fn hash_password(password: &str) -> anyhow::Result<String> {
-    let salt = SaltString::encode_b64(uuid::Uuid::new_v4().as_bytes())
-        .map_err(|e| anyhow::anyhow!("Failed to generate password salt: {}", e))?;
-    let hash = Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
-        .map_err(|e| anyhow::anyhow!("Failed to hash password: {}", e))?;
-    Ok(hash.to_string())
 }

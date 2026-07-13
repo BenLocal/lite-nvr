@@ -6,6 +6,7 @@ use crate::db::init_app_db;
 mod api;
 mod asr;
 mod audiomixer;
+mod auth;
 mod cleanup;
 mod compositor;
 mod config;

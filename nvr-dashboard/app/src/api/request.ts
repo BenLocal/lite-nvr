@@ -1,4 +1,4 @@
-import { getAuthToken } from '../auth/token'
+import { clearAuthToken, getAuthToken } from '../auth/token'
 
 // Project convention: REST API uses only GET and POST (no PUT/PATCH/DELETE).
 type RequestMethod = 'GET' | 'POST'
@@ -32,6 +32,16 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     body: body === undefined ? undefined : JSON.stringify(body),
     ...rest,
   })
+
+  if (response.status === 401) {
+    // Session missing/expired/revoked: drop local auth and return to login.
+    clearAuthToken()
+    const loginUrl = `${import.meta.env.BASE_URL}login`
+    if (!window.location.pathname.startsWith(loginUrl)) {
+      window.location.assign(loginUrl)
+    }
+    throw new Error('登录已过期，请重新登录')
+  }
 
   let payload: BaseResponse<T>
   try {

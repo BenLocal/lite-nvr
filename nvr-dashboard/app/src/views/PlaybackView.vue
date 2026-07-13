@@ -24,6 +24,7 @@ import {
   type DevicePlaybackItem,
   type PlaybackSegmentItem,
 } from '../api/playback'
+import { getAuthToken } from '../auth/token'
 import { useAppToast } from '../utils/toast'
 import type Hls from 'hls.js'
 
@@ -475,7 +476,17 @@ async function attachPlayerSource() {
   if (!Hls?.isSupported()) {
     throw new Error('当前浏览器不支持 HLS 播放')
   }
-  const hls = new Hls()
+  // Player URLs already carry `?token=`; the Authorization header is a
+  // second channel so playlist fetches stay authenticated even if a URL
+  // without the query slips through.
+  const hls = new Hls({
+    xhrSetup: (xhr) => {
+      const token = getAuthToken()
+      if (token) {
+        xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+      }
+    },
+  })
   hls.on(Hls.Events.ERROR, (_event, data) => {
     if (data.fatal) {
       onPlaybackError()

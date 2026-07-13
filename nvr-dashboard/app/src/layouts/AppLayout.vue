@@ -5,6 +5,7 @@ import Menu from 'primevue/menu'
 import Button from 'primevue/button'
 import Avatar from 'primevue/avatar'
 import { useConfirm } from 'primevue/useconfirm'
+import { logout as logoutRequest } from '../api/user'
 import { useAuth } from '../composables/useAuth'
 import { useAppToast } from '../utils/toast'
 
@@ -58,6 +59,13 @@ function onLogoutRequest() {
     rejectLabel: '取消',
     acceptLabel: '确认',
     accept: async () => {
+      // Revoke the server-side session first; local cleanup proceeds even if
+      // the session is already gone.
+      try {
+        await logoutRequest()
+      } catch {
+        // ignore — token may already be expired or revoked
+      }
       logout()
       await router.push('/login')
       appToast.warn('已退出', '你已安全退出登录')

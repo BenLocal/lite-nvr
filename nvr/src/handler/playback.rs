@@ -262,9 +262,10 @@ async fn play_segment(headers: HeaderMap, Path(id): Path<String>) -> ApiResult<R
         HeaderValue::from_str(&response_len.to_string())?,
     );
     if let Some(content_range) = content_range {
-        response
-            .headers_mut()
-            .insert(header::CONTENT_RANGE, HeaderValue::from_str(&content_range)?);
+        response.headers_mut().insert(
+            header::CONTENT_RANGE,
+            HeaderValue::from_str(&content_range)?,
+        );
     }
     response
         .headers_mut()
@@ -383,7 +384,31 @@ fn parse_range_header(range: &str, content_len: usize) -> Result<(usize, usize),
     Ok((start, end))
 }
 
-async fn segment_playlist(Path(id): Path<String>) -> ApiResult<Response> {
+/// Optional `?token=` on playlist requests. Header-less players (Safari
+/// native HLS, and hls.js segment fetches) authenticate via this query param,
+/// so the m3u8 bodies we emit must carry it through to the segment URIs. By
+/// the time these handlers run the token has already passed the auth
+/// middleware, so it is a known-good stored token, safe to echo.
+#[derive(Deserialize)]
+struct PlaylistTokenQuery {
+    token: Option<String>,
+}
+
+impl PlaylistTokenQuery {
+    /// `?token=...` suffix for generated segment URIs, or empty.
+    fn uri_suffix(&self) -> String {
+        self.token
+            .as_deref()
+            .filter(|t| !t.is_empty())
+            .map(|t| format!("?token={}", t))
+            .unwrap_or_default()
+    }
+}
+
+async fn segment_playlist(
+    Path(id): Path<String>,
+    Query(query): Query<PlaylistTokenQuery>,
+) -> ApiResult<Response> {
     let conn = app_db_conn()?;
     let segment = nvr_db::record_segment::get(&id, &conn)
         .await?
@@ -406,7 +431,7 @@ async fn segment_playlist(Path(id): Path<String>) -> ApiResult<Response> {
         "#EXT-X-MEDIA-SEQUENCE:0".to_string(),
         "#EXT-X-PLAYLIST-TYPE:VOD".to_string(),
         format!("#EXTINF:{:.3},", segment.duration),
-        format!("/api/playback/segment/{}", segment.id),
+        format!("/api/playback/segment/{}{}", segment.id, query.uri_suffix()),
         "#EXT-X-ENDLIST".to_string(),
     ];
     let body = lines.join("\n");
@@ -423,7 +448,10 @@ async fn segment_playlist(Path(id): Path<String>) -> ApiResult<Response> {
     Ok(response)
 }
 
-async fn playback_playlist(Path(device_id): Path<String>) -> ApiResult<Response> {
+async fn playback_playlist(
+    Path(device_id): Path<String>,
+    Query(query): Query<PlaylistTokenQuery>,
+) -> ApiResult<Response> {
     let conn = app_db_conn()?;
     let device = nvr_db::device::get(&device_id, &conn)
         .await?
@@ -486,7 +514,11 @@ async fn playback_playlist(Path(device_id): Path<String>) -> ApiResult<Response>
                 .map(|dt| dt.to_rfc3339())
                 .unwrap_or_default()
         ));
-        lines.push(format!("/api/playback/segment/{}", record.id));
+        lines.push(format!(
+            "/api/playback/segment/{}{}",
+            record.id,
+            query.uri_suffix()
+        ));
     }
     lines.push("#EXT-X-ENDLIST".to_string());
 

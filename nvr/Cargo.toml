@@ -43,7 +43,6 @@ gb28181 = { path = "../crates/gb28181" }
 rszlm = { workspace = true }
 uuid = { workspace = true }
 turso = { workspace = true }
-argon2 = { workspace = true }
 harsh = { workspace = true }
 md5 = { workspace = true }
 # Record-segment transport backends (blocking clients, driven via spawn_blocking).
@@ -61,3 +60,7 @@ linux = []
 # SMB transport backend. Off by default so the base build needs no Samba dev
 # library (libsmbclient); enable with `--features smb`.
 smb = ["dep:pavao"]
+
+[dev-dependencies]
+# Drives the auth middleware end-to-end in tests (Router::oneshot).
+tower = { workspace = true, features = ["util"] }

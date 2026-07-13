@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use turso::Connection;
@@ -50,3 +51,58 @@ pub async fn insert(user: &UserInfo, conn: &Connection) -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
+
+/// Overwrite an existing user record (keyed by username).
+pub async fn update(user: &UserInfo, conn: &Connection) -> anyhow::Result<()> {
+    let value = serde_json::to_string(user)?;
+    conn.execute(
+        "UPDATE kvs SET value = ?1 WHERE module = ?2 AND key = ?3",
+        (value.as_str(), MODULE, user.username.as_str()),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Delete a user by username. Deleting a missing user is not an error.
+pub async fn delete(username: &str, conn: &Connection) -> anyhow::Result<()> {
+    conn.execute(
+        "DELETE FROM kvs WHERE module = ?1 AND key = ?2",
+        (MODULE, username),
+    )
+    .await?;
+    Ok(())
+}
+
+/// List all user records.
+pub async fn list(conn: &Connection) -> anyhow::Result<Vec<UserInfo>> {
+    kv::by_module(MODULE, conn)
+        .await?
+        .into_iter()
+        .map(|kv| Ok(serde_json::from_str(&kv.value.unwrap_or_default())?))
+        .collect()
+}
+
+/// Hash a plaintext password with argon2 and a random salt.
+pub fn hash_password(password: &str) -> anyhow::Result<String> {
+    let salt = SaltString::encode_b64(uuid::Uuid::new_v4().as_bytes())
+        .map_err(|e| anyhow::anyhow!("Failed to generate password salt: {}", e))?;
+    let hash = Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map_err(|e| anyhow::anyhow!("Failed to hash password: {}", e))?;
+    Ok(hash.to_string())
+}
+
+/// Verify a plaintext password against a stored argon2 hash. An unparsable
+/// hash counts as a mismatch rather than an error.
+pub fn verify_password(password: &str, hash: &str) -> bool {
+    let Ok(parsed) = PasswordHash::new(hash) else {
+        return false;
+    };
+    Argon2::default()
+        .verify_password(password.as_bytes(), &parsed)
+        .is_ok()
+}
+
+#[cfg(test)]
+#[path = "user_test.rs"]
+mod user_test;

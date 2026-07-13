@@ -1,3 +1,4 @@
+import { getAuthToken } from '../auth/token'
 import { request } from './request'
 
 export interface PlaybackSegmentItem {
@@ -96,14 +97,23 @@ export function deleteAllDeviceSegments(deviceId: string) {
   )
 }
 
+// Player URLs carry the session token as a query param: hls.js segment
+// fetches and Safari-native HLS can't reliably attach the Authorization
+// header, and the backend accepts either channel (and echoes the token into
+// the m3u8 segment URIs it generates).
+function withAuthToken(url: string) {
+  const token = getAuthToken()
+  return token ? `${url}?token=${encodeURIComponent(token)}` : url
+}
+
 export function buildPlaybackSegmentUrl(id: string) {
-  return `/api/playback/segment/${encodeURIComponent(id)}`
+  return withAuthToken(`/api/playback/segment/${encodeURIComponent(id)}`)
 }
 
 export function buildPlaybackSegmentPlaylistUrl(id: string) {
-  return `/api/playback/segment-playlist/${encodeURIComponent(id)}`
+  return withAuthToken(`/api/playback/segment-playlist/${encodeURIComponent(id)}`)
 }
 
 export function buildPlaybackPlaylistUrl(deviceId: string) {
-  return `/api/playback/playlist/${encodeURIComponent(deviceId)}`
+  return withAuthToken(`/api/playback/playlist/${encodeURIComponent(deviceId)}`)
 }

@@ -2595,7 +2595,6 @@ name = "nvr"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "argon2",
  "async-trait",
  "axum",
  "bytes",
@@ -2630,6 +2629,7 @@ dependencies = [
  "tokio-linux-video",
  "tokio-tungstenite 0.29.0",
  "tokio-util",
+ "tower",
  "turso",
  "uuid",
  "xiaomi",

@@ -4,6 +4,7 @@ pub mod device;
 pub mod kv;
 pub mod migrations;
 pub mod record_segment;
+pub mod session;
 pub mod transport_job;
 pub mod transport_target;
 pub mod user;

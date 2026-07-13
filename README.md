@@ -109,6 +109,26 @@ ffplay http://127.0.0.1:8553/live/cam1/hls.m3u8
 
 All endpoints are mounted under `/api`.
 
+### Authentication
+
+Every endpoint except `POST /api/user/login` requires a session token,
+passed either as an `Authorization: Bearer <token>` header or a `?token=`
+query parameter (the query form exists for HLS players that cannot set
+headers; playlist endpoints propagate it into the segment URIs they emit).
+Requests without a valid token get `401`.
+
+Tokens are issued by `POST /api/user/login`, persisted server-side (they
+survive restarts), and expire 30 days after login. A default `admin`/`admin`
+user is created on first start — change its password after deployment.
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:18080/api/user/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "admin"}' | jq -r .data.token)
+
+curl -H "Authorization: Bearer $TOKEN" http://localhost:18080/api/device/list
+```
+
 ### Pipelines — `/api/pipe`
 
 The pipeline API manages ephemeral, in-memory media pipelines.
@@ -209,11 +229,15 @@ Recorded HLS segments are persisted and exposed for playback.
 
 ### User — `/api/user`
 
-| Method | Endpoint           | Description     |
-| ------ | ------------------ | --------------- |
-| POST   | `/api/user/login`  | Log in          |
-| POST   | `/api/user/logout` | Log out         |
-| GET    | `/api/user/info`   | Current user info |
+| Method | Endpoint                       | Description                                  |
+| ------ | ------------------------------ | -------------------------------------------- |
+| POST   | `/api/user/login`              | Log in → `{ token, username }` (no auth)     |
+| POST   | `/api/user/logout`             | Revoke the current session                   |
+| GET    | `/api/user/info`               | Current user info                            |
+| POST   | `/api/user/password`           | Change own password (`{ old_password, new_password }`); kicks the user's other sessions |
+| GET    | `/api/user/list`               | List users                                   |
+| POST   | `/api/user/add`                | Create a user (`{ username, password }`)     |
+| POST   | `/api/user/remove/{username}`  | Delete a user (not yourself) and revoke their sessions |
 
 ## Development
 
