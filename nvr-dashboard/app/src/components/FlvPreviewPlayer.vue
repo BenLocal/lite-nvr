@@ -14,6 +14,14 @@ const handle = ref<StreamPlayerHandle | null>(null)
 // Bumped on every stop/start so a superseded async start tears itself down.
 let gen = 0
 const previewError = ref('')
+// gb28181 devices pull lazily: the first connection only *triggers* the
+// INVITE and is dropped by ZLM (media-not-found hook); the stream registers
+// ~1s later. A bounded auto-reconnect turns that mandatory first failure
+// (and any transient drop) into a short "connecting" state.
+const RETRY_MAX = 5
+const RETRY_DELAY_MS = 1500
+const retryCount = ref(0)
+let retryTimer: ReturnType<typeof setTimeout> | undefined
 const previewMediaInfo = ref<Record<string, unknown>>({})
 const previewStats = ref<Record<string, unknown>>({})
 const previewInfoVisible = ref(true)
@@ -24,6 +32,7 @@ watch(
   () => props.url,
   async (url) => {
     stopPreview()
+    retryCount.value = 0
     previewInfoVisible.value = true
     previewInfoPosition.value = { x: 20, y: 20 }
     if (!url) {
@@ -61,12 +70,13 @@ async function startPreview() {
         muted: true,
         onMediaInfo: (info) => {
           previewMediaInfo.value = { ...previewMediaInfo.value, ...info }
+          retryCount.value = 0
         },
         onStats: (info) => {
           previewStats.value = { ...previewStats.value, ...info }
         },
         onError: (message) => {
-          previewError.value = message
+          scheduleRetry(message)
         },
       },
     )
@@ -76,12 +86,36 @@ async function startPreview() {
     }
     handle.value = created
   } catch (error) {
-    previewError.value = toErrorMessage(error, 'FLV 预览启动失败')
+    scheduleRetry(toErrorMessage(error, 'FLV 预览启动失败'))
   }
+}
+
+function scheduleRetry(message: string) {
+  if (retryTimer) {
+    return // a reconnect is already pending; ignore repeated errors
+  }
+  if (retryCount.value >= RETRY_MAX) {
+    previewError.value = message
+    return
+  }
+  retryCount.value++
+  previewError.value = ''
+  const myGen = gen
+  retryTimer = setTimeout(() => {
+    retryTimer = undefined
+    if (myGen !== gen) {
+      return
+    }
+    void startPreview()
+  }, RETRY_DELAY_MS)
 }
 
 function stopPreview() {
   gen++
+  if (retryTimer) {
+    clearTimeout(retryTimer)
+    retryTimer = undefined
+  }
   if (handle.value) {
     handle.value.destroy()
     handle.value = null
@@ -258,6 +292,9 @@ function formatAudioCodec(codec: string) {
       @click="openPreviewInfo"
     />
     <Message v-if="previewError" severity="error" :closable="false">{{ previewError }}</Message>
+    <Message v-else-if="retryCount > 0" severity="secondary" :closable="false">
+      正在拉流（第 {{ retryCount }}/{{ RETRY_MAX }} 次连接）…
+    </Message>
     <div class="preview-stage">
       <div
         v-if="previewInfoVisible"
