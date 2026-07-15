@@ -13,6 +13,7 @@ members = [
     "crates/nvr-asr",
     "crates/xiaomi",
     "crates/nvr-yt-dlp",
+    "crates/nvr-recorder",
     "examples/dummy-camera",
     "examples/dummy-rtsp-camera",
 ]

@@ -1,0 +1,23 @@
+[package]
+name = "nvr-recorder"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Record one RTSP source into time-sliced stream-copy segments with per-segment metadata."
+
+[dependencies]
+ffmpeg-bus = { path = "../ffmpeg-bus" }
+ffmpeg-next = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+
+# serde_json/clap/env_logger are only used by info_test and the `record`
+# example; examples can use dev-dependencies, so they live here.
+[dev-dependencies]
+serde_json = { workspace = true }
+env_logger = { workspace = true }
+clap = { version = "4", features = ["derive"] }

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a `crates/rtsp-recorder` library (plus a runnable example) that records one RTSP source into time-sliced files by stream-copy, emitting per-segment metadata.
+**Goal:** Add a `crates/nvr-recorder` library (plus a runnable example) that records one RTSP source into time-sliced files by stream-copy, emitting per-segment metadata.
 
 **Architecture:** In-process orchestration over existing `ffmpeg-bus` primitives — `AvInput`/`AvInputTask` demux RTSP into a packet broadcast, a `SegmentWriter` wraps `AvOutput` for one file, and a `Recorder` loop rotates the file on a time boundary at a video keyframe (or any packet when audio-only), resetting per-segment timestamps and reconnecting with backoff. Completed segments are delivered on an `mpsc<SegmentInfo>`.
 
@@ -14,7 +14,7 @@
 - Do **not** modify `crates/ffmpeg-bus` or the `nvr` crate. This crate is standalone.
 - **Stream-copy only** — never decode/encode. A codec a container can't hold is a config error, not an auto-transcode.
 - Tests colocated as `<module>_test.rs`, imported at the end of each source file via `#[cfg(test)] #[path = "<module>_test.rs"] mod <module>_test;` (repo convention in `CLAUDE.md`).
-- The crate links libav, so **all** `cargo test`/`build`/`check` commands run from the repo root prefixed with `LD_LIBRARY_PATH=$PWD/ffmpeg/lib` (e.g. `LD_LIBRARY_PATH=$PWD/ffmpeg/lib cargo test -p rtsp-recorder`). `FFMPEG_DIR` defaults to `./ffmpeg`.
+- The crate links libav, so **all** `cargo test`/`build`/`check` commands run from the repo root prefixed with `LD_LIBRARY_PATH=$PWD/ffmpeg/lib` (e.g. `LD_LIBRARY_PATH=$PWD/ffmpeg/lib cargo test -p nvr-recorder`). `FFMPEG_DIR` defaults to `./ffmpeg`.
 - Default container **TS** (`mpegts`); MP4 (`mp4`) and MKV (`matroska`) selectable.
 - Reconnect is **on by default** (`max_retries: None` = forever until cancelled).
 
@@ -23,10 +23,10 @@
 ### Task 1: Scaffold crate + config
 
 **Files:**
-- Create: `crates/rtsp-recorder/Cargo.toml`
-- Create: `crates/rtsp-recorder/src/lib.rs`
-- Create: `crates/rtsp-recorder/src/config.rs`
-- Create: `crates/rtsp-recorder/src/config_test.rs`
+- Create: `crates/nvr-recorder/Cargo.toml`
+- Create: `crates/nvr-recorder/src/lib.rs`
+- Create: `crates/nvr-recorder/src/config.rs`
+- Create: `crates/nvr-recorder/src/config_test.rs`
 - Modify: `Cargo.toml` (workspace `members`)
 
 **Interfaces:**
@@ -34,11 +34,11 @@
 
 - [ ] **Step 1: Create the crate manifest**
 
-Create `crates/rtsp-recorder/Cargo.toml`:
+Create `crates/nvr-recorder/Cargo.toml`:
 
 ```toml
 [package]
-name = "rtsp-recorder"
+name = "nvr-recorder"
 version = "0.1.0"
 edition = "2024"
 publish = false
@@ -70,12 +70,12 @@ In root `Cargo.toml`, add the member to the `members` list (after `"crates/nvr-y
 
 ```toml
     "crates/nvr-yt-dlp",
-    "crates/rtsp-recorder",
+    "crates/nvr-recorder",
 ```
 
 - [ ] **Step 3: Write `config.rs`**
 
-Create `crates/rtsp-recorder/src/config.rs`:
+Create `crates/nvr-recorder/src/config.rs`:
 
 ```rust
 use std::path::PathBuf;
@@ -179,7 +179,7 @@ mod config_test;
 
 - [ ] **Step 4: Write `lib.rs`**
 
-Create `crates/rtsp-recorder/src/lib.rs` (modules for later tasks referenced now so the crate has a stable shape; they are created in their own tasks):
+Create `crates/nvr-recorder/src/lib.rs` (modules for later tasks referenced now so the crate has a stable shape; they are created in their own tasks):
 
 ```rust
 //! Record one RTSP source into time-sliced stream-copy segments.
@@ -191,7 +191,7 @@ pub use config::{Container, ReconnectPolicy, RecorderConfig, RtspTransport, Trac
 
 - [ ] **Step 5: Write the failing test**
 
-Create `crates/rtsp-recorder/src/config_test.rs`:
+Create `crates/nvr-recorder/src/config_test.rs`:
 
 ```rust
 use super::*;
@@ -223,15 +223,15 @@ fn container_maps_to_muxer_and_extension() {
 
 - [ ] **Step 6: Run test to verify it fails, then passes**
 
-Run: `LD_LIBRARY_PATH=$PWD/ffmpeg/lib cargo test -p rtsp-recorder`
+Run: `LD_LIBRARY_PATH=$PWD/ffmpeg/lib cargo test -p nvr-recorder`
 Expected: the crate compiles and both tests PASS. (If you wrote the test before `config.rs`, it fails to compile first — that's the red step.)
 
 - [ ] **Step 7: Format & commit**
 
 ```bash
-cargo fmt -p rtsp-recorder
-git add crates/rtsp-recorder/Cargo.toml crates/rtsp-recorder/src Cargo.toml
-git commit -m "feat(rtsp-recorder): scaffold crate and config"
+cargo fmt -p nvr-recorder
+git add crates/nvr-recorder/Cargo.toml crates/nvr-recorder/src Cargo.toml
+git commit -m "feat(nvr-recorder): scaffold crate and config"
 ```
 
 ---
@@ -239,16 +239,16 @@ git commit -m "feat(rtsp-recorder): scaffold crate and config"
 ### Task 2: Segment metadata (`info.rs`)
 
 **Files:**
-- Create: `crates/rtsp-recorder/src/info.rs`
-- Create: `crates/rtsp-recorder/src/info_test.rs`
-- Modify: `crates/rtsp-recorder/src/lib.rs`
+- Create: `crates/nvr-recorder/src/info.rs`
+- Create: `crates/nvr-recorder/src/info_test.rs`
+- Modify: `crates/nvr-recorder/src/lib.rs`
 
 **Interfaces:**
 - Produces: `VideoMeta{codec:String,width:u32,height:u32,fps:f32}`, `AudioMeta{codec:String,sample_rate:u32,channels:u32}`, `SegmentInfo{path:PathBuf,start_wall:DateTime<Utc>,end_wall:DateTime<Utc>,duration:f64,size_bytes:u64,video:Option<VideoMeta>,audio:Option<AudioMeta>}` (all `Serialize`); `pub(crate) fn codec_name(id: ffmpeg_next::codec::Id) -> String`.
 
 - [ ] **Step 1: Write `info.rs`**
 
-Create `crates/rtsp-recorder/src/info.rs`:
+Create `crates/nvr-recorder/src/info.rs`:
 
 ```rust
 use std::path::PathBuf;
@@ -300,7 +300,7 @@ mod info_test;
 
 - [ ] **Step 2: Export from `lib.rs`**
 
-In `crates/rtsp-recorder/src/lib.rs`, add below the `config` module lines:
+In `crates/nvr-recorder/src/lib.rs`, add below the `config` module lines:
 
 ```rust
 pub mod info;
@@ -310,7 +310,7 @@ pub use info::{AudioMeta, SegmentInfo, VideoMeta};
 
 - [ ] **Step 3: Write the failing test**
 
-Create `crates/rtsp-recorder/src/info_test.rs`:
+Create `crates/nvr-recorder/src/info_test.rs`:
 
 ```rust
 use chrono::DateTime;
@@ -350,15 +350,15 @@ fn segment_info_serializes_expected_shape() {
 
 - [ ] **Step 4: Run tests**
 
-Run: `LD_LIBRARY_PATH=$PWD/ffmpeg/lib cargo test -p rtsp-recorder`
+Run: `LD_LIBRARY_PATH=$PWD/ffmpeg/lib cargo test -p nvr-recorder`
 Expected: PASS (4 tests total now).
 
 - [ ] **Step 5: Format & commit**
 
 ```bash
-cargo fmt -p rtsp-recorder
-git add crates/rtsp-recorder/src
-git commit -m "feat(rtsp-recorder): SegmentInfo metadata and codec_name helper"
+cargo fmt -p nvr-recorder
+git add crates/nvr-recorder/src
+git commit -m "feat(nvr-recorder): SegmentInfo metadata and codec_name helper"
 ```
 
 ---
@@ -366,16 +366,16 @@ git commit -m "feat(rtsp-recorder): SegmentInfo metadata and codec_name helper"
 ### Task 3: Rotation logic (`rotation.rs`)
 
 **Files:**
-- Create: `crates/rtsp-recorder/src/rotation.rs`
-- Create: `crates/rtsp-recorder/src/rotation_test.rs`
-- Modify: `crates/rtsp-recorder/src/lib.rs`
+- Create: `crates/nvr-recorder/src/rotation.rs`
+- Create: `crates/nvr-recorder/src/rotation_test.rs`
+- Modify: `crates/nvr-recorder/src/lib.rs`
 
 **Interfaces:**
 - Produces: `pub fn next_boundary(start: DateTime<Utc>, period: Duration) -> DateTime<Utc>`; `pub fn is_split_point(has_video: bool, pkt_is_video: bool, pkt_is_key: bool) -> bool`; `pub fn should_rotate(align_to_wall_clock: bool, segment_time: Duration, segment_start_wall: DateTime<Utc>, now: DateTime<Utc>, elapsed_media: Duration) -> bool`.
 
 - [ ] **Step 1: Write `rotation.rs`**
 
-Create `crates/rtsp-recorder/src/rotation.rs`:
+Create `crates/nvr-recorder/src/rotation.rs`:
 
 ```rust
 use std::time::Duration;
@@ -424,7 +424,7 @@ mod rotation_test;
 
 - [ ] **Step 2: Export from `lib.rs`**
 
-Add to `crates/rtsp-recorder/src/lib.rs`:
+Add to `crates/nvr-recorder/src/lib.rs`:
 
 ```rust
 pub mod rotation;
@@ -432,7 +432,7 @@ pub mod rotation;
 
 - [ ] **Step 3: Write the failing tests**
 
-Create `crates/rtsp-recorder/src/rotation_test.rs`:
+Create `crates/nvr-recorder/src/rotation_test.rs`:
 
 ```rust
 use super::*;
@@ -482,15 +482,15 @@ fn rotate_on_wall_clock_boundary() {
 
 - [ ] **Step 4: Run tests**
 
-Run: `LD_LIBRARY_PATH=$PWD/ffmpeg/lib cargo test -p rtsp-recorder rotation`
+Run: `LD_LIBRARY_PATH=$PWD/ffmpeg/lib cargo test -p nvr-recorder rotation`
 Expected: PASS (6 rotation tests).
 
 - [ ] **Step 5: Format & commit**
 
 ```bash
-cargo fmt -p rtsp-recorder
-git add crates/rtsp-recorder/src
-git commit -m "feat(rtsp-recorder): pure rotation and wall-clock boundary logic"
+cargo fmt -p nvr-recorder
+git add crates/nvr-recorder/src
+git commit -m "feat(nvr-recorder): pure rotation and wall-clock boundary logic"
 ```
 
 ---
@@ -498,16 +498,16 @@ git commit -m "feat(rtsp-recorder): pure rotation and wall-clock boundary logic"
 ### Task 4: Timestamp/duration math (`segment.rs` pure functions)
 
 **Files:**
-- Create: `crates/rtsp-recorder/src/segment.rs`
-- Create: `crates/rtsp-recorder/src/segment_test.rs`
-- Modify: `crates/rtsp-recorder/src/lib.rs`
+- Create: `crates/nvr-recorder/src/segment.rs`
+- Create: `crates/nvr-recorder/src/segment_test.rs`
+- Modify: `crates/nvr-recorder/src/lib.rs`
 
 **Interfaces:**
 - Produces: `pub(crate) fn tb_to_us(ts: i64, tb_num: i32, tb_den: i32) -> i64`; `pub(crate) fn us_to_tb(us: i64, tb_num: i32, tb_den: i32) -> i64`; `pub(crate) fn duration_seconds(first_us: i64, last_us: i64) -> f64`.
 
 - [ ] **Step 1: Write `segment.rs` (pure functions only for now)**
 
-Create `crates/rtsp-recorder/src/segment.rs`:
+Create `crates/nvr-recorder/src/segment.rs`:
 
 ```rust
 //! One output file over an `AvOutput`, plus the pure timestamp math used to
@@ -541,7 +541,7 @@ mod segment_test;
 
 - [ ] **Step 2: Add the module to `lib.rs`**
 
-Add to `crates/rtsp-recorder/src/lib.rs`:
+Add to `crates/nvr-recorder/src/lib.rs`:
 
 ```rust
 mod segment;
@@ -549,7 +549,7 @@ mod segment;
 
 - [ ] **Step 3: Write the failing tests**
 
-Create `crates/rtsp-recorder/src/segment_test.rs`:
+Create `crates/nvr-recorder/src/segment_test.rs`:
 
 ```rust
 use super::*;
@@ -582,15 +582,15 @@ fn duration_seconds_basic_and_clamped() {
 
 - [ ] **Step 4: Run tests**
 
-Run: `LD_LIBRARY_PATH=$PWD/ffmpeg/lib cargo test -p rtsp-recorder segment`
+Run: `LD_LIBRARY_PATH=$PWD/ffmpeg/lib cargo test -p nvr-recorder segment`
 Expected: PASS (4 segment tests).
 
 - [ ] **Step 5: Format & commit**
 
 ```bash
-cargo fmt -p rtsp-recorder
-git add crates/rtsp-recorder/src
-git commit -m "feat(rtsp-recorder): per-segment timestamp and duration math"
+cargo fmt -p nvr-recorder
+git add crates/nvr-recorder/src
+git commit -m "feat(nvr-recorder): per-segment timestamp and duration math"
 ```
 
 ---
@@ -598,16 +598,16 @@ git commit -m "feat(rtsp-recorder): per-segment timestamp and duration math"
 ### Task 5: Engine helpers — stream selection & backoff (`recorder.rs` pure functions)
 
 **Files:**
-- Create: `crates/rtsp-recorder/src/recorder.rs`
-- Create: `crates/rtsp-recorder/src/recorder_test.rs`
-- Modify: `crates/rtsp-recorder/src/lib.rs`
+- Create: `crates/nvr-recorder/src/recorder.rs`
+- Create: `crates/nvr-recorder/src/recorder_test.rs`
+- Modify: `crates/nvr-recorder/src/lib.rs`
 
 **Interfaces:**
 - Produces: `pub(crate) enum MediaKind{Video,Audio,Other}`; `pub(crate) struct Selected{video:Option<usize>,audio:Option<usize>}`; `pub(crate) fn select_streams(streams: impl IntoIterator<Item=(usize,MediaKind)>, tracks: TrackSelect) -> anyhow::Result<Selected>`; `pub(crate) fn backoff_delay(attempt: u32, base: Duration, max: Duration) -> Duration`.
 
 - [ ] **Step 1: Write `recorder.rs` (helpers only for now)**
 
-Create `crates/rtsp-recorder/src/recorder.rs`:
+Create `crates/nvr-recorder/src/recorder.rs`:
 
 ```rust
 use std::time::Duration;
@@ -678,7 +678,7 @@ mod recorder_test;
 
 - [ ] **Step 2: Add the module to `lib.rs`**
 
-Add to `crates/rtsp-recorder/src/lib.rs`:
+Add to `crates/nvr-recorder/src/lib.rs`:
 
 ```rust
 pub mod recorder;
@@ -686,7 +686,7 @@ pub mod recorder;
 
 - [ ] **Step 3: Write the failing tests**
 
-Create `crates/rtsp-recorder/src/recorder_test.rs`:
+Create `crates/nvr-recorder/src/recorder_test.rs`:
 
 ```rust
 use super::*;
@@ -751,15 +751,15 @@ fn backoff_doubles_and_caps() {
 
 - [ ] **Step 4: Run tests**
 
-Run: `LD_LIBRARY_PATH=$PWD/ffmpeg/lib cargo test -p rtsp-recorder recorder`
+Run: `LD_LIBRARY_PATH=$PWD/ffmpeg/lib cargo test -p nvr-recorder recorder`
 Expected: PASS (5 recorder tests).
 
 - [ ] **Step 5: Format & commit**
 
 ```bash
-cargo fmt -p rtsp-recorder
-git add crates/rtsp-recorder/src
-git commit -m "feat(rtsp-recorder): stream selection and reconnect backoff"
+cargo fmt -p nvr-recorder
+git add crates/nvr-recorder/src
+git commit -m "feat(nvr-recorder): stream selection and reconnect backoff"
 ```
 
 ---
@@ -767,7 +767,7 @@ git commit -m "feat(rtsp-recorder): stream selection and reconnect backoff"
 ### Task 6: SegmentWriter (`segment.rs` — the `AvOutput` wrapper)
 
 **Files:**
-- Modify: `crates/rtsp-recorder/src/segment.rs`
+- Modify: `crates/nvr-recorder/src/segment.rs`
 
 **Interfaces:**
 - Consumes: `tb_to_us`, `us_to_tb`, `duration_seconds` (Task 4); `SegmentInfo`, `VideoMeta`, `AudioMeta`, `codec_name` (Task 2); `Container` (Task 1); `ffmpeg_bus::output::AvOutput`, `ffmpeg_bus::packet::RawPacket`, `ffmpeg_bus::stream::AvStream`.
@@ -777,7 +777,7 @@ git commit -m "feat(rtsp-recorder): stream selection and reconnect backoff"
 
 - [ ] **Step 1: Add imports and the struct to `segment.rs`**
 
-At the top of `crates/rtsp-recorder/src/segment.rs`, above the pure functions, add:
+At the top of `crates/nvr-recorder/src/segment.rs`, above the pure functions, add:
 
 ```rust
 use std::path::{Path, PathBuf};
@@ -917,15 +917,15 @@ impl SegmentWriter {
 
 - [ ] **Step 2: Verify the crate compiles and prior tests pass**
 
-Run: `LD_LIBRARY_PATH=$PWD/ffmpeg/lib cargo test -p rtsp-recorder`
+Run: `LD_LIBRARY_PATH=$PWD/ffmpeg/lib cargo test -p nvr-recorder`
 Expected: compiles; all 19 unit tests from Tasks 1–5 PASS. `SegmentWriter` has no new unit test (its mux path needs a real stream — validated in Task 9).
 
 - [ ] **Step 3: Format & commit**
 
 ```bash
-cargo fmt -p rtsp-recorder
-git add crates/rtsp-recorder/src
-git commit -m "feat(rtsp-recorder): SegmentWriter wrapping AvOutput with timestamp reset"
+cargo fmt -p nvr-recorder
+git add crates/nvr-recorder/src
+git commit -m "feat(nvr-recorder): SegmentWriter wrapping AvOutput with timestamp reset"
 ```
 
 ---
@@ -933,8 +933,8 @@ git commit -m "feat(rtsp-recorder): SegmentWriter wrapping AvOutput with timesta
 ### Task 7: Recorder engine loop (`recorder.rs`)
 
 **Files:**
-- Modify: `crates/rtsp-recorder/src/recorder.rs`
-- Modify: `crates/rtsp-recorder/src/lib.rs`
+- Modify: `crates/nvr-recorder/src/recorder.rs`
+- Modify: `crates/nvr-recorder/src/lib.rs`
 
 **Interfaces:**
 - Consumes: `RecorderConfig`, `RtspTransport`, `TrackSelect` (Task 1); `SegmentInfo` (Task 2); `is_split_point`, `should_rotate` (Task 3); `SegmentWriter`, `tb_to_us` (Tasks 4/6); `select_streams`, `backoff_delay`, `MediaKind` (Task 5); `ffmpeg_bus::input::{AvInput,AvInputTask}`, `ffmpeg_bus::packet::{RawPacket,RawPacketCmd}`, `ffmpeg_bus::stream::AvStream`.
@@ -944,7 +944,7 @@ git commit -m "feat(rtsp-recorder): SegmentWriter wrapping AvOutput with timesta
 
 - [ ] **Step 1: Add engine imports at the top of `recorder.rs`**
 
-Add these imports above the existing `use` lines in `crates/rtsp-recorder/src/recorder.rs`:
+Add these imports above the existing `use` lines in `crates/nvr-recorder/src/recorder.rs`:
 
 ```rust
 use chrono::{DateTime, Utc};
@@ -963,7 +963,7 @@ use crate::segment::{SegmentWriter, tb_to_us};
 
 - [ ] **Step 2: Append the `Recorder` implementation to `recorder.rs`**
 
-Add below the helper functions (above the `#[cfg(test)]` line) in `crates/rtsp-recorder/src/recorder.rs`:
+Add below the helper functions (above the `#[cfg(test)]` line) in `crates/nvr-recorder/src/recorder.rs`:
 
 ```rust
 /// The timestamp origin for a packet: its DTS (fallback PTS) in microseconds.
@@ -1001,7 +1001,7 @@ impl Recorder {
             match self.record_once(&cancel).await {
                 Ok(()) => return Ok(()), // cancelled cleanly inside the session
                 Err(e) => {
-                    log::warn!("rtsp-recorder session ended: {e:#}");
+                    log::warn!("nvr-recorder session ended: {e:#}");
                     match self.config.reconnect.max_retries {
                         Some(0) => return Ok(()),
                         Some(n) if attempt >= n => return Ok(()),
@@ -1178,7 +1178,7 @@ impl Recorder {
 
 - [ ] **Step 3: Export `Recorder` from `lib.rs`**
 
-Add to `crates/rtsp-recorder/src/lib.rs`:
+Add to `crates/nvr-recorder/src/lib.rs`:
 
 ```rust
 pub use recorder::Recorder;
@@ -1186,7 +1186,7 @@ pub use recorder::Recorder;
 
 - [ ] **Step 4: Add the filename-formatting test**
 
-Append to `crates/rtsp-recorder/src/recorder_test.rs`:
+Append to `crates/nvr-recorder/src/recorder_test.rs`:
 
 ```rust
 #[test]
@@ -1200,15 +1200,15 @@ fn segment_filename_uses_strftime() {
 
 - [ ] **Step 5: Verify the crate compiles and tests pass**
 
-Run: `LD_LIBRARY_PATH=$PWD/ffmpeg/lib cargo test -p rtsp-recorder`
+Run: `LD_LIBRARY_PATH=$PWD/ffmpeg/lib cargo test -p nvr-recorder`
 Expected: compiles; all 20 unit tests PASS (the new filename test plus the 19 from Tasks 1–5). Loop runtime is exercised in Task 9.
 
 - [ ] **Step 6: Format & commit**
 
 ```bash
-cargo fmt -p rtsp-recorder
-git add crates/rtsp-recorder/src
-git commit -m "feat(rtsp-recorder): recorder engine loop with rotation and reconnect"
+cargo fmt -p nvr-recorder
+git add crates/nvr-recorder/src
+git commit -m "feat(nvr-recorder): recorder engine loop with rotation and reconnect"
 ```
 
 ---
@@ -1216,14 +1216,14 @@ git commit -m "feat(rtsp-recorder): recorder engine loop with rotation and recon
 ### Task 8: Example CLI (`examples/record.rs`)
 
 **Files:**
-- Create: `crates/rtsp-recorder/examples/record.rs`
+- Create: `crates/nvr-recorder/examples/record.rs`
 
 **Interfaces:**
 - Consumes: `RecorderConfig`, `Recorder`, `SegmentInfo`, `Container`, `TrackSelect`, `RtspTransport` from the crate; `clap`, `env_logger`, `tokio`, `serde_json`.
 
 - [ ] **Step 1: Write the example**
 
-Create `crates/rtsp-recorder/examples/record.rs`:
+Create `crates/nvr-recorder/examples/record.rs`:
 
 ```rust
 use std::io::Write;
@@ -1231,7 +1231,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Parser;
-use rtsp_recorder::{Container, Recorder, RecorderConfig, RtspTransport, TrackSelect};
+use nvr_recorder::{Container, Recorder, RecorderConfig, RtspTransport, TrackSelect};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Parser)]
@@ -1329,15 +1329,15 @@ async fn main() -> anyhow::Result<()> {
 
 - [ ] **Step 2: Verify the example builds**
 
-Run: `LD_LIBRARY_PATH=$PWD/ffmpeg/lib cargo build -p rtsp-recorder --example record`
+Run: `LD_LIBRARY_PATH=$PWD/ffmpeg/lib cargo build -p nvr-recorder --example record`
 Expected: builds with no errors.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cargo fmt -p rtsp-recorder
-git add crates/rtsp-recorder/examples
-git commit -m "feat(rtsp-recorder): example CLI writing a jsonl manifest"
+cargo fmt -p nvr-recorder
+git add crates/nvr-recorder/examples
+git commit -m "feat(nvr-recorder): example CLI writing a jsonl manifest"
 ```
 
 ---
@@ -1345,7 +1345,7 @@ git commit -m "feat(rtsp-recorder): example CLI writing a jsonl manifest"
 ### Task 9: Smoke test against `dummy-rtsp-camera`
 
 **Files:**
-- Create: `crates/rtsp-recorder/tests/smoke.rs`
+- Create: `crates/nvr-recorder/tests/smoke.rs`
 
 **Interfaces:**
 - Consumes: the whole public crate API + the repo's `examples/dummy-rtsp-camera` RTSP fixture.
@@ -1354,12 +1354,12 @@ git commit -m "feat(rtsp-recorder): example CLI writing a jsonl manifest"
 
 - [ ] **Step 1: Write the ignored integration test**
 
-Create `crates/rtsp-recorder/tests/smoke.rs`:
+Create `crates/nvr-recorder/tests/smoke.rs`:
 
 ```rust
 use std::time::Duration;
 
-use rtsp_recorder::{Container, Recorder, RecorderConfig, TrackSelect};
+use nvr_recorder::{Container, Recorder, RecorderConfig, TrackSelect};
 use tokio_util::sync::CancellationToken;
 
 /// Record a real RTSP source for ~12s at 4s segments and assert we produced
@@ -1368,7 +1368,7 @@ use tokio_util::sync::CancellationToken;
 /// Run with, e.g.:
 ///   RTSP_TEST_URL=rtsp://127.0.0.1:8554/stream \
 ///   LD_LIBRARY_PATH=$PWD/ffmpeg/lib \
-///   cargo test -p rtsp-recorder --test smoke -- --ignored --nocapture
+///   cargo test -p nvr-recorder --test smoke -- --ignored --nocapture
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn records_segments_from_live_rtsp() {
@@ -1378,7 +1378,7 @@ async fn records_segments_from_live_rtsp() {
     };
     ffmpeg_bus::init().unwrap();
 
-    let dir = std::env::temp_dir().join("rtsp-recorder-smoke");
+    let dir = std::env::temp_dir().join("nvr-recorder-smoke");
     let _ = std::fs::remove_dir_all(&dir);
 
     let mut config = RecorderConfig::new(url, &dir);
@@ -1429,7 +1429,7 @@ async fn records_segments_from_live_rtsp() {
 
 - [ ] **Step 2: Confirm it compiles and is skipped by default**
 
-Run: `LD_LIBRARY_PATH=$PWD/ffmpeg/lib cargo test -p rtsp-recorder`
+Run: `LD_LIBRARY_PATH=$PWD/ffmpeg/lib cargo test -p nvr-recorder`
 Expected: builds; the smoke test is listed as `ignored`, all unit tests PASS.
 
 - [ ] **Step 3: Run the real smoke test manually**
@@ -1447,18 +1447,18 @@ In another terminal, run the ignored test against it:
 ```bash
 RTSP_TEST_URL=rtsp://127.0.0.1:8554/<path> \
 LD_LIBRARY_PATH=$PWD/ffmpeg/lib \
-cargo test -p rtsp-recorder --test smoke -- --ignored --nocapture
+cargo test -p nvr-recorder --test smoke -- --ignored --nocapture
 ```
 
-Expected: PASS — ≥2 segment files under `${TMPDIR}/rtsp-recorder-smoke`, each non-empty, monotonic start times. Optionally probe one:
+Expected: PASS — ≥2 segment files under `${TMPDIR}/nvr-recorder-smoke`, each non-empty, monotonic start times. Optionally probe one:
 `LD_LIBRARY_PATH=$PWD/ffmpeg/lib ./ffmpeg/bin/ffprobe -v error -show_format <file>.ts` returns a valid duration.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cargo fmt -p rtsp-recorder
-git add crates/rtsp-recorder/tests
-git commit -m "test(rtsp-recorder): ignored smoke test against a live RTSP source"
+cargo fmt -p nvr-recorder
+git add crates/nvr-recorder/tests
+git commit -m "test(nvr-recorder): ignored smoke test against a live RTSP source"
 ```
 
 ---
