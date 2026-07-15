@@ -202,9 +202,13 @@ The library writes no manifest itself — manifest/DB policy stays in the caller
 
 - Selected-but-absent track (e.g. `Video` requested, source audio-only) → hard
   error before recording starts.
-- Output open / write errors on a segment → error out of `run` (surfaced to the
-  caller); a partial TS file remains playable.
-- RTSP open failure at startup is subject to the same reconnect policy as EOF.
+- Output open / write errors on a segment end the current session (a partial
+  TS file remains playable) and are retried under `ReconnectPolicy`, the same
+  path as RTSP open failure, EOF, and a lagged/closed input channel.
+- Caveat: with the default `max_retries: None`, a permanent error (e.g. an
+  unwritable `output_dir` or a source codec with no registered encoder) retries
+  indefinitely; a caller that wants fail-fast behavior should set a finite
+  `max_retries` (or `Some(0)`).
 
 ## Testing
 

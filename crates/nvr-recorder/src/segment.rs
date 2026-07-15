@@ -30,6 +30,10 @@ impl SegmentWriter {
     /// Open a new output file and register the selected streams (stream-copy).
     /// `base_us` is the common timestamp origin for this segment; `start_wall`
     /// is its wall-clock start (also the source of the filename).
+    ///
+    /// Note: although this is a stream-copy, `AvOutput::add_stream` requires an
+    /// encoder to be registered for each stream's codec id in the current FFmpeg
+    /// build; a codec with no encoder fails here (before any packet is written).
     pub(crate) fn open(
         path: PathBuf,
         container: Container,
