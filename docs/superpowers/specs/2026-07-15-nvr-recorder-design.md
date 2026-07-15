@@ -1,4 +1,4 @@
-# RTSP segment recorder crate (`rtsp-recorder`)
+# RTSP segment recorder crate (`nvr-recorder`)
 
 Date: 2026-07-15
 Status: approved (library + example; configurable tracks; fixed-duration +
@@ -37,11 +37,11 @@ beyond in-place PTS/DTS offsetting via `RawPacket::get_mut()`.
 
 ## Crate layout
 
-New workspace member `crates/rtsp-recorder` (added to root `Cargo.toml`
+New workspace member `crates/nvr-recorder` (added to root `Cargo.toml`
 `members`).
 
 ```
-crates/rtsp-recorder/
+crates/nvr-recorder/
   Cargo.toml            # ffmpeg-bus, tokio, tokio-util, anyhow, chrono, log, serde
   src/
     lib.rs              # re-exports: RecorderConfig, Recorder, SegmentInfo, enums
