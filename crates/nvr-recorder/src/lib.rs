@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod info;
+pub mod recorder;
 pub mod rotation;
 mod segment;
 
