@@ -8,3 +8,4 @@ mod segment;
 
 pub use config::{Container, ReconnectPolicy, RecorderConfig, RtspTransport, TrackSelect};
 pub use info::{AudioMeta, SegmentInfo, VideoMeta};
+pub use recorder::Recorder;

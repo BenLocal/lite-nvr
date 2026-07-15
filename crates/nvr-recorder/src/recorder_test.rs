@@ -56,3 +56,11 @@ fn backoff_doubles_and_caps() {
     assert_eq!(backoff_delay(4, base, max), Duration::from_secs(16));
     assert_eq!(backoff_delay(100, base, max), Duration::from_secs(16));
 }
+
+#[test]
+fn segment_filename_uses_strftime() {
+    // epoch 1_700_000_000 == 2023-11-14T22:13:20Z
+    let dt = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+    let name = segment_filename("rec_%Y%m%d_%H%M%S", "ts", dt);
+    assert_eq!(name, "rec_20231114_221320.ts");
+}
