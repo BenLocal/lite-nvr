@@ -1,7 +1,7 @@
 //! One output file over an `AvOutput`, plus the pure timestamp math used to
 //! reset each segment to a ~0 origin (emulating ffmpeg `-reset_timestamps 1`).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use ffmpeg_bus::output::AvOutput;
@@ -80,10 +80,6 @@ impl SegmentWriter {
 
     pub(crate) fn start_wall(&self) -> DateTime<Utc> {
         self.start_wall
-    }
-
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
     }
 
     /// Offset the packet to this segment's origin, then mux it (stream-copy).
