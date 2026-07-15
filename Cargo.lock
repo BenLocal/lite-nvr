@@ -2702,6 +2702,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvr-recorder"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "env_logger",
+ "ffmpeg-bus",
+ "ffmpeg-next",
+ "log",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "nvr-switcher"
 version = "0.1.0"
 dependencies = [
