@@ -2764,6 +2764,7 @@ dependencies = [
  "nvr-compositor",
  "nvr-dashboard",
  "nvr-db",
+ "nvr-onvif",
  "nvr-switcher",
  "nvr-yt-dlp",
  "pavao",
