@@ -33,8 +33,11 @@ fn client_at(url: &str, cfg: &OnvifConfig) -> Result<Client, OnvifError> {
         .build())
 }
 
-fn proto(e: impl std::fmt::Debug) -> OnvifError {
-    OnvifError::Protocol(format!("{e:?}"))
+fn map_soap(e: schema::transport::Error) -> OnvifError {
+    match e {
+        schema::transport::Error::Authorization(_) => OnvifError::Auth,
+        other => OnvifError::Protocol(format!("{other:?}")),
+    }
 }
 
 impl OnvifCamera {
@@ -44,7 +47,7 @@ impl OnvifCamera {
         // Resolve media/ptz service addresses from GetCapabilities.
         let caps = schema::devicemgmt::get_capabilities(&devicemgmt, &Default::default())
             .await
-            .map_err(proto)?;
+            .map_err(map_soap)?;
         let media_addr = caps
             .capabilities
             .media
@@ -62,7 +65,7 @@ impl OnvifCamera {
         // First profile token = default.
         let profiles = schema::media::get_profiles(&media, &Default::default())
             .await
-            .map_err(proto)?;
+            .map_err(map_soap)?;
         let default_profile = profiles
             .profiles
             .first()
@@ -80,7 +83,7 @@ impl OnvifCamera {
     pub async fn device_info(&self) -> Result<DeviceInfo, OnvifError> {
         let i = schema::devicemgmt::get_device_information(&self.devicemgmt, &Default::default())
             .await
-            .map_err(proto)?;
+            .map_err(map_soap)?;
         Ok(DeviceInfo {
             manufacturer: i.manufacturer,
             model: i.model,
@@ -92,7 +95,7 @@ impl OnvifCamera {
     pub async fn profiles(&self) -> Result<Vec<Profile>, OnvifError> {
         let resp = schema::media::get_profiles(&self.media, &Default::default())
             .await
-            .map_err(proto)?;
+            .map_err(map_soap)?;
         Ok(resp
             .profiles
             .iter()
@@ -134,7 +137,7 @@ impl OnvifCamera {
         };
         let resp = schema::media::get_stream_uri(&self.media, &req)
             .await
-            .map_err(proto)?;
+            .map_err(map_soap)?;
         Ok(resp.media_uri.uri)
     }
 
@@ -157,7 +160,7 @@ impl OnvifCamera {
         };
         schema::ptz::continuous_move(ptz, &req)
             .await
-            .map_err(proto)?;
+            .map_err(map_soap)?;
         Ok(())
     }
 
@@ -168,7 +171,7 @@ impl OnvifCamera {
             pan_tilt: Some(true),
             zoom: Some(true),
         };
-        schema::ptz::stop(ptz, &req).await.map_err(proto)?;
+        schema::ptz::stop(ptz, &req).await.map_err(map_soap)?;
         Ok(())
     }
 
@@ -177,7 +180,9 @@ impl OnvifCamera {
         let req = schema::ptz::GetPresets {
             profile_token: onvif_xsd::ReferenceToken(self.default_profile.clone()),
         };
-        let resp = schema::ptz::get_presets(ptz, &req).await.map_err(proto)?;
+        let resp = schema::ptz::get_presets(ptz, &req)
+            .await
+            .map_err(map_soap)?;
         Ok(resp
             .preset
             .iter()
@@ -197,7 +202,9 @@ impl OnvifCamera {
             preset_token: onvif_xsd::ReferenceToken(token.to_string()),
             speed: None,
         };
-        schema::ptz::goto_preset(ptz, &req).await.map_err(proto)?;
+        schema::ptz::goto_preset(ptz, &req)
+            .await
+            .map_err(map_soap)?;
         Ok(())
     }
 }

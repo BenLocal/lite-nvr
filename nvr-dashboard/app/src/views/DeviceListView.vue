@@ -667,6 +667,19 @@ function inputValueDisplay(device: DeviceItem) {
       return device.input_value;
     }
   }
+  if (device.input_type === "onvif") {
+    try {
+      const cfg = JSON.parse(device.input_value) as {
+        host?: string;
+        port?: number;
+        profile_token?: string;
+      };
+      const addr = cfg.host ? `${cfg.host}:${cfg.port ?? 80}` : "ONVIF";
+      return cfg.profile_token ? `${addr} (${cfg.profile_token})` : addr;
+    } catch {
+      return "ONVIF 摄像头";
+    }
+  }
   if (device.input_type !== "xiaomi") {
     return device.input_value;
   }
