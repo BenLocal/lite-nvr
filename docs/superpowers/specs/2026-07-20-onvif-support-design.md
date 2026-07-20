@@ -2,7 +2,7 @@
 
 Date: 2026-07-20
 Status: approved (full scope: WS-Discovery + RTSP ingestion + PTZ; base
-library lumeohq/onvif-rs git-pinned; leaf crate `crates/onvif` + `nvr/src/onvif`
+library lumeohq/onvif-rs git-pinned; leaf crate `crates/nvr-onvif` + `nvr/src/onvif`
 integration; RTSP resolved on connect via a supervisor, config stored on the
 device)
 
@@ -31,13 +31,13 @@ exactly the NVR's role.
 
 Two units, mirroring the `crates/gb28181` + `nvr/src/gb` split:
 
-1. **`crates/onvif`** — a thin, testable client wrapper. No nvr/ffmpeg/zlm types.
+1. **`crates/nvr-onvif`** — a thin, testable client wrapper. No nvr/ffmpeg/zlm types.
 2. **`nvr/src/onvif/`** — REST surface, device registry, and the ingestion
    supervisor that wires the crate into the existing device/ZLM pipeline.
 
 Plus frontend additions in `nvr-dashboard`.
 
-### `crates/onvif` public API
+### `crates/nvr-onvif` public API
 
 ```rust
 /// Connection config for one ONVIF camera. Serde — this is exactly what an
@@ -184,13 +184,13 @@ dashboard → `/api/onvif/ptz` → registry lookup → `OnvifCamera` ContinuousM
 
 ## Testing
 
-- **`crates/onvif` unit tests (no network):**
+- **`crates/nvr-onvif` unit tests (no network):**
   - WS-Discovery `ProbeMatches` XML → `Discovered` parsing.
   - `GetProfiles` response → `Profile` mapping (token/resolution/codec/fps).
   - PTZ verb + speed → `PtzVelocity` mapping (and `stop`/`preset_call` dispatch),
     with velocity clamped to -1.0..=1.0.
   - `OnvifConfig` serde round-trip.
-- **`crates/onvif` ignored integration test:** `#[ignore]`, reads
+- **`crates/nvr-onvif` ignored integration test:** `#[ignore]`, reads
   `ONVIF_TEST_HOST`/`ONVIF_TEST_USER`/`ONVIF_TEST_PASS`; skips if unset. Against
   a real camera or an ONVIF simulator (e.g. ONVIF Device Manager / happytimesoft
   simulator): `connect` → `device_info` → `profiles` → `stream_uri` → a PTZ
