@@ -4,6 +4,8 @@ mod auth;
 
 mod responses;
 
+mod soap;
+
 use clap::Parser;
 
 fn main() -> anyhow::Result<()> {
