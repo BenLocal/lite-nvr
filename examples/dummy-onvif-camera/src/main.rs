@@ -6,6 +6,8 @@ mod responses;
 
 mod soap;
 
+mod discovery;
+
 use clap::Parser;
 
 fn main() -> anyhow::Result<()> {
