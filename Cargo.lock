@@ -69,6 +69,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
+name = "analytics"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/onvif-rs#8f1490e2ce5e2ddd29dbd3ab2586d7a90da0b6d6"
+dependencies = [
+ "common",
+ "onvif-xsd",
+ "transport",
+ "validate",
+ "xml-rs",
+ "xsd-macro-utils",
+ "xsd-types",
+ "yaserde",
+ "yaserde_derive",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -186,6 +202,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bfdc70193dadb9d7287fa4b633f15f90c876915b31f6af17da307fc59c9859a8"
 
 [[package]]
+name = "async-recursion"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7d78656ba01f1b93024b7c3a0467f1608e4be67d725749fdcd7d2c7678fd7a2"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -193,7 +220,7 @@ checksum = "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -237,7 +264,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b52af3cb4058c895d37317bb27508dccc8e5f2d39454016b297bf4a400597b8"
 dependencies = [
  "axum-core",
- "base64",
+ "base64 0.22.1",
  "bytes",
  "form_urlencoded",
  "futures-util",
@@ -256,7 +283,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "serde_urlencoded",
- "sha1",
+ "sha1 0.10.6",
  "sync_wrapper",
  "tokio",
  "tokio-tungstenite 0.28.0",
@@ -286,6 +313,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "b_2"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/onvif-rs#8f1490e2ce5e2ddd29dbd3ab2586d7a90da0b6d6"
+dependencies = [
+ "t_1",
+ "validate",
+ "ws_addr",
+ "xml-rs",
+ "xsd-macro-utils",
+ "xsd-types",
+ "yaserde",
+ "yaserde_derive",
+]
+
+[[package]]
+name = "base64"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
+
+[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -296,6 +344,17 @@ name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
+
+[[package]]
+name = "bigdecimal"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6773ddc0eafc0e509fb60e48dff7f450f8e674a0686ae8605e8d9901bd5eefa"
+dependencies = [
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+]
 
 [[package]]
 name = "bigdecimal"
@@ -329,7 +388,7 @@ dependencies = [
  "regex",
  "rustc-hash 1.1.0",
  "shlex 1.3.0",
- "syn",
+ "syn 2.0.117",
  "which 4.4.2",
 ]
 
@@ -350,7 +409,7 @@ dependencies = [
  "regex",
  "rustc-hash 2.1.1",
  "shlex 1.3.0",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -372,7 +431,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6cbbb8f56245b5a479b30a62cdc86d26e2f35c2b9f594bc4671654b03851380"
 dependencies = [
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -445,7 +504,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rustversion",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -480,7 +539,7 @@ checksum = "f9abbd1bc6865053c427f7198e6af43bfdedc55ab791faed4fbd361d789575ff"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -661,10 +720,10 @@ version = "4.5.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a92793da1a46a5f2a02a6f4c46c6496b28c43638adea8306fcb0caa1634f24e5"
 dependencies = [
- "heck",
+ "heck 0.5.0",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -696,6 +755,19 @@ checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
 dependencies = [
  "bytes",
  "memchr",
+]
+
+[[package]]
+name = "common"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/onvif-rs#8f1490e2ce5e2ddd29dbd3ab2586d7a90da0b6d6"
+dependencies = [
+ "validate",
+ "xml-rs",
+ "xsd-macro-utils",
+ "xsd-types",
+ "yaserde",
+ "yaserde_derive",
 ]
 
 [[package]]
@@ -883,7 +955,7 @@ checksum = "f46882e17999c6cc590af592290432be3bce0428cb0d5f8b6715e4dc7b383eb3"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -906,7 +978,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "strsim",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -917,7 +989,7 @@ checksum = "ac3984ec7bd6cfa798e62b4a642426a5be0e68f9401cfc2a01e3fa9ea2fcdb8d"
 dependencies = [
  "darling_core",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -963,7 +1035,23 @@ checksum = "1e567bd82dcff979e4b03460c307b3cdc9e96fde3d73bed1496d2bc75d9dd62a"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "devicemgmt"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/onvif-rs#8f1490e2ce5e2ddd29dbd3ab2586d7a90da0b6d6"
+dependencies = [
+ "common",
+ "onvif-xsd",
+ "transport",
+ "validate",
+ "xml-rs",
+ "xsd-macro-utils",
+ "xsd-types",
+ "yaserde",
+ "yaserde_derive",
 ]
 
 [[package]]
@@ -989,6 +1077,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "digest_auth"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3054f4e81d395e50822796c5e99ca522e6ba7be98947d6d4b0e5e61640bdb894"
+dependencies = [
+ "digest 0.10.7",
+ "hex",
+ "md-5 0.10.6",
+ "rand 0.8.6",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "displaydoc"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -996,7 +1097,7 @@ checksum = "97369cbbc041bc366949bc74d34658d6cda5621039731c6310521892a3a20ae0"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -1075,7 +1176,7 @@ version = "0.17.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "411a8df7da5a9d80d6b1b75bb42a31bd2119c8e3927265536ed5c22fc6911058"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bytes",
  "engineioxide-core",
  "futures-core",
@@ -1103,7 +1204,7 @@ version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a68868b34254632364403d72a823927096ef5a1241bd039b544e5e1fa675e49e"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bytes",
  "rand 0.10.1",
  "serde",
@@ -1115,10 +1216,10 @@ version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1e6a265c649f3f5979b601d26f1d05ada116434c87741c9493cb56218f76cbc"
 dependencies = [
- "heck",
+ "heck 0.5.0",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -1169,6 +1270,23 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "event"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/onvif-rs#8f1490e2ce5e2ddd29dbd3ab2586d7a90da0b6d6"
+dependencies = [
+ "b_2",
+ "t_1",
+ "transport",
+ "validate",
+ "ws_addr",
+ "xml-rs",
+ "xsd-macro-utils",
+ "xsd-types",
+ "yaserde",
+ "yaserde_derive",
 ]
 
 [[package]]
@@ -1385,7 +1503,7 @@ checksum = "e835b70203e41293343137df5c0664546da5745f82ec9b84d40be8336958447b"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -1549,7 +1667,7 @@ dependencies = [
  "proc-macro-error2",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -1614,6 +1732,15 @@ dependencies = [
  "allocator-api2",
  "equivalent",
  "foldhash",
+]
+
+[[package]]
+name = "heck"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d621efb26863f0e9924c6ac577e8275e5e6b77455db64ffa6c65c904e9e132c"
+dependencies = [
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -1799,7 +1926,7 @@ version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bytes",
  "futures-channel",
  "futures-util",
@@ -2078,7 +2205,7 @@ checksum = "a17c2b211d863c7fde02cbea8a3c1a439b98e109286554f2860bdded7ff83818"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -2143,7 +2270,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "regex",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -2213,7 +2340,7 @@ checksum = "32d59e20403c7d08fe62b4376edfe5c7fb2ef1e6b1465379686d0f21c8df444b"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -2352,6 +2479,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "media"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/onvif-rs#8f1490e2ce5e2ddd29dbd3ab2586d7a90da0b6d6"
+dependencies = [
+ "common",
+ "onvif-xsd",
+ "transport",
+ "validate",
+ "xml-rs",
+ "xsd-macro-utils",
+ "xsd-types",
+ "yaserde",
+ "yaserde_derive",
+]
+
+[[package]]
 name = "media-pipe-core"
 version = "0.1.0"
 dependencies = [
@@ -2420,7 +2563,7 @@ checksum = "db5b29714e950dbb20d5e6f74f9dcec4edbcc1067bb7f8ed198c097b8c1a818b"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -2518,6 +2661,12 @@ dependencies = [
  "memchr",
  "minimal-lexical",
 ]
+
+[[package]]
+name = "nonzero_ext"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38bf9645c8b145698bb0b18a4637dcacbc421ea49bef2317e4fd8065a387cf21"
 
 [[package]]
 name = "ntapi"
@@ -2618,7 +2767,7 @@ dependencies = [
  "nvr-switcher",
  "nvr-yt-dlp",
  "pavao",
- "reqwest",
+ "reqwest 0.13.2",
  "rszlm",
  "serde",
  "serde_json",
@@ -2702,6 +2851,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvr-onvif"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "onvif",
+ "schema",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "nvr-recorder"
 version = "0.1.0"
 dependencies = [
@@ -2764,6 +2927,57 @@ name = "oneshot"
 version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "269bca4c2591a28585d6bf10d9ed0332b7d76900a1b02bec41bdc3a2cdcda107"
+
+[[package]]
+name = "onvif"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/onvif-rs#8f1490e2ce5e2ddd29dbd3ab2586d7a90da0b6d6"
+dependencies = [
+ "async-recursion",
+ "async-trait",
+ "base64 0.13.1",
+ "bigdecimal 0.3.1",
+ "chrono",
+ "digest_auth",
+ "futures",
+ "futures-core",
+ "futures-util",
+ "nonzero_ext",
+ "num-bigint",
+ "reqwest 0.12.28",
+ "schema",
+ "sha1 0.6.1",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "url",
+ "uuid",
+ "xml-rs",
+ "xmltree",
+ "xsd-macro-utils",
+ "xsd-types",
+ "yaserde",
+ "yaserde_derive",
+]
+
+[[package]]
+name = "onvif-xsd"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/onvif-rs#8f1490e2ce5e2ddd29dbd3ab2586d7a90da0b6d6"
+dependencies = [
+ "b_2",
+ "common",
+ "soap_envelope",
+ "validate",
+ "xml-rs",
+ "xmlmime",
+ "xop",
+ "xsd-macro-utils",
+ "xsd-types",
+ "yaserde",
+ "yaserde_derive",
+]
 
 [[package]]
 name = "opaque-debug"
@@ -2862,7 +3076,7 @@ dependencies = [
  "regex",
  "regex-syntax 0.7.5",
  "structmeta",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -2996,7 +3210,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
 dependencies = [
  "proc-macro2",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -3018,7 +3232,7 @@ dependencies = [
  "proc-macro-error-attr2",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -3050,7 +3264,23 @@ dependencies = [
  "itertools 0.14.0",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "ptz"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/onvif-rs#8f1490e2ce5e2ddd29dbd3ab2586d7a90da0b6d6"
+dependencies = [
+ "common",
+ "onvif-xsd",
+ "transport",
+ "validate",
+ "xml-rs",
+ "xsd-macro-utils",
+ "xsd-types",
+ "yaserde",
+ "yaserde_derive",
 ]
 
 [[package]]
@@ -3306,11 +3536,43 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "reqwest"
+version = "0.12.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "futures-core",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "js-sys",
+ "log",
+ "percent-encoding",
+ "pin-project-lite",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sync_wrapper",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tower-service",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "reqwest"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab3f43e3283ab1488b624b44b0e988d0acea0b3214e694730a055cb6b2efa801"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bytes",
  "encoding_rs",
  "futures-channel",
@@ -3383,7 +3645,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "104b6552d5e6281496f21272dc8c218fa457abb3d367f7a7ded43431c4f32ef3"
 dependencies = [
  "async-trait",
- "base64",
+ "base64 0.22.1",
  "bytes",
  "clap",
  "dashmap",
@@ -3453,7 +3715,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rust-embed-utils",
- "syn",
+ "syn 2.0.117",
  "walkdir",
 ]
 
@@ -3661,6 +3923,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "schema"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/onvif-rs#8f1490e2ce5e2ddd29dbd3ab2586d7a90da0b6d6"
+dependencies = [
+ "analytics",
+ "b_2",
+ "bigdecimal 0.3.1",
+ "chrono",
+ "common",
+ "devicemgmt",
+ "event",
+ "media",
+ "num-bigint",
+ "onvif-xsd",
+ "percent-encoding",
+ "ptz",
+ "soap_envelope",
+ "t_1",
+ "transport",
+ "types",
+ "url",
+ "validate",
+ "ws_addr",
+ "ws_discovery",
+ "xml-rs",
+ "xml_xsd",
+ "xmlmime",
+ "xop",
+ "xsd-macro-utils",
+ "xsd-types",
+]
+
+[[package]]
 name = "scoped-tls"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3728,7 +4023,7 @@ checksum = "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -3765,6 +4060,15 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
+]
+
+[[package]]
+name = "sha1"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1da05c97445caa12d05e848c4a4fcbbea29e748ac28f7e80e9b010392063770"
+dependencies = [
+ "sha1_smol",
 ]
 
 [[package]]
@@ -3925,6 +4229,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "soap_envelope"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/onvif-rs#8f1490e2ce5e2ddd29dbd3ab2586d7a90da0b6d6"
+dependencies = [
+ "validate",
+ "xml-rs",
+ "xsd-macro-utils",
+ "xsd-types",
+ "yaserde",
+ "yaserde_derive",
+]
+
+[[package]]
 name = "socket2"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4013,7 +4330,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "structmeta-derive",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -4024,7 +4341,7 @@ checksum = "a60bcaff7397072dca0017d1db428e30d5002e00b6847703e2e42005c95fbe00"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -4042,11 +4359,11 @@ version = "0.26.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4c6bee85a5a24955dc440386795aa378cd9cf82acd5f764469152d2270e581be"
 dependencies = [
- "heck",
+ "heck 0.5.0",
  "proc-macro2",
  "quote",
  "rustversion",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -4066,6 +4383,17 @@ dependencies = [
  "lazy-regex",
  "log",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "syn"
+version = "1.0.109"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-ident",
 ]
 
 [[package]]
@@ -4096,7 +4424,7 @@ checksum = "728a70f3dbaf5bab7f0c4b1ac8d7ae5ea60a4b5549c8a5914361c99147a709d2"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -4135,6 +4463,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "t_1"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/onvif-rs#8f1490e2ce5e2ddd29dbd3ab2586d7a90da0b6d6"
+dependencies = [
+ "validate",
+ "xml-rs",
+ "xsd-macro-utils",
+ "xsd-types",
+ "yaserde",
+ "yaserde_derive",
+]
+
+[[package]]
 name = "tagptr"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4148,7 +4489,7 @@ checksum = "edde6a10743fff00a4e1a8c9ef020bf5f3cbad301b7d2d39f2b07f123c4eac07"
 dependencies = [
  "aho-corasick",
  "arc-swap",
- "base64",
+ "base64 0.22.1",
  "bitpacking",
  "bon",
  "byteorder",
@@ -4344,7 +4685,7 @@ checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -4355,7 +4696,7 @@ checksum = "ebc4ee7f67670e9b64d05fa4253e753e016c6c95ff35b89b7941d6b856dec1d5"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -4459,7 +4800,7 @@ checksum = "385a6cb71ab9ab790c5fe8d67f1645e6c450a7ce006a33de03daa956cf70a496"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -4603,7 +4944,7 @@ checksum = "7490cfa5ec963746568740651ac6781f701c9c5ea257c58e057f3ba8cf69e8da"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -4647,6 +4988,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "transport"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/onvif-rs#8f1490e2ce5e2ddd29dbd3ab2586d7a90da0b6d6"
+dependencies = [
+ "async-trait",
+ "thiserror 1.0.69",
+ "yaserde",
+]
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4664,7 +5015,7 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.2",
- "sha1",
+ "sha1 0.10.6",
  "thiserror 2.0.18",
  "utf-8",
 ]
@@ -4681,7 +5032,7 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.2",
- "sha1",
+ "sha1 0.10.6",
  "thiserror 2.0.18",
 ]
 
@@ -4711,7 +5062,7 @@ dependencies = [
  "aes-gcm",
  "antithesis_sdk",
  "arc-swap",
- "bigdecimal",
+ "bigdecimal 0.4.10",
  "bitflags 2.11.0",
  "branches",
  "bumpalo",
@@ -4785,7 +5136,7 @@ checksum = "d0cdc6ae079c61aa21a89b595a4d0e19d9d848a2658542252e82f930c57c3d87"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -4827,7 +5178,7 @@ checksum = "fca6ee03a3dc5a48a7a63ddd2c8f41aa7bb5195eb96f6a29831447c8cb3d841a"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -4836,7 +5187,7 @@ version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c58fe60f17b694f91bd278e93aceca10fb340950f6a8f1aedef11c28b50c4b8"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bytes",
  "genawaiter",
  "http",
@@ -4899,6 +5250,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
 
 [[package]]
+name = "types"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/onvif-rs#8f1490e2ce5e2ddd29dbd3ab2586d7a90da0b6d6"
+dependencies = [
+ "validate",
+ "xml-rs",
+ "xsd-macro-utils",
+ "xsd-types",
+ "yaserde",
+ "yaserde_derive",
+]
+
+[[package]]
 name = "typetag"
 version = "0.2.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4919,7 +5283,7 @@ checksum = "cf808357c6ed7e13ba0f3277ec8d8f21b2d501274895104263985330c726c1c5"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -4942,6 +5306,12 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-segmentation"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
 name = "unicode-width"
@@ -4971,7 +5341,7 @@ version = "2.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "02d1a66277ed75f640d608235660df48c8e3c19f3b4edb6a263315626cc3c01d"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "flate2",
  "log",
  "once_cell",
@@ -4987,7 +5357,7 @@ version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dea7109cdcd5864d4eeb1b58a1648dc9bf520360d7af16ec26d0a9354bafcfc0"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "flate2",
  "log",
  "percent-encoding",
@@ -5004,7 +5374,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e994ba84b0bd1b1b0cf92878b7ef898a5c1760108fe7b6010327e274917a808c"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "http",
  "httparse",
  "log",
@@ -5064,6 +5434,11 @@ dependencies = [
  "sha1_smol",
  "wasm-bindgen",
 ]
+
+[[package]]
+name = "validate"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/onvif-rs#8f1490e2ce5e2ddd29dbd3ab2586d7a90da0b6d6"
 
 [[package]]
 name = "valuable"
@@ -5163,7 +5538,7 @@ dependencies = [
  "bumpalo",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
  "wasm-bindgen-shared",
 ]
 
@@ -5330,7 +5705,7 @@ checksum = "9107ddc059d5b6fbfbffdfa7a7fe3e22a226def0b2608f72e9d552763d3e1ad7"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -5341,7 +5716,7 @@ checksum = "053e2e040ab57b9dc951b72c264860db7eb3b0200ba345b4e4c3b14f67855ddf"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -5352,7 +5727,7 @@ checksum = "29bee4b38ea3cde66011baa44dba677c432a78593e202392d1e9070cf2a7fca7"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -5363,7 +5738,7 @@ checksum = "3f316c4a2570ba26bbec722032c4099d8c8bc095efccdc15688708623367e358"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -5654,6 +6029,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
 
 [[package]]
+name = "ws_addr"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/onvif-rs#8f1490e2ce5e2ddd29dbd3ab2586d7a90da0b6d6"
+dependencies = [
+ "validate",
+ "xml-rs",
+ "xsd-macro-utils",
+ "xsd-types",
+ "yaserde",
+ "yaserde_derive",
+]
+
+[[package]]
+name = "ws_discovery"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/onvif-rs#8f1490e2ce5e2ddd29dbd3ab2586d7a90da0b6d6"
+dependencies = [
+ "percent-encoding",
+ "url",
+ "xml-rs",
+ "yaserde",
+ "yaserde_derive",
+]
+
+[[package]]
 name = "wyz"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5677,18 +6077,114 @@ name = "xiaomi"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64",
+ "base64 0.22.1",
  "chacha20 0.9.1",
  "dryoc",
  "hex",
  "log",
  "md-5 0.10.6",
  "rand 0.8.6",
- "reqwest",
+ "reqwest 0.13.2",
  "serde",
  "serde_json",
- "sha1",
+ "sha1 0.10.6",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "xml-rs"
+version = "0.8.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
+
+[[package]]
+name = "xml_xsd"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/onvif-rs#8f1490e2ce5e2ddd29dbd3ab2586d7a90da0b6d6"
+dependencies = [
+ "xml-rs",
+ "yaserde",
+ "yaserde_derive",
+]
+
+[[package]]
+name = "xmlmime"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/onvif-rs#8f1490e2ce5e2ddd29dbd3ab2586d7a90da0b6d6"
+dependencies = [
+ "validate",
+ "xml-rs",
+ "xsd-macro-utils",
+ "xsd-types",
+ "yaserde",
+ "yaserde_derive",
+]
+
+[[package]]
+name = "xmltree"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7d8a75eaf6557bb84a65ace8609883db44a29951042ada9b393151532e41fcb"
+dependencies = [
+ "xml-rs",
+]
+
+[[package]]
+name = "xop"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/onvif-rs#8f1490e2ce5e2ddd29dbd3ab2586d7a90da0b6d6"
+dependencies = [
+ "validate",
+ "xml-rs",
+ "yaserde",
+ "yaserde_derive",
+]
+
+[[package]]
+name = "xsd-macro-utils"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/xsd-parser-rs?rev=7f3d433#7f3d433e4f033b55f057e97c0a30de221dbe3ae1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "xsd-types"
+version = "0.1.0"
+source = "git+https://github.com/lumeohq/xsd-parser-rs?rev=7f3d433#7f3d433e4f033b55f057e97c0a30de221dbe3ae1"
+dependencies = [
+ "bigdecimal 0.3.1",
+ "chrono",
+ "num-bigint",
+ "xml-rs",
+ "xsd-macro-utils",
+ "yaserde",
+]
+
+[[package]]
+name = "yaserde"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2776ec5bb20e76d89268e87e1ea66c078b94f55e9771e4d648adda3019f87fc"
+dependencies = [
+ "log",
+ "xml-rs",
+]
+
+[[package]]
+name = "yaserde_derive"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c0b0a4701f203ebaecce4971a6bb8575aa07b617bdc39ddfc6ffeff3a38530d"
+dependencies = [
+ "heck 0.3.3",
+ "log",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+ "xml-rs",
 ]
 
 [[package]]
@@ -5710,7 +6206,7 @@ checksum = "b659052874eb698efe5b9e8cf382204678a0086ebf46982b79d6ca3182927e5d"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
  "synstructure",
 ]
 
@@ -5731,7 +6227,7 @@ checksum = "4122cd3169e94605190e77839c9a40d40ed048d305bfdc146e7df40ab0f3e517"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -5751,7 +6247,7 @@ checksum = "d71e5d6e06ab090c67b5e44993ec16b72dcbaabc526db883a360057678b48502"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
  "synstructure",
 ]
 
@@ -5772,7 +6268,7 @@ checksum = "3c50655cbb0fe3fc43170059e702f1ce5e19b84cec58dc87b037a09935c2f328"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -5805,7 +6301,7 @@ checksum = "eadce39539ca5cb3985590102671f2567e659fca9666581ad3411d59207951f3"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
