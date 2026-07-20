@@ -2,6 +2,8 @@ mod config;
 
 mod auth;
 
+mod responses;
+
 use clap::Parser;
 
 fn main() -> anyhow::Result<()> {
