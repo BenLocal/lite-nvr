@@ -16,6 +16,7 @@ pub(crate) fn start_api_server(cancel: CancellationToken, port: u16) {
             .nest("/compositor", crate::compositor::api::compositor_router())
             .nest("/audiomixer", crate::audiomixer::api::audiomixer_router())
             .nest("/asr", crate::asr::api::asr_router())
+            .nest("/onvif", crate::onvif::api::onvif_router())
             // Session auth for everything above; sees the nest-stripped path
             // (e.g. `/user/login`), which is what the exempt list matches on.
             .layer(axum::middleware::from_fn(crate::auth::require_auth));

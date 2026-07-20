@@ -14,6 +14,7 @@ members = [
     "crates/xiaomi",
     "crates/nvr-yt-dlp",
     "crates/nvr-recorder",
+    "crates/nvr-onvif",
     "examples/dummy-camera",
     "examples/dummy-rtsp-camera",
 ]

@@ -1,0 +1,19 @@
+[package]
+name = "nvr-onvif"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "ONVIF client wrapper (discovery, profiles, stream-URI, PTZ) over lumeohq/onvif-rs."
+
+[dependencies]
+onvif = { git = "https://github.com/lumeohq/onvif-rs" }
+schema = { git = "https://github.com/lumeohq/onvif-rs" }
+tokio = { workspace = true }
+futures = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+url = "2"
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tokio = { workspace = true }

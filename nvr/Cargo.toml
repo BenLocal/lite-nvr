@@ -40,6 +40,7 @@ nvr-yt-dlp = { path = "../crates/nvr-yt-dlp" }
 media-pipe-zlm = { path = "../crates/media-pipe-zlm" }
 xiaomi = { path = "../crates/xiaomi" }
 gb28181 = { path = "../crates/gb28181" }
+nvr-onvif = { path = "../crates/nvr-onvif" }
 rszlm = { workspace = true }
 uuid = { workspace = true }
 turso = { workspace = true }

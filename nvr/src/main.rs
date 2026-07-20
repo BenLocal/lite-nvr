@@ -17,6 +17,7 @@ mod init;
 mod livestream;
 mod manager;
 mod metrics;
+mod onvif;
 mod program;
 mod proxy;
 mod transport;

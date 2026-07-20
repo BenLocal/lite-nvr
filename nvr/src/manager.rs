@@ -204,6 +204,37 @@ pub(crate) async fn upsert_stream(
     .await
 }
 
+/// Start (or replace) an ONVIF ingestion worker: it resolves the camera's RTSP
+/// stream URI over ONVIF and (re)runs the same inner pipe into `media`,
+/// re-resolving on every reconnect because a camera reboot or config change can
+/// move the URI. Symmetric with [`upsert_stream`], differing only in the
+/// resolve step.
+pub(crate) async fn upsert_onvif(
+    id: &str,
+    media: Arc<rszlm::media::Media>,
+    cfg: nvr_onvif::OnvifConfig,
+    include_audio: bool,
+    update_if_exists: bool,
+) -> anyhow::Result<()> {
+    let device_id = id.to_string();
+    upsert_entry(
+        id,
+        move || {
+            let cancel = CancellationToken::new();
+            let handle = crate::onvif::ingest::spawn_onvif_device(
+                device_id,
+                cfg,
+                media,
+                include_audio,
+                cancel.clone(),
+            );
+            Entry::Task { cancel, handle }
+        },
+        update_if_exists,
+    )
+    .await
+}
+
 pub(crate) async fn remove_pipe(id: &str) -> anyhow::Result<()> {
     let entry = {
         let mut pipes = PIPE_MANAGER.write().await;

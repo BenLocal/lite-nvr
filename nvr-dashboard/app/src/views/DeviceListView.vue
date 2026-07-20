@@ -35,6 +35,15 @@ import {
   type GbDevice,
   type GbStream,
 } from "../api/gb";
+import {
+  discoverOnvif,
+  getOnvifPresets,
+  onvifPtz,
+  probeOnvif,
+  type OnvifDiscovered,
+  type OnvifPreset,
+  type OnvifProbe,
+} from "../api/onvif";
 import { useAppToast } from "../utils/toast";
 
 const appToast = useAppToast();
@@ -152,6 +161,150 @@ function ptzRelease() {
   void sendPtz("stop");
 }
 
+// PTZ (云台) control for onvif devices. The target is simply the device's own
+// id (ONVIF connection config is registered under that same id server-side);
+// moves are press-and-hold (move on press, stop on release/leave) and presets
+// are selected from a dropdown populated on open, mirroring the gb28181 block above.
+const onvifPtzDialogVisible = ref(false);
+const onvifPtzTarget = ref<string | null>(null);
+const onvifPtzSpeed = ref(128);
+const onvifPtzPresets = ref<OnvifPreset[]>([]);
+const onvifPtzPresetToken = ref<string>("");
+
+function openOnvifPtzDialog(device: DeviceItem) {
+  onvifPtzTarget.value = device.id;
+  onvifPtzPresetToken.value = "";
+  onvifPtzDialogVisible.value = true;
+}
+
+async function loadOnvifPtzPresets() {
+  if (!onvifPtzTarget.value) return;
+  try {
+    onvifPtzPresets.value = await getOnvifPresets(onvifPtzTarget.value);
+  } catch {
+    onvifPtzPresets.value = [];
+  }
+}
+
+async function sendOnvifPtz(direction: string, presetToken?: string) {
+  if (!onvifPtzTarget.value) return;
+  try {
+    await onvifPtz({
+      device_id: onvifPtzTarget.value,
+      direction,
+      speed: onvifPtzSpeed.value,
+      preset_token: presetToken,
+    });
+  } catch {
+    // Best-effort: a failed PTZ command shouldn't disrupt the UI. A dropped
+    // move still gets a stop on release, so the camera won't run away.
+  }
+}
+
+// Press-and-hold: send the move on press, stop on release/leave/cancel.
+function onvifPtzPress(direction: string) {
+  void sendOnvifPtz(direction);
+}
+
+function onvifPtzRelease() {
+  void sendOnvifPtz("stop");
+}
+
+// ONVIF probe/discover state. Standalone refs (not @primevue/forms fields)
+// because the profile list is loaded on demand from the camera itself.
+const onvifProbing = ref(false);
+const onvifProbe = ref<OnvifProbe | null>(null);
+const onvifDiscovering = ref(false);
+const onvifDiscovered = ref<OnvifDiscovered[]>([]);
+
+const onvifProfileOptions = computed(() => {
+  const profiles = onvifProbe.value?.profiles ?? [];
+  return profiles.map((profile) => ({
+    label: `${profile.name} (${profile.width}x${profile.height})`,
+    value: profile.token,
+  }));
+});
+
+// Parse "host:port" (or a bare host) out of a discovered device's addr and
+// prefill the host/port form fields.
+function parseOnvifAddr(addr: string | null): { host: string; port: number } {
+  if (!addr) return { host: "", port: 80 };
+  const match = /^(.+):(\d+)$/.exec(addr);
+  const host = match?.[1];
+  const port = match?.[2];
+  if (host && port) {
+    return { host, port: Number(port) };
+  }
+  return { host: addr, port: 80 };
+}
+
+function resetOnvifFields() {
+  onvifProbing.value = false;
+  onvifProbe.value = null;
+  onvifDiscovering.value = false;
+  onvifDiscovered.value = [];
+}
+
+// The `$form` slot from @primevue/forms exposes each field's reactive
+// FormFieldState directly (v-bind="states" in Form.vue) but does NOT expose
+// setFieldValue/setValues on the slot scope — those only exist on the
+// useForm() instance. Writing `.value` on the field state is the same
+// mutation setFieldValue performs internally, so it's the correct way to set
+// a field's value programmatically from the default slot. This type mirrors
+// the slot's own `{ [key: string]: FormFieldState }` shape so it accepts
+// `$form` directly with no cast.
+type OnvifFormFields = Record<string, { value: unknown } | undefined>;
+
+async function runOnvifProbe(form: OnvifFormFields) {
+  const host = String(form.onvif_host?.value ?? "").trim();
+  const port = Number(form.onvif_port?.value ?? 80);
+  if (!host) {
+    appToast.warn("请先填写主机地址", undefined, 2000);
+    return;
+  }
+  onvifProbing.value = true;
+  try {
+    const result = await probeOnvif({
+      host,
+      port,
+      username: String(form.onvif_username?.value ?? "").trim(),
+      password: String(form.onvif_password?.value ?? "").trim(),
+    });
+    onvifProbe.value = result;
+    const firstProfile = result.profiles[0];
+    if (firstProfile && form.onvif_profile_token) {
+      form.onvif_profile_token.value = firstProfile.token;
+    }
+    appToast.success("探测成功", `${result.device_info.manufacturer} ${result.device_info.model}`);
+  } catch (error) {
+    onvifProbe.value = null;
+    appToast.errorFrom("探测失败", error, "无法连接到 ONVIF 设备");
+  } finally {
+    onvifProbing.value = false;
+  }
+}
+
+async function runOnvifDiscover() {
+  onvifDiscovering.value = true;
+  try {
+    onvifDiscovered.value = await discoverOnvif();
+    if (!onvifDiscovered.value.length) {
+      appToast.info("未发现设备", "局域网内未发现 ONVIF 设备", 2000);
+    }
+  } catch (error) {
+    onvifDiscovered.value = [];
+    appToast.errorFrom("扫描失败", error, "局域网扫描失败");
+  } finally {
+    onvifDiscovering.value = false;
+  }
+}
+
+function applyOnvifDiscovered(item: OnvifDiscovered, form: OnvifFormFields) {
+  const { host, port } = parseOnvifAddr(item.addr);
+  if (form.onvif_host) form.onvif_host.value = host;
+  if (form.onvif_port) form.onvif_port.value = port;
+}
+
 const inputTypeOptions = [
   { label: "RTSP", value: "rtsp" },
   { label: "RTMP", value: "rtmp" },
@@ -162,6 +315,7 @@ const inputTypeOptions = [
   { label: "Lavfi", value: "lavfi" },
   { label: "小米摄像头", value: "xiaomi" },
   { label: "国标 GB28181", value: "gb28181" },
+  { label: "ONVIF 摄像头", value: "onvif" },
 ];
 
 // go2rtc Xiaomi cloud regions ("" = mainland China).
@@ -188,6 +342,12 @@ const initialValues = {
   xm_did: "",
   xm_model: "",
   xm_ip: "",
+  // ONVIF-only structured fields; serialized into input_value on submit.
+  onvif_host: "",
+  onvif_port: 80,
+  onvif_username: "",
+  onvif_password: "",
+  onvif_profile_token: "",
 };
 
 // Split a xiaomi device's input_value JSON back into the xm_* form fields when
@@ -219,6 +379,24 @@ const formInitialValues = computed(() => {
       base.xm_ip = cfg.ip ?? "";
     } catch {
       // malformed config — leave the xm_* fields blank
+    }
+  }
+  if (device.input_type === "onvif" && device.input_value) {
+    try {
+      const cfg = JSON.parse(device.input_value) as Partial<{
+        host: string;
+        port: number;
+        username: string;
+        password: string;
+        profile_token: string;
+      }>;
+      base.onvif_host = cfg.host ?? "";
+      base.onvif_port = cfg.port ?? 80;
+      base.onvif_username = cfg.username ?? "";
+      base.onvif_password = cfg.password ?? "";
+      base.onvif_profile_token = cfg.profile_token ?? "";
+    } catch {
+      // malformed config — leave the onvif_* fields blank
     }
   }
   return base;
@@ -289,6 +467,27 @@ function resolver({ values }: { values: Record<string, unknown> }) {
       device_id: gbDeviceId.value,
       channel_id: gbChannelId.value,
     });
+  } else if (inputType === "onvif") {
+    const onvif = {
+      host: String(values.onvif_host ?? "").trim(),
+      port: Number(values.onvif_port ?? 80),
+      username: String(values.onvif_username ?? "").trim(),
+      password: String(values.onvif_password ?? "").trim(),
+      profile_token: String(values.onvif_profile_token ?? "").trim(),
+    };
+    if (!onvif.host) errors.onvif_host = [{ message: "请输入主机地址" }];
+    if (!onvif.profile_token) {
+      errors.input_value = [{ message: "请先探测设备并选择视频配置文件" }];
+    }
+
+    Object.assign(cleaned, {
+      onvif_host: onvif.host,
+      onvif_port: onvif.port,
+      onvif_username: onvif.username,
+      onvif_password: onvif.password,
+      onvif_profile_token: onvif.profile_token,
+      input_value: JSON.stringify(onvif),
+    });
   } else {
     const inputValue = String(values.input_value ?? "").trim();
     if (!inputValue) {
@@ -314,12 +513,14 @@ async function loadDevices() {
 function openCreateDialog() {
   editingDevice.value = null;
   resetGbFields();
+  resetOnvifFields();
   dialogVisible.value = true;
 }
 
 function openEditDialog(device: DeviceItem) {
   editingDevice.value = device;
   resetGbFields();
+  resetOnvifFields();
   hydrateGbFields(device);
   dialogVisible.value = true;
 }
@@ -391,6 +592,14 @@ async function onSubmit(event: { valid: boolean; values: Record<string, unknown>
       device_id: gbDeviceId.value,
       channel_id: gbChannelId.value,
     });
+  } else if (inputType === "onvif") {
+    inputValue = JSON.stringify({
+      host: String(event.values.onvif_host ?? "").trim(),
+      port: Number(event.values.onvif_port ?? 80),
+      username: String(event.values.onvif_username ?? "").trim(),
+      password: String(event.values.onvif_password ?? "").trim(),
+      profile_token: String(event.values.onvif_profile_token ?? "").trim(),
+    });
   }
 
   const payload: DevicePayload = {
@@ -456,6 +665,19 @@ function inputValueDisplay(device: DeviceItem) {
       return `${cfg.device_id ?? "?"} / ${cfg.channel_id ?? "?"}`;
     } catch {
       return device.input_value;
+    }
+  }
+  if (device.input_type === "onvif") {
+    try {
+      const cfg = JSON.parse(device.input_value) as {
+        host?: string;
+        port?: number;
+        profile_token?: string;
+      };
+      const addr = cfg.host ? `${cfg.host}:${cfg.port ?? 80}` : "ONVIF";
+      return cfg.profile_token ? `${addr} (${cfg.profile_token})` : addr;
+    } catch {
+      return "ONVIF 摄像头";
     }
   }
   if (device.input_type !== "xiaomi") {
@@ -608,6 +830,15 @@ async function copyText(value: string, label: string) {
                   aria-label="云台"
                   title="云台控制"
                   @click="openPtzDialog(data)"
+                />
+                <Button
+                  v-if="data.input_type === 'onvif'"
+                  icon="pi pi-compass"
+                  text
+                  rounded
+                  aria-label="云台"
+                  title="云台控制"
+                  @click="openOnvifPtzDialog(data)"
                 />
                 <Button
                   icon="pi pi-pencil"
@@ -842,6 +1073,135 @@ async function copyText(value: string, label: string) {
           </div>
         </template>
 
+        <template v-else-if="$form.input_type?.value === 'onvif'">
+          <div class="field-grid">
+            <div class="field">
+              <label for="onvif_host">主机地址</label>
+              <InputText
+                id="onvif_host"
+                name="onvif_host"
+                class="field-input"
+                placeholder="192.168.x.y"
+                :invalid="$form.onvif_host?.invalid"
+              />
+              <Message
+                v-if="$form.onvif_host?.invalid"
+                severity="error"
+                size="small"
+                variant="simple"
+              >
+                {{ $form.onvif_host.error?.message }}
+              </Message>
+            </div>
+            <div class="field">
+              <label for="onvif_port">端口</label>
+              <InputNumber
+                id="onvif_port"
+                name="onvif_port"
+                class="field-input"
+                :use-grouping="false"
+                :min="1"
+                :max="65535"
+              />
+            </div>
+          </div>
+
+          <div class="field-grid">
+            <div class="field">
+              <label for="onvif_username">用户名</label>
+              <InputText
+                id="onvif_username"
+                name="onvif_username"
+                class="field-input"
+                placeholder="admin"
+              />
+            </div>
+            <div class="field">
+              <label for="onvif_password">密码</label>
+              <Password
+                id="onvif_password"
+                name="onvif_password"
+                class="field-input"
+                :feedback="false"
+                toggle-mask
+              />
+            </div>
+          </div>
+
+          <div class="field field-inline">
+            <Button
+              type="button"
+              label="探测"
+              icon="pi pi-search"
+              size="small"
+              :loading="onvifProbing"
+              @click="runOnvifProbe($form)"
+            />
+            <Button
+              type="button"
+              label="扫描局域网"
+              icon="pi pi-wifi"
+              size="small"
+              severity="secondary"
+              :loading="onvifDiscovering"
+              @click="runOnvifDiscover"
+            />
+          </div>
+
+          <div v-if="onvifDiscovered.length" class="field">
+            <label>发现的设备</label>
+            <ul class="onvif-discovered-list">
+              <li v-for="item in onvifDiscovered" :key="item.addr ?? item.endpoints[0]">
+                <Button
+                  type="button"
+                  text
+                  size="small"
+                  class="onvif-discovered-item"
+                  @click="applyOnvifDiscovered(item, $form)"
+                >
+                  <span class="mono-text">{{ item.addr ?? "未知地址" }}</span>
+                  <span v-if="item.name" class="field-hint">{{ item.name }}</span>
+                </Button>
+              </li>
+            </ul>
+          </div>
+
+          <div v-if="onvifProbe" class="field">
+            <label>设备信息</label>
+            <div class="onvif-device-info">
+              <span>{{ onvifProbe.device_info.manufacturer }} {{ onvifProbe.device_info.model }}</span>
+              <span class="field-hint">固件 {{ onvifProbe.device_info.firmware }}</span>
+            </div>
+          </div>
+
+          <!--
+            v-show (not v-if): the field must stay registered with the form
+            even before a probe succeeds, otherwise `$form.onvif_profile_token`
+            doesn't exist yet when runOnvifProbe() tries to write the
+            auto-selected profile into it right after a successful probe.
+          -->
+          <div v-show="onvifProbe" class="field">
+            <label for="onvif_profile_token">视频配置文件</label>
+            <Select
+              id="onvif_profile_token"
+              name="onvif_profile_token"
+              :options="onvifProfileOptions"
+              option-label="label"
+              option-value="value"
+              size="small"
+              class="field-input"
+              placeholder="请选择视频配置文件"
+            />
+          </div>
+
+          <div class="field">
+            <span class="field-hint">
+              填写摄像头 ONVIF 服务地址、端口及登录凭据后点击“探测”获取设备信息与可用的视频配置文件；
+              也可点击“扫描局域网”自动发现同网段内的 ONVIF 设备并预填地址。
+            </span>
+          </div>
+        </template>
+
         <div v-else class="field">
           <label for="input_value">{{
             $form.input_type?.value === "stream" ? "直播间地址" : "输入地址/标识"
@@ -1008,6 +1368,100 @@ async function copyText(value: string, label: string) {
         <Button label="删除" size="small" text severity="danger" @click="sendPtz('preset_delete', ptzPreset)" />
       </div>
     </Dialog>
+
+    <Dialog
+      v-model:visible="onvifPtzDialogVisible"
+      modal
+      header="云台控制"
+      :style="{ width: 'min(22rem, calc(100vw - 2rem))' }"
+      @hide="onvifPtzRelease"
+    >
+      <div class="ptz-pad">
+        <span />
+        <Button
+          icon="pi pi-arrow-up"
+          aria-label="上"
+          @pointerdown="onvifPtzPress('up')"
+          @pointerup="onvifPtzRelease"
+          @pointerleave="onvifPtzRelease"
+          @pointercancel="onvifPtzRelease"
+        />
+        <span />
+        <Button
+          icon="pi pi-arrow-left"
+          aria-label="左"
+          @pointerdown="onvifPtzPress('left')"
+          @pointerup="onvifPtzRelease"
+          @pointerleave="onvifPtzRelease"
+          @pointercancel="onvifPtzRelease"
+        />
+        <Button icon="pi pi-stop" severity="secondary" aria-label="停止" @click="sendOnvifPtz('stop')" />
+        <Button
+          icon="pi pi-arrow-right"
+          aria-label="右"
+          @pointerdown="onvifPtzPress('right')"
+          @pointerup="onvifPtzRelease"
+          @pointerleave="onvifPtzRelease"
+          @pointercancel="onvifPtzRelease"
+        />
+        <span />
+        <Button
+          icon="pi pi-arrow-down"
+          aria-label="下"
+          @pointerdown="onvifPtzPress('down')"
+          @pointerup="onvifPtzRelease"
+          @pointerleave="onvifPtzRelease"
+          @pointercancel="onvifPtzRelease"
+        />
+        <span />
+      </div>
+
+      <div class="ptz-row">
+        <Button
+          label="放大"
+          size="small"
+          icon="pi pi-search-plus"
+          @pointerdown="onvifPtzPress('zoom_in')"
+          @pointerup="onvifPtzRelease"
+          @pointerleave="onvifPtzRelease"
+          @pointercancel="onvifPtzRelease"
+        />
+        <Button
+          label="缩小"
+          size="small"
+          icon="pi pi-search-minus"
+          @pointerdown="onvifPtzPress('zoom_out')"
+          @pointerup="onvifPtzRelease"
+          @pointerleave="onvifPtzRelease"
+          @pointercancel="onvifPtzRelease"
+        />
+      </div>
+
+      <div class="ptz-row">
+        <label class="ptz-label">速度</label>
+        <Slider v-model="onvifPtzSpeed" :min="1" :max="255" class="ptz-slider" />
+        <span class="ptz-value">{{ onvifPtzSpeed }}</span>
+      </div>
+
+      <div class="ptz-row">
+        <label class="ptz-label">预置位</label>
+        <Select
+          v-model="onvifPtzPresetToken"
+          class="field-input"
+          :options="onvifPtzPresets"
+          option-label="name"
+          option-value="token"
+          placeholder="选择预置位"
+          @before-show="loadOnvifPtzPresets"
+        />
+        <Button
+          label="调用"
+          size="small"
+          :disabled="!onvifPtzPresetToken"
+          @click="sendOnvifPtz('preset_call', onvifPtzPresetToken)"
+        />
+      </div>
+    </Dialog>
   </div>
 </template>
 
@@ -1161,6 +1615,32 @@ async function copyText(value: string, label: string) {
   justify-content: space-between;
   gap: 0.5rem;
   width: 100%;
+}
+
+.onvif-discovered-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.onvif-discovered-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.125rem;
+  width: 100%;
+  text-align: left;
+}
+
+.onvif-device-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  font-size: 0.8125rem;
+  color: #e2e8f0;
 }
 
 :deep(.device-dialog .field) {
