@@ -104,11 +104,20 @@ cargo run --package nvr
 ```
 
 Add an `input_type = "onvif"` device whose `input_value` is a serialized
-`OnvifConfig` pointing at the dummy (the API needs a session token — log in as
-`admin`/`admin` and pass `?token=…`):
+`OnvifConfig` pointing at the dummy. The API (port `18080`) is session-auth
+guarded, so log in first and pass the token (`?token=…` or a
+`Authorization: Bearer` header):
 
 ```bash
-curl -s localhost:8080/api/device/add -H 'content-type: application/json' -d '{
+# log in (default admin/admin) and capture the session token
+TOKEN=$(curl -s -X POST localhost:18080/api/user/login \
+  -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"admin"}' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["token"])')
+
+# add the ONVIF device
+curl -s "localhost:18080/api/device/add?token=$TOKEN" \
+  -H 'content-type: application/json' -d '{
   "id": "cam-onvif",
   "name": "Dummy ONVIF",
   "input_type": "onvif",
