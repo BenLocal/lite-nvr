@@ -138,6 +138,12 @@ async fn update_device(
                 bridge.unregister_mapping(&device.id).await;
             }
         }
+        // Leaving onvif must drop the registry entry (PTZ / stream re-resolve
+        // read from it), mirroring the gb28181 mapping cleanup above. The
+        // supervisor task itself is stopped by the upsert that replaces it.
+        if existing.input_type == "onvif" {
+            crate::onvif::remove(&device.id);
+        }
         if device.input_type == "gb28181" {
             manager::remove_pipe(&device.id).await?;
         }
@@ -153,6 +159,9 @@ async fn remove_device(Path(id): Path<String>) -> ApiJsonResult<String> {
     if let Some(bridge) = crate::gb::bridge() {
         bridge.unregister_mapping(&id).await;
     }
+    // Idempotent no-op for non-onvif devices; drops the onvif registry entry
+    // otherwise so PTZ / re-resolve don't keep a stale config for a gone device.
+    crate::onvif::remove(&id);
     Ok(ok_json("success".to_string()))
 }
 

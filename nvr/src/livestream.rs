@@ -79,7 +79,10 @@ pub(crate) fn spawn_stream_device(
 /// Run one pipe over the freshly resolved address until the stream dies or the
 /// worker is cancelled. The pipe is driven on its own task and cancelled
 /// through its token so its teardown (bus stop, output drain) always runs.
-async fn run_session(
+///
+/// Shared with the ONVIF supervisor (`crate::onvif::ingest`): both resolve an
+/// address just-in-time and drive the same RTSP/network -> ZLM pipe.
+pub(crate) async fn run_session(
     resolved: &ResolvedStream,
     media: Arc<rszlm::media::Media>,
     include_audio: bool,

@@ -112,6 +112,25 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
         return Ok(());
     }
 
+    // ONVIF cameras: the RTSP URL isn't stored — it's resolved from the
+    // camera's media service, and can move on a reboot/config change. So the
+    // `input_value` carries the OnvifConfig; we register it (for PTZ / the REST
+    // surface) and spawn a supervisor that resolves the RTSP URI just-in-time
+    // and re-resolves on every reconnect, feeding the shared RTSP -> ZLM pipe.
+    if device.input_type == "onvif" {
+        let cfg: nvr_onvif::OnvifConfig = serde_json::from_str(&device.input_value)
+            .map_err(|e| anyhow::anyhow!("invalid onvif device config: {e}"))?;
+        crate::onvif::register(&device.id, cfg.clone());
+        let media = Arc::new(rszlm::media::Media::new_with_default_vhost(
+            DEVICE_APP,
+            device.id.as_str(),
+            0.0,
+            device.record,
+            false,
+        ));
+        return manager::upsert_onvif(&device.id, media, cfg, device.include_audio, true).await;
+    }
+
     // Platform live streams (Douyin/Bilibili/Twitch… room pages): there is no
     // stable URL to hand to ffmpeg — the pull address is temporary and signed.
     // `input_value` stores the room/page URL; a supervisor worker resolves it
