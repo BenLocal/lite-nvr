@@ -7,7 +7,7 @@ use std::sync::{LazyLock, RwLock};
 
 use nvr_onvif::OnvifConfig;
 
-// pub mod api; // added in Task 8
+pub mod api;
 // pub mod ingest; // added in Task 9
 
 /// device_id -> connection config, populated when an `onvif` device is added or
