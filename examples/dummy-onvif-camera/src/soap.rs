@@ -22,8 +22,8 @@ const OPS: &[&str] = &[
 ];
 
 /// Detect the ONVIF operation by looking for its request element's local name.
-/// GetPresets must be checked before GetProfiles etc.; we test the whole set and
-/// return the first that appears as an element local-name in the body.
+/// Matching is exact local-name equality against `OPS`, so the order of `OPS`
+/// does not matter — we return the op whose name equals a body element.
 pub fn detect_op(body: &str) -> Option<&'static str> {
     let mut reader = Reader::from_str(body);
     let mut buf = Vec::new();
