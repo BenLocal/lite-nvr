@@ -17,6 +17,7 @@ members = [
     "crates/nvr-onvif",
     "examples/dummy-camera",
     "examples/dummy-rtsp-camera",
+    "examples/dummy-onvif-camera",
 ]
 resolver = "1"
 
