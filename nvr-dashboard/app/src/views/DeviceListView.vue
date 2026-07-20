@@ -37,8 +37,11 @@ import {
 } from "../api/gb";
 import {
   discoverOnvif,
+  getOnvifPresets,
+  onvifPtz,
   probeOnvif,
   type OnvifDiscovered,
+  type OnvifPreset,
   type OnvifProbe,
 } from "../api/onvif";
 import { useAppToast } from "../utils/toast";
@@ -156,6 +159,55 @@ function ptzPress(command: string) {
 
 function ptzRelease() {
   void sendPtz("stop");
+}
+
+// PTZ (云台) control for onvif devices. The target is simply the device's own
+// id (ONVIF connection config is registered under that same id server-side);
+// moves are press-and-hold (move on press, stop on release/leave) and presets
+// are selected from a dropdown populated on open, mirroring the gb28181 block above.
+const onvifPtzDialogVisible = ref(false);
+const onvifPtzTarget = ref<string | null>(null);
+const onvifPtzSpeed = ref(128);
+const onvifPtzPresets = ref<OnvifPreset[]>([]);
+const onvifPtzPresetToken = ref<string>("");
+
+function openOnvifPtzDialog(device: DeviceItem) {
+  onvifPtzTarget.value = device.id;
+  onvifPtzPresetToken.value = "";
+  onvifPtzDialogVisible.value = true;
+}
+
+async function loadOnvifPtzPresets() {
+  if (!onvifPtzTarget.value) return;
+  try {
+    onvifPtzPresets.value = await getOnvifPresets(onvifPtzTarget.value);
+  } catch {
+    onvifPtzPresets.value = [];
+  }
+}
+
+async function sendOnvifPtz(direction: string, presetToken?: string) {
+  if (!onvifPtzTarget.value) return;
+  try {
+    await onvifPtz({
+      device_id: onvifPtzTarget.value,
+      direction,
+      speed: onvifPtzSpeed.value,
+      preset_token: presetToken,
+    });
+  } catch {
+    // Best-effort: a failed PTZ command shouldn't disrupt the UI. A dropped
+    // move still gets a stop on release, so the camera won't run away.
+  }
+}
+
+// Press-and-hold: send the move on press, stop on release/leave/cancel.
+function onvifPtzPress(direction: string) {
+  void sendOnvifPtz(direction);
+}
+
+function onvifPtzRelease() {
+  void sendOnvifPtz("stop");
 }
 
 // ONVIF probe/discover state. Standalone refs (not @primevue/forms fields)
@@ -767,6 +819,15 @@ async function copyText(value: string, label: string) {
                   @click="openPtzDialog(data)"
                 />
                 <Button
+                  v-if="data.input_type === 'onvif'"
+                  icon="pi pi-compass"
+                  text
+                  rounded
+                  aria-label="云台"
+                  title="云台控制"
+                  @click="openOnvifPtzDialog(data)"
+                />
+                <Button
                   icon="pi pi-pencil"
                   text
                   rounded
@@ -1292,6 +1353,100 @@ async function copyText(value: string, label: string) {
         <Button label="调用" size="small" @click="sendPtz('preset_call', ptzPreset)" />
         <Button label="设置" size="small" severity="secondary" @click="sendPtz('preset_set', ptzPreset)" />
         <Button label="删除" size="small" text severity="danger" @click="sendPtz('preset_delete', ptzPreset)" />
+      </div>
+    </Dialog>
+
+    <Dialog
+      v-model:visible="onvifPtzDialogVisible"
+      modal
+      header="云台控制"
+      :style="{ width: 'min(22rem, calc(100vw - 2rem))' }"
+      @hide="onvifPtzRelease"
+    >
+      <div class="ptz-pad">
+        <span />
+        <Button
+          icon="pi pi-arrow-up"
+          aria-label="上"
+          @pointerdown="onvifPtzPress('up')"
+          @pointerup="onvifPtzRelease"
+          @pointerleave="onvifPtzRelease"
+          @pointercancel="onvifPtzRelease"
+        />
+        <span />
+        <Button
+          icon="pi pi-arrow-left"
+          aria-label="左"
+          @pointerdown="onvifPtzPress('left')"
+          @pointerup="onvifPtzRelease"
+          @pointerleave="onvifPtzRelease"
+          @pointercancel="onvifPtzRelease"
+        />
+        <Button icon="pi pi-stop" severity="secondary" aria-label="停止" @click="sendOnvifPtz('stop')" />
+        <Button
+          icon="pi pi-arrow-right"
+          aria-label="右"
+          @pointerdown="onvifPtzPress('right')"
+          @pointerup="onvifPtzRelease"
+          @pointerleave="onvifPtzRelease"
+          @pointercancel="onvifPtzRelease"
+        />
+        <span />
+        <Button
+          icon="pi pi-arrow-down"
+          aria-label="下"
+          @pointerdown="onvifPtzPress('down')"
+          @pointerup="onvifPtzRelease"
+          @pointerleave="onvifPtzRelease"
+          @pointercancel="onvifPtzRelease"
+        />
+        <span />
+      </div>
+
+      <div class="ptz-row">
+        <Button
+          label="放大"
+          size="small"
+          icon="pi pi-search-plus"
+          @pointerdown="onvifPtzPress('zoom_in')"
+          @pointerup="onvifPtzRelease"
+          @pointerleave="onvifPtzRelease"
+          @pointercancel="onvifPtzRelease"
+        />
+        <Button
+          label="缩小"
+          size="small"
+          icon="pi pi-search-minus"
+          @pointerdown="onvifPtzPress('zoom_out')"
+          @pointerup="onvifPtzRelease"
+          @pointerleave="onvifPtzRelease"
+          @pointercancel="onvifPtzRelease"
+        />
+      </div>
+
+      <div class="ptz-row">
+        <label class="ptz-label">速度</label>
+        <Slider v-model="onvifPtzSpeed" :min="1" :max="255" class="ptz-slider" />
+        <span class="ptz-value">{{ onvifPtzSpeed }}</span>
+      </div>
+
+      <div class="ptz-row">
+        <label class="ptz-label">预置位</label>
+        <Select
+          v-model="onvifPtzPresetToken"
+          class="field-input"
+          :options="onvifPtzPresets"
+          option-label="name"
+          option-value="token"
+          placeholder="选择预置位"
+          @before-show="loadOnvifPtzPresets"
+        />
+        <Button
+          label="调用"
+          size="small"
+          :disabled="!onvifPtzPresetToken"
+          @click="sendOnvifPtz('preset_call', onvifPtzPresetToken)"
+        />
       </div>
     </Dialog>
   </div>
