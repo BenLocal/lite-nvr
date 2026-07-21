@@ -1,0 +1,20 @@
+[package]
+name = "dummy-onvif-camera"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "A simulated ONVIF camera: hand-served SOAP + WS-Discovery, reusing dummy-rtsp-camera for RTSP. Test fixture for nvr-onvif."
+
+[dependencies]
+tokio = { workspace = true, features = ["full"] }
+axum = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+quick-xml = { workspace = true }
+base64 = { workspace = true }
+sha1 = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+which = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+socket2 = "0.5"
