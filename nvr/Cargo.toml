@@ -32,6 +32,7 @@ ffmpeg-next = { workspace = true }
 nvr-db = { path = "../nvr-db" }
 nvr-dashboard = { path = "../nvr-dashboard" }
 nvr-asr = { path = "../crates/nvr-asr" }
+nvr-detect = { path = "../crates/nvr-detect" }
 nvr-switcher = { path = "../crates/nvr-switcher" }
 nvr-compositor = { path = "../crates/nvr-compositor" }
 nvr-audio-mixer = { path = "../crates/nvr-audio-mixer" }
