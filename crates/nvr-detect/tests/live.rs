@@ -15,7 +15,7 @@ fn detects_on_a_real_image() {
     let cfg = DetectorConfig {
         name: "yolo".into(),
         model_file: model.clone(),
-        version: None,
+        version: Some(8.0), // usls requires a version for detection; test model is yolov8n
         scale: None,
         input_size: 640,
         conf: 0.25,
