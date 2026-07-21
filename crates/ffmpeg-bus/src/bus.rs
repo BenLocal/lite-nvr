@@ -215,6 +215,10 @@ impl Bus {
                 let r = Self::subscribe_audio_internal(state).await;
                 let _ = result.send(r);
             }
+            BusCommand::SubscribeVideo { result } => {
+                let r = Self::subscribe_video_internal(state).await;
+                let _ = result.send(r);
+            }
         }
 
         Ok(())
@@ -878,6 +882,30 @@ impl Bus {
         Ok(receiver)
     }
 
+    /// Ensure the input + video decoder are running and return a subscription to
+    /// the decoded-video broadcast. Mirrors `subscribe_audio_internal`.
+    async fn subscribe_video_internal(
+        state: &mut BusState,
+    ) -> anyhow::Result<crate::frame::RawFrameReceiver> {
+        if state.input_task.is_none() && state.input_config.is_some() {
+            Self::prepare_input_task(state).await?;
+        }
+        let video_index = state
+            .input_streams
+            .iter()
+            .find(|s| s.is_video())
+            .ok_or_else(|| anyhow::anyhow!("pipe has no video stream"))?
+            .index();
+        Self::start_decoder_task(state, video_index, false).await?;
+        let receiver = state
+            .decoder_tasks
+            .get(&video_index)
+            .ok_or_else(|| anyhow::anyhow!("video decoder task not found after start"))?
+            .subscribe();
+        Self::start_input_task(state).await?;
+        Ok(receiver)
+    }
+
     async fn add_input_internal(
         state: &mut BusState,
         input: InputConfig,
@@ -1226,6 +1254,16 @@ impl Bus {
         rx.await?
     }
 
+    /// Subscribe to this pipe's decoded-video broadcast, starting the video
+    /// decoder if needed. The receiver yields `RawFrameCmd` (filter `Video`).
+    pub async fn subscribe_video(&self) -> anyhow::Result<crate::frame::RawFrameReceiver> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(BusCommand::SubscribeVideo { result: tx })
+            .await?;
+        rx.await?
+    }
+
     pub fn stop(&self) {
         self.cancel.cancel();
     }
@@ -1287,6 +1325,11 @@ pub enum BusCommand {
     /// decoder task is running). Receiver yields `RawFrame::Audio` (and may
     /// yield video; filter on the receiving side).
     SubscribeAudio {
+        result: tokio::sync::oneshot::Sender<anyhow::Result<crate::frame::RawFrameReceiver>>,
+    },
+    /// Subscribe to the pipe's decoded video broadcast (ensures the video
+    /// decoder task is running). Receiver yields `RawFrame::Video`.
+    SubscribeVideo {
         result: tokio::sync::oneshot::Sender<anyhow::Result<crate::frame::RawFrameReceiver>>,
     },
 }

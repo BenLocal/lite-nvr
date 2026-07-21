@@ -48,3 +48,13 @@ fn test_video_frame_try_from_audio_returns_error() {
     assert!(result.is_err());
 }
 
+#[test]
+fn raw_video_frame_exposes_inner_via_as_video() {
+    use ffmpeg_next::frame::Video;
+    let src = Video::new(ffmpeg_next::format::Pixel::RGB24, 4, 2);
+    let rvf = super::RawVideoFrame::from(src);
+    let inner = rvf.as_video();
+    assert_eq!(inner.width(), 4);
+    assert_eq!(inner.height(), 2);
+    assert_eq!(inner.format(), ffmpeg_next::format::Pixel::RGB24);
+}
