@@ -2870,6 +2870,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvr-detect"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nvr-onvif"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,12 @@
+[package]
+name = "nvr-detect"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Backend-agnostic object detection: a Detector trait, unified detection types, and a usls/ONNX-Runtime YOLO backend. Runs one image through N models and returns each model's detections (label, bbox, confidence, timing)."
+
+[dependencies]
+anyhow = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
