@@ -13,7 +13,10 @@ use super::hub::DetectHub;
 use super::result::FrameResult;
 
 /// Run every detector on the same RGB image concurrently (each on a blocking
-/// thread, since ONNX inference is CPU-bound), preserving order in the output.
+/// thread, since ONNX inference is CPU-bound). Output order matches `detectors`
+/// for every detector that completes; a task that fails to join (e.g. a panic)
+/// is logged and omitted, so on that rare path the output can be shorter than
+/// the input.
 pub async fn fanout(
     detectors: &[Arc<dyn Detector>],
     rgb: Arc<Vec<u8>>,
