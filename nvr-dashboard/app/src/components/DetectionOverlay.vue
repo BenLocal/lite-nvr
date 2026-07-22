@@ -70,7 +70,11 @@ async function start() {
     active.value = false
     return
   }
+  // user may have toggled off during the startDetect round-trip
+  if (!active.value) return
   await poll()
+  // ...or during the first poll
+  if (!active.value) return
   stopPolling()
   timer = setInterval(poll, POLL_MS)
 }
