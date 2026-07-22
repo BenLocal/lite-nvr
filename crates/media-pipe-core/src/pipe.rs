@@ -49,6 +49,18 @@ impl Pipe {
         bus.subscribe_audio().await
     }
 
+    /// Subscribe to this pipe's decoded-video broadcast (for detection). Errors
+    /// if the pipe is not currently started.
+    pub async fn subscribe_video(&self) -> anyhow::Result<ffmpeg_bus::frame::RawFrameReceiver> {
+        let bus = self
+            .bus
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("pipe not started"))?;
+        bus.subscribe_video().await
+    }
+
     pub fn cancel(&self) {
         self.cancel.cancel();
     }

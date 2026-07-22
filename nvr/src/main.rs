@@ -11,6 +11,7 @@ mod cleanup;
 mod compositor;
 mod config;
 mod db;
+mod detect;
 mod gb;
 mod handler;
 mod init;

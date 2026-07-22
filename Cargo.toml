@@ -11,6 +11,7 @@ members = [
     "crates/nvr-switcher",
     "crates/nvr-audio-mixer",
     "crates/nvr-asr",
+    "crates/nvr-detect",
     "crates/xiaomi",
     "crates/nvr-yt-dlp",
     "crates/nvr-recorder",

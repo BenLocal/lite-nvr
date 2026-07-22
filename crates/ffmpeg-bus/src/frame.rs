@@ -119,6 +119,12 @@ impl RawVideoFrame {
         Bytes::copy_from_slice(self.frame.data(0))
     }
 
+    /// Borrow the inner decoded frame (all planes) — needed to feed a scaler.
+    /// `data()` only exposes plane 0.
+    pub fn as_video(&self) -> &ffmpeg_next::frame::Video {
+        &self.frame
+    }
+
     pub fn is_key(&self) -> bool {
         self.frame.is_key()
     }

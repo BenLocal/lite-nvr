@@ -1,0 +1,22 @@
+[package]
+name = "nvr-detect"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Backend-agnostic object detection: a Detector trait, unified detection types, and a usls/ONNX-Runtime YOLO backend. Runs one image through N models and returns each model's detections (label, bbox, confidence, timing)."
+
+[dependencies]
+anyhow = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+usls = { version = "0.1.11", default-features = false, features = ["ort-load-dynamic", "yolo", "github", "image-default-formats"] }
+
+[dev-dependencies]
+image = "0.25"
+clap = { version = "4", features = ["derive"] }
+env_logger = { workspace = true }
+
+[[example]]
+name = "detect-compare"
+path = "examples/detect-compare.rs"
