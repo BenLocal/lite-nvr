@@ -70,8 +70,12 @@ impl DetectHub {
         }
         let configs = self.configs.clone();
         let dir = self.models_dir.clone();
-        let built =
-            tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Arc<dyn Detector>>> {
+        // Build on a large-stack thread: ONNX Runtime session construction
+        // overflows tokio's default blocking-thread stack. See
+        // `super::spawn_big_stack`.
+        let built = super::spawn_big_stack(
+            "detect-build",
+            move || -> anyhow::Result<Vec<Arc<dyn Detector>>> {
                 let mut out: Vec<Arc<dyn Detector>> = Vec::new();
                 for cfg in &configs {
                     let path = if std::path::Path::new(&cfg.model_file).is_absolute() {
@@ -83,8 +87,10 @@ impl DetectHub {
                     out.push(Arc::new(det));
                 }
                 Ok(out)
-            })
-            .await??;
+            },
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("detector build thread died"))??;
         *guard = Some(built.clone());
         Ok(built)
     }

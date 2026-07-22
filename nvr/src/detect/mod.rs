@@ -32,6 +32,32 @@ pub fn model_config() -> (Vec<DetectorConfig>, PathBuf) {
     (configs, dir)
 }
 
+/// Spawn a blocking closure on a dedicated thread with a large (16 MiB) stack,
+/// returning a receiver for its result. The thread starts immediately, so
+/// several calls run concurrently; `await` the receiver for the value (an `Err`
+/// means the thread died without producing one, e.g. it panicked).
+///
+/// ONNX Runtime session construction (and inference) recurse deeply enough to
+/// overflow tokio's default ~2 MiB `spawn_blocking` thread stack — building a
+/// real YOLO model there aborts the process with a stack overflow. The 8 MiB
+/// main-thread stack is enough (the offline example proves it), so we give the
+/// ONNX work its own thread with generous headroom.
+pub(crate) fn spawn_big_stack<T, F>(name: &'static str, f: F) -> tokio::sync::oneshot::Receiver<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            let _ = tx.send(f());
+        })
+        .expect("spawn detect ONNX thread");
+    rx
+}
+
 #[cfg(test)]
 #[path = "hub_test.rs"]
 mod hub_test;

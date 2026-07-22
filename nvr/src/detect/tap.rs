@@ -23,11 +23,14 @@ pub async fn fanout(
     w: u32,
     h: u32,
 ) -> Vec<ModelResult> {
-    let mut handles = Vec::with_capacity(detectors.len());
+    // Each model infers on its own large-stack thread (ONNX Runtime overflows
+    // tokio's default blocking-thread stack). Spawning eagerly runs them
+    // concurrently; we then await each result.
+    let mut rxs = Vec::with_capacity(detectors.len());
     for det in detectors {
         let det = det.clone();
         let rgb = rgb.clone();
-        handles.push(tokio::task::spawn_blocking(move || {
+        rxs.push(super::spawn_big_stack("detect-infer", move || {
             let start = Instant::now();
             let res = det.detect(&rgb, w, h);
             let infer_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -48,11 +51,11 @@ pub async fn fanout(
             }
         }));
     }
-    let mut out = Vec::with_capacity(handles.len());
-    for h in handles {
-        match h.await {
+    let mut out = Vec::with_capacity(rxs.len());
+    for rx in rxs {
+        match rx.await {
             Ok(r) => out.push(r),
-            Err(e) => log::warn!("detect: fanout task join error: {e}"),
+            Err(e) => log::warn!("detect: fanout onnx thread died: {e}"),
         }
     }
     out
