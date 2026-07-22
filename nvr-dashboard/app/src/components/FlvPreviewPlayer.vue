@@ -2,10 +2,12 @@
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
+import DetectionOverlay from './DetectionOverlay.vue'
 import { createStreamPlayer, type StreamPlayerHandle } from '../utils/streamPlayer'
 
 const props = defineProps<{
   url: string
+  detectDeviceId?: string
 }>()
 
 const videoRef = ref<HTMLVideoElement | null>(null)
@@ -329,6 +331,11 @@ function formatAudioCodec(codec: string) {
           playsinline
         />
         <div ref="jessibucaRef" class="preview-jessibuca" />
+        <DetectionOverlay
+          v-if="detectDeviceId"
+          :key="detectDeviceId"
+          :device-id="detectDeviceId"
+        />
       </div>
     </div>
   </div>

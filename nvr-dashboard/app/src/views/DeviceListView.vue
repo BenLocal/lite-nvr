@@ -1271,6 +1271,7 @@ async function copyText(value: string, label: string) {
         </div>
         <FlvPreviewPlayer
           :url="previewDevice?.flv_url || (previewDevice ? buildFlvUrl(previewDevice.id) : '')"
+          :detect-device-id="previewDevice?.id"
         />
         <TranscriptPanel
           v-if="previewDevice"
