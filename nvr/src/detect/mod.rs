@@ -4,6 +4,7 @@
 pub mod convert;
 pub mod hub;
 pub mod result;
+pub mod tap;
 
 use std::path::PathBuf;
 
