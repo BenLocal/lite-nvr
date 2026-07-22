@@ -10,7 +10,7 @@ anyhow = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-usls = "0.1.11"
+usls = { version = "0.1.11", default-features = false, features = ["ort-load-dynamic", "yolo", "github", "image-default-formats"] }
 
 [dev-dependencies]
 image = "0.25"
