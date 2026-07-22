@@ -1,0 +1,4 @@
+[
+  { "name": "yolov8n", "model_file": "yolov8n.onnx", "version": 8.0, "conf": 0.25 },
+  { "name": "yolo11s", "model_file": "yolo11s.onnx", "version": 11.0, "conf": 0.25 }
+]
