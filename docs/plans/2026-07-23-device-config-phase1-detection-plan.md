@@ -17,6 +17,9 @@
 - **No DB migration** — device config rides in the existing KV JSON blob; new struct fields use `#[serde(default)]` for back-compat with existing rows.
 - Frontend: use PrimeVue components; all HTTP lives in `src/api/`; `npm run type-check` and `npm run lint` must pass before any frontend commit. Keep the dark control-room theme (reuse `.field` / `.field-grid` / `.field-hint`).
 - API verbs are GET/POST only.
+- **Backend build/test environment:** `cargo build/test -p nvr` needs the FFmpeg + ZLM shared libs on the loader path. Either run via the Makefile (`make build`, `make test`) which exports `FFMPEG_DIR`/`ZLM_DIR`/`LD_LIBRARY_PATH`, or prefix cargo directly: `LD_LIBRARY_PATH="$(pwd)/ffmpeg/lib:$(pwd)/target/debug/deps:$LD_LIBRARY_PATH" cargo test -p nvr <filter>`. (`nvr-db` tests need no special env.)
+- **Colocated-test filter:** a `*_test.rs` colocated inside a submodule file registers under `<parent>::<file_stem>::<file_stem>_test::<name>`. Filter with `<parent>::<file_stem>` (e.g. `detect::tap`, `detect::control`) — `detect::tap_test` silently matches 0 tests and prints a misleading "0 filtered out". Inside the test file, `super` refers to the parent file's module (e.g. `super::apply_min_confidence`), not a `super::<file_stem>::…` path.
+- **Expected `dead_code` warning:** a function added before its caller (wired in a later task) produces a `warning: function '…' is never used`. nvr does not deny warnings, so this is expected and not a failure (e.g. `reconcile_detection`/`stop_detection` are unused until Task 4).
 
 ## File Structure
 
@@ -53,7 +56,8 @@
 Create `nvr-db/src/device_test.rs`:
 
 ```rust
-use super::device::{DetectConfig, DeviceConfig, DeviceInfo};
+// device_test is a child module of `device` (this file), so `super` == device.
+use super::{DetectConfig, DeviceConfig, DeviceInfo};
 
 #[test]
 fn device_without_config_deserializes_to_default() {
@@ -320,7 +324,8 @@ git commit -m "feat(detect): per-tap min_confidence post-inference filter"
 Create `nvr/src/detect/control_test.rs`:
 
 ```rust
-use super::control::should_auto_start;
+// control_test is a child module of `control` (this file), so `super` == control.
+use super::should_auto_start;
 use nvr_db::device::DetectConfig;
 
 fn cfg(enabled: bool) -> DetectConfig {
