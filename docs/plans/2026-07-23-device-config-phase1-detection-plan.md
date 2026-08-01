@@ -19,6 +19,7 @@
 - API verbs are GET/POST only.
 - **Backend build/test environment:** `cargo build/test -p nvr` needs the FFmpeg + ZLM shared libs on the loader path. Either run via the Makefile (`make build`, `make test`) which exports `FFMPEG_DIR`/`ZLM_DIR`/`LD_LIBRARY_PATH`, or prefix cargo directly: `LD_LIBRARY_PATH="$(pwd)/ffmpeg/lib:$(pwd)/target/debug/deps:$LD_LIBRARY_PATH" cargo test -p nvr <filter>`. (`nvr-db` tests need no special env.)
 - **Colocated-test filter:** a `*_test.rs` colocated inside a submodule file registers under `<parent>::<file_stem>::<file_stem>_test::<name>`. Filter with `<parent>::<file_stem>` (e.g. `detect::tap`, `detect::control`) — `detect::tap_test` silently matches 0 tests and prints a misleading "0 filtered out". Inside the test file, `super` refers to the parent file's module (e.g. `super::apply_min_confidence`), not a `super::<file_stem>::…` path.
+- **Tap registration is generation-scoped:** `DetectHub::register` returns an `Option<TapEpoch>` and `tap::run` releases its own slot via `unregister_tap(pipe, epoch)` when it ends (stream EOF / device disconnect), so a dead tap never leaves `is_running` stuck true. Keep the `epoch` argument when threading new params through `run`.
 - **Expected `dead_code` warning:** a function added before its caller (wired in a later task) produces a `warning: function '…' is never used`. nvr does not deny warnings, so this is expected and not a failure (e.g. `reconcile_detection`/`stop_detection` are unused until Task 4).
 
 ## File Structure
@@ -259,7 +260,8 @@ pub(crate) fn apply_min_confidence(models: &mut [ModelResult], min: f32) {
 }
 ```
 
-Add `min_confidence: f32` as the final parameter of `run`:
+Add `min_confidence: f32` as the final parameter of `run`. Note `epoch: TapEpoch`
+(added by the zombie-registration fix) sits between `hub` and `cancel` — keep it:
 
 ```rust
 pub async fn run(
@@ -268,6 +270,7 @@ pub async fn run(
     mut video: RawFrameReceiver,
     sample_interval_ms: u64,
     hub: &'static DetectHub,
+    epoch: TapEpoch,
     cancel: CancellationToken,
     min_confidence: f32,
 ) {
@@ -286,7 +289,7 @@ In `nvr/src/detect/api.rs`, the `tokio::spawn(super::tap::run(...))` call in `st
 
 ```rust
     tokio::spawn(super::tap::run(
-        pipe, detectors, video, interval, hub, cancel, 0.0,
+        pipe, detectors, video, interval, hub, epoch, cancel, 0.0,
     ));
 ```
 
@@ -316,7 +319,7 @@ git commit -m "feat(detect): per-tap min_confidence post-inference filter"
 - Modify: `nvr/src/detect/api.rs`
 
 **Interfaces:**
-- Consumes: `DetectHub::{get, is_running, detectors, detectors_named, register, unregister, sample_interval_ms}`; `crate::manager::get_pipe(&str) -> Option<handle>` where `handle.subscribe_video().await -> anyhow::Result<RawFrameReceiver>`; `tap::run(..., min_confidence)` from Task 2; `nvr_db::device::{DeviceInfo, DetectConfig}` from Task 1.
+- Consumes: `DetectHub::{get, is_running, detectors, detectors_named, register, unregister, sample_interval_ms}` (`register` returns `Option<TapEpoch>` — `None` means already running); `crate::manager::get_pipe(&str) -> Option<handle>` where `handle.subscribe_video().await -> anyhow::Result<RawFrameReceiver>`; `tap::run(..., min_confidence)` from Task 2; `nvr_db::device::{DeviceInfo, DetectConfig}` from Task 1.
 - Produces: `pub(crate) enum StartOutcome { Started, AlreadyRunning }`; `pub(crate) async fn start_tap(hub: &'static DetectHub, pipe: &str, want: Option<Vec<String>>, sample_interval_ms: u64, min_confidence: f32) -> anyhow::Result<StartOutcome>`; `pub(crate) fn stop_detection(pipe: &str)`; `pub(crate) async fn reconcile_detection(device: &DeviceInfo)`; `pub(crate) fn should_auto_start(detect: Option<&DetectConfig>, input_type: &str) -> bool`.
 
 - [ ] **Step 1: Write the failing test**
@@ -411,9 +414,9 @@ pub(crate) async fn start_tap(
     }
 
     let cancel = CancellationToken::new();
-    if !hub.register(pipe, cancel.clone()) {
+    let Some(epoch) = hub.register(pipe, cancel.clone()) else {
         return Ok(StartOutcome::AlreadyRunning);
-    }
+    };
     let interval = if sample_interval_ms > 0 {
         sample_interval_ms
     } else {
@@ -425,6 +428,7 @@ pub(crate) async fn start_tap(
         video,
         interval,
         hub,
+        epoch,
         cancel,
         min_confidence,
     ));

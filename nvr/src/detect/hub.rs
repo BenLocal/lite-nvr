@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use nvr_detect::{Detector, DetectorConfig, UslsDetector};
@@ -14,12 +15,20 @@ use super::result::FrameResult;
 
 static HUB: OnceLock<DetectHub> = OnceLock::new();
 
+/// Identifies one generation of a pipe's tap. A tap that ends on its own clears
+/// its slot with [`DetectHub::unregister_tap`], which matches only while that
+/// same generation is still registered — so a tap still unwinding after being
+/// cancelled can never evict the tap that replaced it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TapEpoch(u64);
+
 pub struct DetectHub {
     configs: Vec<DetectorConfig>,
     models_dir: PathBuf,
     sample_interval_ms: u64,
     detectors: AsyncMutex<Option<Vec<Arc<dyn Detector>>>>,
-    running: Mutex<HashMap<String, CancellationToken>>,
+    running: Mutex<HashMap<String, (TapEpoch, CancellationToken)>>,
+    next_epoch: AtomicU64,
     latest: Mutex<HashMap<String, FrameResult>>,
 }
 
@@ -42,6 +51,7 @@ impl DetectHub {
             sample_interval_ms,
             detectors: AsyncMutex::new(None),
             running: Mutex::new(HashMap::new()),
+            next_epoch: AtomicU64::new(0),
             latest: Mutex::new(HashMap::new()),
         }
     }
@@ -112,22 +122,44 @@ impl DetectHub {
         }
     }
 
-    pub fn register(&self, pipe: &str, cancel: CancellationToken) -> bool {
+    /// Claim `pipe` for a new tap. Returns the generation to hand to
+    /// `tap::run`, or `None` if a tap is already registered.
+    pub fn register(&self, pipe: &str, cancel: CancellationToken) -> Option<TapEpoch> {
         let mut r = self.running.lock().unwrap();
         if r.contains_key(pipe) {
-            return false;
+            return None;
         }
-        r.insert(pipe.to_string(), cancel);
-        true
+        let epoch = TapEpoch(self.next_epoch.fetch_add(1, Ordering::Relaxed));
+        r.insert(pipe.to_string(), (epoch, cancel));
+        Some(epoch)
     }
 
+    /// Stop whichever tap holds `pipe`, whatever its generation.
     pub fn unregister(&self, pipe: &str) -> bool {
         let mut r = self.running.lock().unwrap();
-        if let Some(tok) = r.remove(pipe) {
+        if let Some((_, tok)) = r.remove(pipe) {
             tok.cancel();
             true
         } else {
             false
+        }
+    }
+
+    /// Release `pipe` on behalf of a tap that has ended by itself, but only if
+    /// `epoch` is still the registered generation.
+    ///
+    /// A tap can end without anyone calling [`Self::unregister`] — stream EOF,
+    /// or the frame sender dropping when a device disconnects. Without this the
+    /// slot would outlive the task, leaving `is_running` permanently true and
+    /// blocking any restart on reconnect.
+    pub fn unregister_tap(&self, pipe: &str, epoch: TapEpoch) -> bool {
+        let mut r = self.running.lock().unwrap();
+        match r.get(pipe) {
+            Some((current, _)) if *current == epoch => {
+                r.remove(pipe);
+                true
+            }
+            _ => false,
         }
     }
 

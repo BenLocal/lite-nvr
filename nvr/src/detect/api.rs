@@ -90,12 +90,12 @@ async fn start(Path(pipe): Path<String>, body: Option<Json<StartBody>>) -> impl 
     }
 
     let cancel = CancellationToken::new();
-    if !hub.register(&pipe, cancel.clone()) {
+    let Some(epoch) = hub.register(&pipe, cancel.clone()) else {
         return (StatusCode::OK, "already running").into_response();
-    }
+    };
     let interval = hub.sample_interval_ms();
     tokio::spawn(super::tap::run(
-        pipe, detectors, video, interval, hub, cancel,
+        pipe, detectors, video, interval, hub, epoch, cancel,
     ));
     (StatusCode::OK, "started").into_response()
 }

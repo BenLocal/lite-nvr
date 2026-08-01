@@ -1,6 +1,20 @@
 use super::*;
+use crate::detect::hub::DetectHub;
+use ffmpeg_bus::frame::RawFrameCmd;
 use nvr_detect::{BBox, Detection, Detector};
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
+
+/// A hub with a `'static` lifetime, as `tap::run` requires. Leaked on purpose:
+/// each test needs its own isolated hub, and the global `OnceLock` one can only
+/// be installed once per process.
+fn leaked_hub() -> &'static DetectHub {
+    Box::leak(Box::new(DetectHub::new_for_test(
+        vec![],
+        std::path::PathBuf::from("."),
+        500,
+    )))
+}
 
 struct Fake(String);
 impl Detector for Fake {
@@ -33,4 +47,60 @@ async fn fanout_runs_every_detector_concurrently() {
     assert!(names.contains(&"a") && names.contains(&"b"));
     assert!(results.iter().all(|r| r.detections.len() == 1));
     assert!(results.iter().all(|r| r.error.is_none()));
+}
+
+#[tokio::test]
+async fn tap_frees_its_registration_when_the_device_drops_the_stream() {
+    // Device disconnect tears down the pipe, so the frame sender is dropped and
+    // `recv` yields `Closed`. The tap ends without anyone calling `unregister`.
+    let hub = leaked_hub();
+    let (tx, rx) = tokio::sync::broadcast::channel(4);
+    let cancel = CancellationToken::new();
+    let epoch = hub.register("cam1", cancel.clone()).expect("register");
+
+    drop(tx);
+    run("cam1".to_string(), vec![], rx, 1000, hub, epoch, cancel).await;
+
+    assert!(
+        !hub.is_running("cam1"),
+        "dead tap left a zombie registration"
+    );
+    // Which is what makes a restart on reconnect possible.
+    assert!(hub.register("cam1", CancellationToken::new()).is_some());
+}
+
+#[tokio::test]
+async fn tap_frees_its_registration_on_stream_eof() {
+    let hub = leaked_hub();
+    let (tx, rx) = tokio::sync::broadcast::channel(4);
+    let cancel = CancellationToken::new();
+    let epoch = hub.register("cam1", cancel.clone()).expect("register");
+
+    assert!(tx.send(RawFrameCmd::EOF).is_ok());
+    run("cam1".to_string(), vec![], rx, 1000, hub, epoch, cancel).await;
+
+    assert!(
+        !hub.is_running("cam1"),
+        "dead tap left a zombie registration"
+    );
+}
+
+#[tokio::test]
+async fn cancelled_tap_does_not_evict_its_replacement() {
+    // `unregister` already cleared the slot and a new tap took it over. The
+    // cancelled tap's own cleanup must not tear that replacement down.
+    let hub = leaked_hub();
+    let (_tx, rx) = tokio::sync::broadcast::channel(4);
+    let cancel = CancellationToken::new();
+    let epoch = hub.register("cam1", cancel.clone()).expect("register");
+
+    assert!(hub.unregister("cam1")); // fires `cancel`
+    let replacement = CancellationToken::new();
+    hub.register("cam1", replacement.clone())
+        .expect("replacement registers");
+
+    run("cam1".to_string(), vec![], rx, 1000, hub, epoch, cancel).await;
+
+    assert!(hub.is_running("cam1"), "replacement tap was evicted");
+    assert!(!replacement.is_cancelled());
 }
