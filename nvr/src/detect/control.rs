@@ -2,6 +2,8 @@
 //! device-config auto-start go through `start_tap`, so the tap is built the
 //! same way regardless of trigger.
 
+use std::time::Duration;
+
 use tokio_util::sync::CancellationToken;
 
 use nvr_db::device::{DetectConfig, DeviceInfo};
@@ -12,6 +14,13 @@ pub(crate) enum StartOutcome {
     Started,
     AlreadyRunning,
 }
+
+/// How long auto-start waits for a freshly created pipe to publish its bus.
+/// `manager::update_pipe` spawns `Pipe::start`, so `subscribe_video` reports
+/// "pipe not started" for the first moments of a pipe's life — and for an RTSP
+/// source, until the demuxer has actually connected and read a stream header.
+const AUTO_START_ATTEMPTS: u32 = 30;
+const AUTO_START_RETRY: Duration = Duration::from_secs(1);
 
 /// Whether a device should have detection auto-started: enabled config on a
 /// pipe-backed device. gb28181 has no pipe, so it never qualifies.
@@ -94,24 +103,73 @@ pub(crate) async fn reconcile_detection(device: &DeviceInfo) {
         return;
     }
 
+    // Every caller reaches here having just (re)created the pipe, so a tap that
+    // is still registered is bound to the bus that was torn down with the old
+    // pipe. Free the slot now: leaving it would make the retry below see
+    // `AlreadyRunning` and give up, and the stale tap dies moments later —
+    // leaving the device with no detection at all.
+    hub.unregister(&device.id);
+
     // want_on implies detect is Some(enabled).
-    let cfg = device.config.detect.as_ref().unwrap();
+    let cfg = device.config.detect.as_ref().unwrap().clone();
+    let id = device.id.clone();
+    // Spawned for two reasons: it yields, letting the `Pipe::start` task that
+    // `update_pipe` just spawned publish its bus (which is usually all the wait
+    // that is needed), and it keeps `ensure_device_pipe` — and with it the
+    // add/update HTTP response and the boot loop — from blocking on the retries.
+    tokio::spawn(async move { auto_start_with_retry(hub, id, cfg).await });
+}
+
+/// Claim the tap for `id` once its pipe is subscribable, giving up after
+/// [`AUTO_START_ATTEMPTS`] or as soon as the device stops wanting detection.
+async fn auto_start_with_retry(hub: &'static DetectHub, id: String, cfg: DetectConfig) {
     let want = if cfg.models.is_empty() {
         None
     } else {
         Some(cfg.models.clone())
     };
-    if let Err(e) = start_tap(
-        hub,
-        &device.id,
-        want,
-        cfg.sample_every_ms,
-        cfg.min_confidence,
-    )
-    .await
-    {
-        log::warn!("detect: auto-start failed for {}: {e:#}", device.id);
+    for attempt in 1..=AUTO_START_ATTEMPTS {
+        match start_tap(
+            hub,
+            &id,
+            want.clone(),
+            cfg.sample_every_ms,
+            cfg.min_confidence,
+        )
+        .await
+        {
+            Ok(StartOutcome::Started) => {
+                log::info!("detect: auto-started {id} (attempt {attempt})");
+                return;
+            }
+            Ok(StartOutcome::AlreadyRunning) => return,
+            Err(e) if attempt == AUTO_START_ATTEMPTS => {
+                log::warn!("detect: auto-start gave up for {id} after {attempt} attempts: {e:#}");
+                return;
+            }
+            Err(e) => {
+                log::debug!("detect: auto-start attempt {attempt} for {id}: {e:#}");
+            }
+        }
+        tokio::time::sleep(AUTO_START_RETRY).await;
+        // Re-read rather than trusting the config we were handed: the user can
+        // disable detection or delete the device while we are still waiting.
+        if !should_keep_retrying(reread_device(&id).await.as_ref()) {
+            log::info!("detect: auto-start for {id} abandoned (config changed while waiting)");
+            return;
+        }
     }
+}
+
+/// Whether a pending auto-start retry is still wanted. A device that vanished
+/// mid-wait (removed) or had detection turned off must not get a tap.
+fn should_keep_retrying(device: Option<&DeviceInfo>) -> bool {
+    device.is_some_and(|d| should_auto_start(d.config.detect.as_ref(), &d.input_type))
+}
+
+async fn reread_device(id: &str) -> Option<DeviceInfo> {
+    let conn = crate::db::app_db_conn().ok()?;
+    nvr_db::device::get(id, &conn).await.ok().flatten()
 }
 
 #[cfg(test)]
