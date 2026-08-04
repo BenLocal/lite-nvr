@@ -95,7 +95,7 @@ async fn start(Path(pipe): Path<String>, body: Option<Json<StartBody>>) -> impl 
     };
     let interval = hub.sample_interval_ms();
     tokio::spawn(super::tap::run(
-        pipe, detectors, video, interval, hub, epoch, cancel,
+        pipe, detectors, video, interval, hub, epoch, cancel, 0.0,
     ));
     (StatusCode::OK, "started").into_response()
 }

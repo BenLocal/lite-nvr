@@ -36,6 +36,45 @@ impl Detector for Fake {
     }
 }
 
+fn det(conf: f32) -> Detection {
+    Detection {
+        class_id: 0,
+        label: "obj".to_string(),
+        bbox: BBox {
+            x1: 0.0,
+            y1: 0.0,
+            x2: 1.0,
+            y2: 1.0,
+        },
+        confidence: conf,
+    }
+}
+
+#[test]
+fn min_confidence_drops_low_scores() {
+    let mut models = vec![ModelResult {
+        name: "m".to_string(),
+        infer_ms: 1.0,
+        detections: vec![det(0.9), det(0.3), det(0.5)],
+        error: None,
+    }];
+    super::apply_min_confidence(&mut models, 0.5);
+    let confs: Vec<f32> = models[0].detections.iter().map(|d| d.confidence).collect();
+    assert_eq!(confs, vec![0.9, 0.5]);
+}
+
+#[test]
+fn min_confidence_zero_is_noop() {
+    let mut models = vec![ModelResult {
+        name: "m".to_string(),
+        infer_ms: 1.0,
+        detections: vec![det(0.1)],
+        error: None,
+    }];
+    super::apply_min_confidence(&mut models, 0.0);
+    assert_eq!(models[0].detections.len(), 1);
+}
+
 #[tokio::test]
 async fn fanout_runs_every_detector_concurrently() {
     let dets: Vec<Arc<dyn Detector>> = vec![Arc::new(Fake("a".into())), Arc::new(Fake("b".into()))];
@@ -59,7 +98,17 @@ async fn tap_frees_its_registration_when_the_device_drops_the_stream() {
     let epoch = hub.register("cam1", cancel.clone()).expect("register");
 
     drop(tx);
-    run("cam1".to_string(), vec![], rx, 1000, hub, epoch, cancel).await;
+    run(
+        "cam1".to_string(),
+        vec![],
+        rx,
+        1000,
+        hub,
+        epoch,
+        cancel,
+        0.0,
+    )
+    .await;
 
     assert!(
         !hub.is_running("cam1"),
@@ -77,7 +126,17 @@ async fn tap_frees_its_registration_on_stream_eof() {
     let epoch = hub.register("cam1", cancel.clone()).expect("register");
 
     assert!(tx.send(RawFrameCmd::EOF).is_ok());
-    run("cam1".to_string(), vec![], rx, 1000, hub, epoch, cancel).await;
+    run(
+        "cam1".to_string(),
+        vec![],
+        rx,
+        1000,
+        hub,
+        epoch,
+        cancel,
+        0.0,
+    )
+    .await;
 
     assert!(
         !hub.is_running("cam1"),
@@ -99,7 +158,17 @@ async fn cancelled_tap_does_not_evict_its_replacement() {
     hub.register("cam1", replacement.clone())
         .expect("replacement registers");
 
-    run("cam1".to_string(), vec![], rx, 1000, hub, epoch, cancel).await;
+    run(
+        "cam1".to_string(),
+        vec![],
+        rx,
+        1000,
+        hub,
+        epoch,
+        cancel,
+        0.0,
+    )
+    .await;
 
     assert!(hub.is_running("cam1"), "replacement tap was evicted");
     assert!(!replacement.is_cancelled());

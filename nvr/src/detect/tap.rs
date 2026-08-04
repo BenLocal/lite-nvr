@@ -61,11 +61,25 @@ pub async fn fanout(
     out
 }
 
+/// Drop detections whose confidence is below `min` from every model result.
+/// `min <= 0.0` is a no-op (keep the model's built-in threshold).
+pub(crate) fn apply_min_confidence(models: &mut [ModelResult], min: f32) {
+    if min <= 0.0 {
+        return;
+    }
+    for m in models.iter_mut() {
+        m.detections.retain(|d| d.confidence >= min);
+    }
+}
+
 /// Drive one pipe's detection until `cancel` fires or the video broadcast ends.
 ///
 /// `epoch` is the registration handed out by [`DetectHub::register`]; the tap
 /// releases it on the way out so a tap that dies on its own doesn't leave the
 /// pipe looking busy forever.
+///
+/// `min_confidence` is a post-inference floor applied to every model's output;
+/// `0.0` keeps whatever each model already decided.
 pub async fn run(
     pipe: String,
     detectors: Vec<Arc<dyn Detector>>,
@@ -74,6 +88,7 @@ pub async fn run(
     hub: &'static DetectHub,
     epoch: TapEpoch,
     cancel: CancellationToken,
+    min_confidence: f32,
 ) {
     let interval = Duration::from_millis(sample_interval_ms);
     let mut last: Option<Instant> = None;
@@ -100,7 +115,8 @@ pub async fn run(
                         continue;
                     }
                 };
-                let models = fanout(&detectors, Arc::new(rgb), w, h).await;
+                let mut models = fanout(&detectors, Arc::new(rgb), w, h).await;
+                apply_min_confidence(&mut models, min_confidence);
                 hub.store(
                     &pipe,
                     FrameResult {
