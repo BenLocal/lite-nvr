@@ -9,9 +9,15 @@ import Dialog from "primevue/dialog";
 import InputNumber from "primevue/inputnumber";
 import InputText from "primevue/inputtext";
 import Message from "primevue/message";
+import MultiSelect from "primevue/multiselect";
 import Password from "primevue/password";
 import Select from "primevue/select";
 import Slider from "primevue/slider";
+import Tab from "primevue/tab";
+import TabList from "primevue/tablist";
+import TabPanel from "primevue/tabpanel";
+import TabPanels from "primevue/tabpanels";
+import Tabs from "primevue/tabs";
 import Tag from "primevue/tag";
 import Textarea from "primevue/textarea";
 import ToggleSwitch from "primevue/toggleswitch";
@@ -23,9 +29,11 @@ import {
   listDevices,
   removeDevice,
   updateDevice,
+  type DeviceConfig,
   type DeviceItem,
   type DevicePayload,
 } from "../api/device";
+import { listDetectModels } from "../api/detect";
 import {
   getGbCatalog,
   getGbDevices,
@@ -109,6 +117,43 @@ function resetGbFields() {
   gbDeviceId.value = "";
   gbChannelId.value = "";
   gbChannels.value = [];
+}
+
+// Detection config uses standalone refs (like the gb/onvif pickers) because it
+// is cross-cutting, not a @primevue/forms field. Assembled into config on submit.
+const detectEnabled = ref(false);
+const detectModels = ref<string[]>([]);
+const detectSampleMs = ref(1000);
+const detectMinConf = ref(0);
+const detectModelOptions = ref<string[]>([]);
+
+// A detection tap subscribes to a manager-registered `Entry::Pipe`. onvif and
+// stream register `Entry::Task` supervisors, xiaomi an `Entry::Worker`, and
+// gb28181 has no pipe at all — none expose a pipe the backend can attach to, so
+// the 检测 tab is hidden for them rather than silently failing after save.
+const DETECT_UNSUPPORTED_INPUT_TYPES = ["gb28181", "onvif", "stream", "xiaomi"];
+
+function detectSupported(inputType?: string): boolean {
+  return !!inputType && !DETECT_UNSUPPORTED_INPUT_TYPES.includes(inputType);
+}
+
+function resetDetectFields() {
+  detectEnabled.value = false;
+  detectModels.value = [];
+  detectSampleMs.value = 1000;
+  detectMinConf.value = 0;
+}
+
+function hydrateDetectFields(device: DeviceItem) {
+  const d = device.config?.detect;
+  if (!d) {
+    resetDetectFields();
+    return;
+  }
+  detectEnabled.value = d.enabled;
+  detectModels.value = [...d.models];
+  detectSampleMs.value = d.sample_every_ms || 1000;
+  detectMinConf.value = d.min_confidence ?? 0;
 }
 
 // PTZ (云台) control for gb28181 devices. The target is resolved from the
@@ -406,6 +451,13 @@ onMounted(() => {
   void loadDevices();
   loadGbStreams();
   gbTimer = setInterval(loadGbStreams, 5000);
+  listDetectModels()
+    .then((names) => {
+      detectModelOptions.value = names;
+    })
+    .catch(() => {
+      detectModelOptions.value = [];
+    });
 });
 
 onUnmounted(() => {
@@ -514,6 +566,7 @@ function openCreateDialog() {
   editingDevice.value = null;
   resetGbFields();
   resetOnvifFields();
+  resetDetectFields();
   dialogVisible.value = true;
 }
 
@@ -521,7 +574,9 @@ function openEditDialog(device: DeviceItem) {
   editingDevice.value = device;
   resetGbFields();
   resetOnvifFields();
+  resetDetectFields();
   hydrateGbFields(device);
+  hydrateDetectFields(device);
   dialogVisible.value = true;
 }
 
@@ -610,6 +665,18 @@ async function onSubmit(event: { valid: boolean; values: Record<string, unknown>
     include_audio: Boolean(event.values.include_audio),
     record: event.values.record === undefined ? true : Boolean(event.values.record),
   };
+
+  if (detectSupported(inputType)) {
+    const config: DeviceConfig = {
+      detect: {
+        enabled: detectEnabled.value,
+        models: detectModels.value,
+        sample_every_ms: detectSampleMs.value,
+        min_confidence: detectMinConf.value,
+      },
+    };
+    payload.config = config;
+  }
 
   saving.value = true;
   try {
@@ -877,371 +944,431 @@ async function copyText(value: string, label: string) {
         class="device-form"
         @submit="onSubmit"
       >
-        <div class="field-grid">
-          <div class="field">
-            <label for="name">设备名称</label>
-            <InputText id="name" name="name" class="field-input" :invalid="$form.name?.invalid" />
-            <Message v-if="$form.name?.invalid" severity="error" size="small" variant="simple">
-              {{ $form.name.error?.message }}
-            </Message>
-          </div>
-          <div class="field">
-            <label for="input_type">输入类型</label>
-            <Select
-              id="input_type"
-              name="input_type"
-              :options="inputTypeOptions"
-              option-label="label"
-              option-value="value"
-              size="small"
-              class="field-input"
-              placeholder="请选择输入类型"
-              :invalid="$form.input_type?.invalid"
-            />
-            <Message
-              v-if="$form.input_type?.invalid"
-              severity="error"
-              size="small"
-              variant="simple"
-            >
-              {{ $form.input_type.error?.message }}
-            </Message>
-          </div>
-        </div>
+        <Tabs value="basic">
+          <TabList>
+            <Tab value="basic">基本</Tab>
+            <Tab v-if="detectSupported($form.input_type?.value)" value="detect">
+              检测
+            </Tab>
+          </TabList>
+          <TabPanels>
+            <TabPanel value="basic">
+              <div class="field-grid">
+                <div class="field">
+                  <label for="name">设备名称</label>
+                  <InputText id="name" name="name" class="field-input" :invalid="$form.name?.invalid" />
+                  <Message v-if="$form.name?.invalid" severity="error" size="small" variant="simple">
+                    {{ $form.name.error?.message }}
+                  </Message>
+                </div>
+                <div class="field">
+                  <label for="input_type">输入类型</label>
+                  <Select
+                    id="input_type"
+                    name="input_type"
+                    :options="inputTypeOptions"
+                    option-label="label"
+                    option-value="value"
+                    size="small"
+                    class="field-input"
+                    placeholder="请选择输入类型"
+                    :invalid="$form.input_type?.invalid"
+                  />
+                  <Message
+                    v-if="$form.input_type?.invalid"
+                    severity="error"
+                    size="small"
+                    variant="simple"
+                  >
+                    {{ $form.input_type.error?.message }}
+                  </Message>
+                </div>
+              </div>
 
-        <template v-if="$form.input_type?.value === 'xiaomi'">
-          <div class="field-grid">
-            <div class="field">
-              <label for="xm_user_id">用户 ID</label>
-              <InputText
-                id="xm_user_id"
-                name="xm_user_id"
-                class="field-input"
-                placeholder="Xiaomi user_id"
-                :invalid="$form.xm_user_id?.invalid"
-              />
-              <Message
-                v-if="$form.xm_user_id?.invalid"
-                severity="error"
-                size="small"
-                variant="simple"
-              >
-                {{ $form.xm_user_id.error?.message }}
-              </Message>
-            </div>
-            <div class="field">
-              <label for="xm_token">Token</label>
-              <Password
-                id="xm_token"
-                name="xm_token"
-                class="field-input"
-                :feedback="false"
-                toggle-mask
-                placeholder="passToken"
-                :invalid="$form.xm_token?.invalid"
-              />
-              <Message
-                v-if="$form.xm_token?.invalid"
-                severity="error"
-                size="small"
-                variant="simple"
-              >
-                {{ $form.xm_token.error?.message }}
-              </Message>
-            </div>
-          </div>
+              <template v-if="$form.input_type?.value === 'xiaomi'">
+                <div class="field-grid">
+                  <div class="field">
+                    <label for="xm_user_id">用户 ID</label>
+                    <InputText
+                      id="xm_user_id"
+                      name="xm_user_id"
+                      class="field-input"
+                      placeholder="Xiaomi user_id"
+                      :invalid="$form.xm_user_id?.invalid"
+                    />
+                    <Message
+                      v-if="$form.xm_user_id?.invalid"
+                      severity="error"
+                      size="small"
+                      variant="simple"
+                    >
+                      {{ $form.xm_user_id.error?.message }}
+                    </Message>
+                  </div>
+                  <div class="field">
+                    <label for="xm_token">Token</label>
+                    <Password
+                      id="xm_token"
+                      name="xm_token"
+                      class="field-input"
+                      :feedback="false"
+                      toggle-mask
+                      placeholder="passToken"
+                      :invalid="$form.xm_token?.invalid"
+                    />
+                    <Message
+                      v-if="$form.xm_token?.invalid"
+                      severity="error"
+                      size="small"
+                      variant="simple"
+                    >
+                      {{ $form.xm_token.error?.message }}
+                    </Message>
+                  </div>
+                </div>
 
-          <div class="field-grid">
-            <div class="field">
-              <label for="xm_did">设备 DID</label>
-              <InputText
-                id="xm_did"
-                name="xm_did"
-                class="field-input"
-                placeholder="did"
-                :invalid="$form.xm_did?.invalid"
-              />
-              <Message v-if="$form.xm_did?.invalid" severity="error" size="small" variant="simple">
-                {{ $form.xm_did.error?.message }}
-              </Message>
-            </div>
-            <div class="field">
-              <label for="xm_model">型号 Model</label>
-              <InputText
-                id="xm_model"
-                name="xm_model"
-                class="field-input"
-                placeholder="如 chuangmi.camera.xxx"
-                :invalid="$form.xm_model?.invalid"
-              />
-              <Message
-                v-if="$form.xm_model?.invalid"
-                severity="error"
-                size="small"
-                variant="simple"
-              >
-                {{ $form.xm_model.error?.message }}
-              </Message>
-            </div>
-          </div>
+                <div class="field-grid">
+                  <div class="field">
+                    <label for="xm_did">设备 DID</label>
+                    <InputText
+                      id="xm_did"
+                      name="xm_did"
+                      class="field-input"
+                      placeholder="did"
+                      :invalid="$form.xm_did?.invalid"
+                    />
+                    <Message v-if="$form.xm_did?.invalid" severity="error" size="small" variant="simple">
+                      {{ $form.xm_did.error?.message }}
+                    </Message>
+                  </div>
+                  <div class="field">
+                    <label for="xm_model">型号 Model</label>
+                    <InputText
+                      id="xm_model"
+                      name="xm_model"
+                      class="field-input"
+                      placeholder="如 chuangmi.camera.xxx"
+                      :invalid="$form.xm_model?.invalid"
+                    />
+                    <Message
+                      v-if="$form.xm_model?.invalid"
+                      severity="error"
+                      size="small"
+                      variant="simple"
+                    >
+                      {{ $form.xm_model.error?.message }}
+                    </Message>
+                  </div>
+                </div>
 
-          <div class="field-grid">
-            <div class="field">
-              <label for="xm_ip">摄像头 IP</label>
-              <InputText
-                id="xm_ip"
-                name="xm_ip"
-                class="field-input"
-                placeholder="192.168.x.y"
-                :invalid="$form.xm_ip?.invalid"
-              />
-              <Message v-if="$form.xm_ip?.invalid" severity="error" size="small" variant="simple">
-                {{ $form.xm_ip.error?.message }}
-              </Message>
-            </div>
-            <div class="field">
-              <label for="xm_region">区域</label>
-              <Select
-                id="xm_region"
-                name="xm_region"
-                :options="regionOptions"
-                option-label="label"
-                option-value="value"
-                size="small"
-                class="field-input"
-                placeholder="选择区域"
-              />
-            </div>
-          </div>
+                <div class="field-grid">
+                  <div class="field">
+                    <label for="xm_ip">摄像头 IP</label>
+                    <InputText
+                      id="xm_ip"
+                      name="xm_ip"
+                      class="field-input"
+                      placeholder="192.168.x.y"
+                      :invalid="$form.xm_ip?.invalid"
+                    />
+                    <Message v-if="$form.xm_ip?.invalid" severity="error" size="small" variant="simple">
+                      {{ $form.xm_ip.error?.message }}
+                    </Message>
+                  </div>
+                  <div class="field">
+                    <label for="xm_region">区域</label>
+                    <Select
+                      id="xm_region"
+                      name="xm_region"
+                      :options="regionOptions"
+                      option-label="label"
+                      option-value="value"
+                      size="small"
+                      class="field-input"
+                      placeholder="选择区域"
+                    />
+                  </div>
+                </div>
 
-          <div class="field">
-            <span class="field-hint">
-              运行 <code>cargo run -p xiaomi --bin validate</code>
-              登录小米账号即可获取 user_id / token，并列出各摄像头的 did / model / ip。
-            </span>
-          </div>
-        </template>
-
-        <template v-else-if="$form.input_type?.value === 'gb28181'">
-          <div class="field">
-            <label for="gb_device">国标设备</label>
-            <Select
-              id="gb_device"
-              class="field-input"
-              :options="gbDevices"
-              option-label="device_id"
-              option-value="device_id"
-              :model-value="gbDeviceId"
-              placeholder="选择已注册的国标设备"
-              @update:model-value="onGbDeviceChange"
-              @before-show="loadGbDevices"
-            >
-              <template #option="{ option }">
-                <div class="gb-option">
-                  <span class="mono-text">{{ option.device_id }}</span>
-                  <Tag v-if="!option.online" value="离线" severity="secondary" />
+                <div class="field">
+                  <span class="field-hint">
+                    运行 <code>cargo run -p xiaomi --bin validate</code>
+                    登录小米账号即可获取 user_id / token，并列出各摄像头的 did / model / ip。
+                  </span>
                 </div>
               </template>
-            </Select>
-          </div>
-          <div class="field">
-            <label for="gb_channel">国标通道</label>
-            <Select
-              id="gb_channel"
-              v-model="gbChannelId"
-              class="field-input"
-              :options="gbChannels"
-              option-label="name"
-              option-value="channel_id"
-              placeholder="选择通道"
-              :disabled="!gbDeviceId"
-            />
-            <Message
-              v-if="$form.input_value?.invalid"
-              severity="error"
-              size="small"
-              variant="simple"
-            >
-              {{ $form.input_value.error?.message }}
-            </Message>
-          </div>
-          <div class="field">
-            <span class="field-hint">
-              国标设备需先注册到本平台（NVR_GB_ENABLE=1）。下拉框列出已注册设备（离线设备会标注），
-              选择后加载其通道，保存后仅在有人观看时按需 INVITE 拉流。
-            </span>
-          </div>
-        </template>
 
-        <template v-else-if="$form.input_type?.value === 'onvif'">
-          <div class="field-grid">
-            <div class="field">
-              <label for="onvif_host">主机地址</label>
-              <InputText
-                id="onvif_host"
-                name="onvif_host"
-                class="field-input"
-                placeholder="192.168.x.y"
-                :invalid="$form.onvif_host?.invalid"
-              />
-              <Message
-                v-if="$form.onvif_host?.invalid"
-                severity="error"
-                size="small"
-                variant="simple"
-              >
-                {{ $form.onvif_host.error?.message }}
-              </Message>
-            </div>
-            <div class="field">
-              <label for="onvif_port">端口</label>
-              <InputNumber
-                id="onvif_port"
-                name="onvif_port"
-                class="field-input"
-                :use-grouping="false"
-                :min="1"
-                :max="65535"
-              />
-            </div>
-          </div>
+              <template v-else-if="$form.input_type?.value === 'gb28181'">
+                <div class="field">
+                  <label for="gb_device">国标设备</label>
+                  <Select
+                    id="gb_device"
+                    class="field-input"
+                    :options="gbDevices"
+                    option-label="device_id"
+                    option-value="device_id"
+                    :model-value="gbDeviceId"
+                    placeholder="选择已注册的国标设备"
+                    @update:model-value="onGbDeviceChange"
+                    @before-show="loadGbDevices"
+                  >
+                    <template #option="{ option }">
+                      <div class="gb-option">
+                        <span class="mono-text">{{ option.device_id }}</span>
+                        <Tag v-if="!option.online" value="离线" severity="secondary" />
+                      </div>
+                    </template>
+                  </Select>
+                </div>
+                <div class="field">
+                  <label for="gb_channel">国标通道</label>
+                  <Select
+                    id="gb_channel"
+                    v-model="gbChannelId"
+                    class="field-input"
+                    :options="gbChannels"
+                    option-label="name"
+                    option-value="channel_id"
+                    placeholder="选择通道"
+                    :disabled="!gbDeviceId"
+                  />
+                  <Message
+                    v-if="$form.input_value?.invalid"
+                    severity="error"
+                    size="small"
+                    variant="simple"
+                  >
+                    {{ $form.input_value.error?.message }}
+                  </Message>
+                </div>
+                <div class="field">
+                  <span class="field-hint">
+                    国标设备需先注册到本平台（NVR_GB_ENABLE=1）。下拉框列出已注册设备（离线设备会标注），
+                    选择后加载其通道，保存后仅在有人观看时按需 INVITE 拉流。
+                  </span>
+                </div>
+              </template>
 
-          <div class="field-grid">
-            <div class="field">
-              <label for="onvif_username">用户名</label>
-              <InputText
-                id="onvif_username"
-                name="onvif_username"
-                class="field-input"
-                placeholder="admin"
-              />
-            </div>
-            <div class="field">
-              <label for="onvif_password">密码</label>
-              <Password
-                id="onvif_password"
-                name="onvif_password"
-                class="field-input"
-                :feedback="false"
-                toggle-mask
-              />
-            </div>
-          </div>
+              <template v-else-if="$form.input_type?.value === 'onvif'">
+                <div class="field-grid">
+                  <div class="field">
+                    <label for="onvif_host">主机地址</label>
+                    <InputText
+                      id="onvif_host"
+                      name="onvif_host"
+                      class="field-input"
+                      placeholder="192.168.x.y"
+                      :invalid="$form.onvif_host?.invalid"
+                    />
+                    <Message
+                      v-if="$form.onvif_host?.invalid"
+                      severity="error"
+                      size="small"
+                      variant="simple"
+                    >
+                      {{ $form.onvif_host.error?.message }}
+                    </Message>
+                  </div>
+                  <div class="field">
+                    <label for="onvif_port">端口</label>
+                    <InputNumber
+                      id="onvif_port"
+                      name="onvif_port"
+                      class="field-input"
+                      :use-grouping="false"
+                      :min="1"
+                      :max="65535"
+                    />
+                  </div>
+                </div>
 
-          <div class="field field-inline">
-            <Button
-              type="button"
-              label="探测"
-              icon="pi pi-search"
-              size="small"
-              :loading="onvifProbing"
-              @click="runOnvifProbe($form)"
-            />
-            <Button
-              type="button"
-              label="扫描局域网"
-              icon="pi pi-wifi"
-              size="small"
-              severity="secondary"
-              :loading="onvifDiscovering"
-              @click="runOnvifDiscover"
-            />
-          </div>
+                <div class="field-grid">
+                  <div class="field">
+                    <label for="onvif_username">用户名</label>
+                    <InputText
+                      id="onvif_username"
+                      name="onvif_username"
+                      class="field-input"
+                      placeholder="admin"
+                    />
+                  </div>
+                  <div class="field">
+                    <label for="onvif_password">密码</label>
+                    <Password
+                      id="onvif_password"
+                      name="onvif_password"
+                      class="field-input"
+                      :feedback="false"
+                      toggle-mask
+                    />
+                  </div>
+                </div>
 
-          <div v-if="onvifDiscovered.length" class="field">
-            <label>发现的设备</label>
-            <ul class="onvif-discovered-list">
-              <li v-for="item in onvifDiscovered" :key="item.addr ?? item.endpoints[0]">
-                <Button
-                  type="button"
-                  text
-                  size="small"
-                  class="onvif-discovered-item"
-                  @click="applyOnvifDiscovered(item, $form)"
-                >
-                  <span class="mono-text">{{ item.addr ?? "未知地址" }}</span>
-                  <span v-if="item.name" class="field-hint">{{ item.name }}</span>
-                </Button>
-              </li>
-            </ul>
-          </div>
+                <div class="field field-inline">
+                  <Button
+                    type="button"
+                    label="探测"
+                    icon="pi pi-search"
+                    size="small"
+                    :loading="onvifProbing"
+                    @click="runOnvifProbe($form)"
+                  />
+                  <Button
+                    type="button"
+                    label="扫描局域网"
+                    icon="pi pi-wifi"
+                    size="small"
+                    severity="secondary"
+                    :loading="onvifDiscovering"
+                    @click="runOnvifDiscover"
+                  />
+                </div>
 
-          <div v-if="onvifProbe" class="field">
-            <label>设备信息</label>
-            <div class="onvif-device-info">
-              <span>{{ onvifProbe.device_info.manufacturer }} {{ onvifProbe.device_info.model }}</span>
-              <span class="field-hint">固件 {{ onvifProbe.device_info.firmware }}</span>
-            </div>
-          </div>
+                <div v-if="onvifDiscovered.length" class="field">
+                  <label>发现的设备</label>
+                  <ul class="onvif-discovered-list">
+                    <li v-for="item in onvifDiscovered" :key="item.addr ?? item.endpoints[0]">
+                      <Button
+                        type="button"
+                        text
+                        size="small"
+                        class="onvif-discovered-item"
+                        @click="applyOnvifDiscovered(item, $form)"
+                      >
+                        <span class="mono-text">{{ item.addr ?? "未知地址" }}</span>
+                        <span v-if="item.name" class="field-hint">{{ item.name }}</span>
+                      </Button>
+                    </li>
+                  </ul>
+                </div>
 
-          <!--
-            v-show (not v-if): the field must stay registered with the form
-            even before a probe succeeds, otherwise `$form.onvif_profile_token`
-            doesn't exist yet when runOnvifProbe() tries to write the
-            auto-selected profile into it right after a successful probe.
-          -->
-          <div v-show="onvifProbe" class="field">
-            <label for="onvif_profile_token">视频配置文件</label>
-            <Select
-              id="onvif_profile_token"
-              name="onvif_profile_token"
-              :options="onvifProfileOptions"
-              option-label="label"
-              option-value="value"
-              size="small"
-              class="field-input"
-              placeholder="请选择视频配置文件"
-            />
-          </div>
+                <div v-if="onvifProbe" class="field">
+                  <label>设备信息</label>
+                  <div class="onvif-device-info">
+                    <span>{{ onvifProbe.device_info.manufacturer }} {{ onvifProbe.device_info.model }}</span>
+                    <span class="field-hint">固件 {{ onvifProbe.device_info.firmware }}</span>
+                  </div>
+                </div>
 
-          <div class="field">
-            <span class="field-hint">
-              填写摄像头 ONVIF 服务地址、端口及登录凭据后点击“探测”获取设备信息与可用的视频配置文件；
-              也可点击“扫描局域网”自动发现同网段内的 ONVIF 设备并预填地址。
-            </span>
-          </div>
-        </template>
+                <!--
+                  v-show (not v-if): the field must stay registered with the form
+                  even before a probe succeeds, otherwise `$form.onvif_profile_token`
+                  doesn't exist yet when runOnvifProbe() tries to write the
+                  auto-selected profile into it right after a successful probe.
+                -->
+                <div v-show="onvifProbe" class="field">
+                  <label for="onvif_profile_token">视频配置文件</label>
+                  <Select
+                    id="onvif_profile_token"
+                    name="onvif_profile_token"
+                    :options="onvifProfileOptions"
+                    option-label="label"
+                    option-value="value"
+                    size="small"
+                    class="field-input"
+                    placeholder="请选择视频配置文件"
+                  />
+                </div>
 
-        <div v-else class="field">
-          <label for="input_value">{{
-            $form.input_type?.value === "stream" ? "直播间地址" : "输入地址/标识"
-          }}</label>
-          <InputText
-            id="input_value"
-            name="input_value"
-            class="field-input"
-            :placeholder="
-              $form.input_type?.value === 'stream'
-                ? '如 https://www.twitch.tv/xxx 或 https://live.bilibili.com/123'
-                : '如 rtsp://camera/live'
-            "
-            :invalid="$form.input_value?.invalid"
-          />
-          <Message v-if="$form.input_value?.invalid" severity="error" size="small" variant="simple">
-            {{ $form.input_value.error?.message }}
-          </Message>
-          <span v-if="$form.input_type?.value === 'stream'" class="field-hint">
-            填直播间页面地址（B站/虎牙/斗鱼/Twitch/YouTube 等）。拉流地址由 yt-dlp
-            在启动和每次重连时自动重新解析（地址带签名会过期），服务器需已安装 yt-dlp。
-          </span>
-        </div>
+                <div class="field">
+                  <span class="field-hint">
+                    填写摄像头 ONVIF 服务地址、端口及登录凭据后点击“探测”获取设备信息与可用的视频配置文件；
+                    也可点击“扫描局域网”自动发现同网段内的 ONVIF 设备并预填地址。
+                  </span>
+                </div>
+              </template>
 
-        <div class="field field-inline">
-          <label for="include_audio">包含音频</label>
-          <ToggleSwitch id="include_audio" name="include_audio" />
-          <span class="field-hint">开启后推流会包含音频轨（需输入源带音频）</span>
-        </div>
+              <div v-else class="field">
+                <label for="input_value">{{
+                  $form.input_type?.value === "stream" ? "直播间地址" : "输入地址/标识"
+                }}</label>
+                <InputText
+                  id="input_value"
+                  name="input_value"
+                  class="field-input"
+                  :placeholder="
+                    $form.input_type?.value === 'stream'
+                      ? '如 https://www.twitch.tv/xxx 或 https://live.bilibili.com/123'
+                      : '如 rtsp://camera/live'
+                  "
+                  :invalid="$form.input_value?.invalid"
+                />
+                <Message v-if="$form.input_value?.invalid" severity="error" size="small" variant="simple">
+                  {{ $form.input_value.error?.message }}
+                </Message>
+                <span v-if="$form.input_type?.value === 'stream'" class="field-hint">
+                  填直播间页面地址（B站/虎牙/斗鱼/Twitch/YouTube 等）。拉流地址由 yt-dlp
+                  在启动和每次重连时自动重新解析（地址带签名会过期），服务器需已安装 yt-dlp。
+                </span>
+              </div>
 
-        <div class="field field-inline">
-          <label for="record">录制</label>
-          <ToggleSwitch id="record" name="record" />
-          <span class="field-hint">开启后该设备的录像会保存到磁盘，可在回放中查看</span>
-        </div>
+              <div class="field field-inline">
+                <label for="include_audio">包含音频</label>
+                <ToggleSwitch id="include_audio" name="include_audio" />
+                <span class="field-hint">开启后推流会包含音频轨（需输入源带音频）</span>
+              </div>
 
-        <div class="field">
-          <label for="description">备注</label>
-          <Textarea id="description" name="description" class="field-input" rows="3" />
-        </div>
+              <div class="field field-inline">
+                <label for="record">录制</label>
+                <ToggleSwitch id="record" name="record" />
+                <span class="field-hint">开启后该设备的录像会保存到磁盘，可在回放中查看</span>
+              </div>
+
+              <div class="field">
+                <label for="description">备注</label>
+                <Textarea id="description" name="description" class="field-input" rows="3" />
+              </div>
+            </TabPanel>
+            <TabPanel value="detect">
+              <div class="field field-inline">
+                <label for="detect_enabled">启用检测</label>
+                <ToggleSwitch v-model="detectEnabled" input-id="detect_enabled" />
+                <span class="field-hint">开启后该设备的流会自动跑目标检测</span>
+              </div>
+              <div class="field">
+                <label for="detect_models">检测模型</label>
+                <MultiSelect
+                  v-model="detectModels"
+                  input-id="detect_models"
+                  class="field-input"
+                  :options="detectModelOptions"
+                  :disabled="detectModelOptions.length === 0"
+                  display="chip"
+                  placeholder="全部模型"
+                />
+                <span v-if="detectModelOptions.length === 0" class="field-hint">
+                  未配置检测模型（缺少 models.json）。
+                </span>
+                <span v-else class="field-hint">留空表示运行全部已配置模型。</span>
+              </div>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="detect_sample">抽帧间隔 (ms)</label>
+                  <InputNumber
+                    v-model="detectSampleMs"
+                    input-id="detect_sample"
+                    class="field-input"
+                    :min="100"
+                    :step="100"
+                    show-buttons
+                  />
+                </div>
+                <div class="field">
+                  <label for="detect_conf">置信度下限：{{ detectMinConf.toFixed(2) }}</label>
+                  <Slider
+                    v-model="detectMinConf"
+                    input-id="detect_conf"
+                    class="field-input"
+                    :min="0"
+                    :max="1"
+                    :step="0.05"
+                  />
+                  <span class="field-hint">0 表示沿用每个模型自带的阈值。</span>
+                </div>
+              </div>
+            </TabPanel>
+          </TabPanels>
+        </Tabs>
 
         <div class="dialog-actions">
           <Button type="button" label="取消" text @click="dialogVisible = false" />
