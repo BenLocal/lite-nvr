@@ -10,7 +10,6 @@ use axum::{
     routing::{get, post},
 };
 use serde::Deserialize;
-use tokio_util::sync::CancellationToken;
 
 use super::hub::DetectHub;
 
@@ -61,43 +60,16 @@ async fn start(Path(pipe): Path<String>, body: Option<Json<StartBody>>) -> impl 
     let Some(hub) = DetectHub::get() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "detect not initialized").into_response();
     };
-    if hub.is_running(&pipe) {
-        return (StatusCode::OK, "already running").into_response();
-    }
     let want = body.and_then(|Json(b)| b.models);
-
-    let Some(handle) = crate::manager::get_pipe(&pipe).await else {
-        return (StatusCode::NOT_FOUND, "pipe not found").into_response();
-    };
-    let video = match handle.subscribe_video().await {
-        Ok(rx) => rx,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("no video: {e:#}")).into_response(),
-    };
-
-    let all = match hub.detectors().await {
-        Ok(d) => d,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("model load failed: {e:#}"),
-            )
-                .into_response();
+    match crate::detect::control::start_tap(hub, &pipe, want, 0, 0.0).await {
+        Ok(crate::detect::control::StartOutcome::Started) => {
+            (StatusCode::OK, "started").into_response()
         }
-    };
-    let detectors = hub.detectors_named(&all, &want);
-    if detectors.is_empty() {
-        return (StatusCode::BAD_REQUEST, "no matching models").into_response();
+        Ok(crate::detect::control::StartOutcome::AlreadyRunning) => {
+            (StatusCode::OK, "already running").into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
     }
-
-    let cancel = CancellationToken::new();
-    let Some(epoch) = hub.register(&pipe, cancel.clone()) else {
-        return (StatusCode::OK, "already running").into_response();
-    };
-    let interval = hub.sample_interval_ms();
-    tokio::spawn(super::tap::run(
-        pipe, detectors, video, interval, hub, epoch, cancel, 0.0,
-    ));
-    (StatusCode::OK, "started").into_response()
 }
 
 #[cfg(test)]

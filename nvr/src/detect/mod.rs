@@ -2,6 +2,7 @@
 //! fans out to N models, and serves the latest per-frame comparison over REST.
 
 pub mod api;
+pub(crate) mod control;
 pub mod convert;
 pub mod hub;
 pub mod result;
