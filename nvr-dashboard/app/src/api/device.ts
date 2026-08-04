@@ -1,5 +1,16 @@
 import { request } from './request'
 
+export interface DetectConfig {
+  enabled: boolean
+  models: string[]
+  sample_every_ms: number
+  min_confidence: number
+}
+
+export interface DeviceConfig {
+  detect?: DetectConfig
+}
+
 export interface DeviceItem {
   id: string
   name: string
@@ -8,6 +19,7 @@ export interface DeviceItem {
   description: string
   include_audio: boolean
   record: boolean
+  config?: DeviceConfig
   created_at: string
   updated_at: string
   flv_url?: string
@@ -21,6 +33,7 @@ export interface DevicePayload {
   description?: string
   include_audio?: boolean
   record?: boolean
+  config?: DeviceConfig
 }
 
 export function listDevices() {
