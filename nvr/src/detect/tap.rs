@@ -9,7 +9,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
 
 use super::convert::to_rgb;
-use super::hub::DetectHub;
+use super::hub::{DetectHub, TapEpoch};
 use super::result::FrameResult;
 
 /// Run every detector on the same RGB image concurrently (each on a blocking
@@ -62,12 +62,17 @@ pub async fn fanout(
 }
 
 /// Drive one pipe's detection until `cancel` fires or the video broadcast ends.
+///
+/// `epoch` is the registration handed out by [`DetectHub::register`]; the tap
+/// releases it on the way out so a tap that dies on its own doesn't leave the
+/// pipe looking busy forever.
 pub async fn run(
     pipe: String,
     detectors: Vec<Arc<dyn Detector>>,
     mut video: RawFrameReceiver,
     sample_interval_ms: u64,
     hub: &'static DetectHub,
+    epoch: TapEpoch,
     cancel: CancellationToken,
 ) {
     let interval = Duration::from_millis(sample_interval_ms);
@@ -114,6 +119,10 @@ pub async fn run(
             Err(RecvError::Closed) => break,
         }
     }
+    // Most exits here are *not* driven by `unregister` (EOF, or the sender
+    // dropping when the device disconnects), so clear our own slot. Scoped to
+    // `epoch`, this is a no-op when the tap was cancelled and already replaced.
+    hub.unregister_tap(&pipe, epoch);
     log::info!("detect[{pipe}]: tap stopped");
 }
 

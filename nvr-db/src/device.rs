@@ -15,12 +15,37 @@ pub struct DeviceInfo {
     /// to true so devices created before this field keep recording.
     #[serde(default = "default_record")]
     pub record: bool,
+    #[serde(default)]
+    pub config: DeviceConfig,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 fn default_record() -> bool {
     true
+}
+
+/// Per-device configuration blob (KV JSON). Optional sections are added by
+/// later device-config phases (stream / transport / recording).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DeviceConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detect: Option<DetectConfig>,
+}
+
+/// Per-device object-detection settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetectConfig {
+    pub enabled: bool,
+    /// Subset of configured model names to run. Empty = all configured models.
+    #[serde(default)]
+    pub models: Vec<String>,
+    /// Sampling interval in ms. 0 = use the hub default.
+    #[serde(default)]
+    pub sample_every_ms: u64,
+    /// Post-inference confidence floor. 0.0 = keep each model's built-in conf.
+    #[serde(default)]
+    pub min_confidence: f32,
 }
 
 pub async fn list(conn: &Connection) -> anyhow::Result<Vec<DeviceInfo>> {
@@ -108,3 +133,7 @@ pub async fn delete(id: &str, conn: &Connection) -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "device_test.rs"]
+mod device_test;

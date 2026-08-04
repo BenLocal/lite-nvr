@@ -5,7 +5,7 @@ use axum::{
 };
 use chrono::Utc;
 use harsh::Harsh;
-use nvr_db::device::DeviceInfo;
+use nvr_db::device::{DeviceConfig, DeviceInfo};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -48,6 +48,8 @@ struct DevicePayload {
     include_audio: bool,
     #[serde(default = "default_record")]
     record: bool,
+    #[serde(default)]
+    config: DeviceConfig,
 }
 
 fn default_record() -> bool {
@@ -97,6 +99,7 @@ async fn add_device(Json(payload): Json<DevicePayload>) -> ApiJsonResult<DeviceI
         description: payload.description.unwrap_or_default().trim().to_string(),
         include_audio: payload.include_audio,
         record: payload.record,
+        config: payload.config,
         created_at: now,
         updated_at: now,
     };
@@ -122,6 +125,7 @@ async fn update_device(
         description: payload.description.unwrap_or_default().trim().to_string(),
         include_audio: payload.include_audio,
         record: payload.record,
+        config: payload.config,
         created_at: existing.created_at,
         updated_at: Utc::now(),
     };
