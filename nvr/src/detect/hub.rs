@@ -28,6 +28,8 @@ pub struct DetectHub {
     sample_interval_ms: u64,
     detectors: AsyncMutex<Option<Vec<Arc<dyn Detector>>>>,
     running: Mutex<HashMap<String, (TapEpoch, CancellationToken)>>,
+    auto_start: Mutex<HashMap<String, (u64, CancellationToken)>>,
+    next_auto_start: AtomicU64,
     next_epoch: AtomicU64,
     latest: Mutex<HashMap<String, FrameResult>>,
 }
@@ -51,6 +53,8 @@ impl DetectHub {
             sample_interval_ms,
             detectors: AsyncMutex::new(None),
             running: Mutex::new(HashMap::new()),
+            auto_start: Mutex::new(HashMap::new()),
+            next_auto_start: AtomicU64::new(0),
             next_epoch: AtomicU64::new(0),
             latest: Mutex::new(HashMap::new()),
         }
@@ -66,6 +70,25 @@ impl DetectHub {
 
     pub fn config_names(&self) -> Vec<String> {
         self.configs.iter().map(|c| c.name.clone()).collect()
+    }
+
+    /// Start a new device auto-start generation, cancelling any older retry
+    /// task for the same device.
+    pub fn begin_auto_start(&self, pipe: &str) -> (u64, CancellationToken) {
+        let token = CancellationToken::new();
+        let generation = self.next_auto_start.fetch_add(1, Ordering::Relaxed);
+        let mut pending = self.auto_start.lock().unwrap();
+        if let Some((_, old)) = pending.insert(pipe.to_string(), (generation, token.clone())) {
+            old.cancel();
+        }
+        (generation, token)
+    }
+
+    /// Cancel a pending auto-start and prevent it from claiming a tap later.
+    pub fn cancel_auto_start(&self, pipe: &str) {
+        if let Some((_, token)) = self.auto_start.lock().unwrap().remove(pipe) {
+            token.cancel();
+        }
     }
 
     /// Build (or return cached) all configured detectors. Heavy on first call
@@ -131,6 +154,32 @@ impl DetectHub {
         }
         let epoch = TapEpoch(self.next_epoch.fetch_add(1, Ordering::Relaxed));
         r.insert(pipe.to_string(), (epoch, cancel));
+        Some(epoch)
+    }
+
+    /// Claim a tap only if the auto-start generation is still current. The
+    /// pending-generation lock is held through registration so cancellation
+    /// cannot happen between the final check and the running-slot insert.
+    pub fn register_auto_start(
+        &self,
+        pipe: &str,
+        generation: u64,
+        cancel: CancellationToken,
+    ) -> Option<TapEpoch> {
+        let mut pending = self.auto_start.lock().unwrap();
+        if pending
+            .get(pipe)
+            .is_none_or(|(current, _)| *current != generation)
+        {
+            return None;
+        }
+        let mut running = self.running.lock().unwrap();
+        if running.contains_key(pipe) {
+            return None;
+        }
+        let epoch = TapEpoch(self.next_epoch.fetch_add(1, Ordering::Relaxed));
+        running.insert(pipe.to_string(), (epoch, cancel));
+        pending.remove(pipe);
         Some(epoch)
     }
 

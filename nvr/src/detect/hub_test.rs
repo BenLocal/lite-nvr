@@ -1,6 +1,7 @@
 use super::hub::DetectHub;
 use super::result::FrameResult;
 use nvr_detect::ModelResult;
+use tokio_util::sync::CancellationToken;
 
 #[test]
 fn store_and_latest_roundtrip_and_register_is_idempotent() {
@@ -48,6 +49,24 @@ fn finished_tap_frees_its_slot_so_detection_can_restart() {
     // A fresh tap can claim the pipe again.
     let tok2 = tokio_util::sync::CancellationToken::new();
     assert!(hub.register("cam1", tok2).is_some());
+}
+
+#[test]
+fn replacing_auto_start_cancels_the_previous_generation() {
+    let hub = DetectHub::new_for_test(vec![], std::path::PathBuf::new(), 500);
+    let (old_generation, old_token) = hub.begin_auto_start("cam1");
+    let (new_generation, _new_token) = hub.begin_auto_start("cam1");
+
+    assert!(old_token.is_cancelled());
+    assert!(
+        hub.register_auto_start("cam1", old_generation, CancellationToken::new())
+            .is_none()
+    );
+    assert!(
+        hub.register_auto_start("cam1", new_generation, CancellationToken::new())
+            .is_some()
+    );
+    hub.unregister("cam1");
 }
 
 #[test]

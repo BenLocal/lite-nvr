@@ -182,5 +182,10 @@ fn validate_device(device: &DeviceInfo) -> anyhow::Result<()> {
     if device.input_value.is_empty() {
         return Err(anyhow::anyhow!("input value is required"));
     }
+    let available_models = crate::detect::hub::DetectHub::get().map(|hub| hub.config_names());
+    crate::detect::control::validate_detect_config(
+        device.config.detect.as_ref(),
+        available_models.as_deref(),
+    )?;
     Ok(())
 }

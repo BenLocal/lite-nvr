@@ -61,7 +61,7 @@ async fn start(Path(pipe): Path<String>, body: Option<Json<StartBody>>) -> impl 
         return (StatusCode::SERVICE_UNAVAILABLE, "detect not initialized").into_response();
     };
     let want = body.and_then(|Json(b)| b.models);
-    match crate::detect::control::start_tap(hub, &pipe, want, 0, 0.0).await {
+    match crate::detect::control::start_tap(hub, &pipe, want, 0, 0.0, None).await {
         Ok(crate::detect::control::StartOutcome::Started) => {
             (StatusCode::OK, "started").into_response()
         }
