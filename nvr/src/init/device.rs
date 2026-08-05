@@ -128,7 +128,9 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
             device.record,
             false,
         ));
-        return manager::upsert_onvif(&device.id, media, cfg, device.include_audio, true).await;
+        manager::upsert_onvif(&device.id, media, cfg, device.include_audio, true).await?;
+        crate::detect::control::reconcile_detection(device).await;
+        return Ok(());
     }
 
     // Platform live streams (Douyin/Bilibili/Twitch… room pages): there is no
@@ -143,14 +145,16 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
             device.record,
             false,
         ));
-        return manager::upsert_stream(
+        manager::upsert_stream(
             &device.id,
             media,
             device.input_value.clone(),
             device.include_audio,
             true,
         )
-        .await;
+        .await?;
+        crate::detect::control::reconcile_detection(device).await;
+        return Ok(());
     }
 
     let input = match device.input_type.as_str() {
@@ -185,7 +189,9 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
     let outputs = media_pipe_zlm::zlm_outputs(media, device.include_audio);
 
     let config = PipeConfig { input, outputs };
-    manager::update_pipe(&device.id, config).await
+    manager::update_pipe(&device.id, config).await?;
+    crate::detect::control::reconcile_detection(device).await;
+    Ok(())
 }
 
 /// Playable HTTP-FLV URL as a same-origin path through the `/media` reverse

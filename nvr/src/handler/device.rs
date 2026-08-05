@@ -160,6 +160,9 @@ async fn remove_device(Path(id): Path<String>) -> ApiJsonResult<String> {
     let conn = app_db_conn()?;
     nvr_db::device::delete(&id, &conn).await?;
     manager::remove_pipe(&id).await?;
+    // The tap holds a video subscription to a pipe that no longer exists; it
+    // would end on its own at EOF, but stop it now so the slot frees promptly.
+    crate::detect::control::stop_detection(&id);
     if let Some(bridge) = crate::gb::bridge() {
         bridge.unregister_mapping(&id).await;
     }

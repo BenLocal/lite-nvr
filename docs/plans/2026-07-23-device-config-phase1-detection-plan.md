@@ -12,7 +12,8 @@
 
 - Rust edition 2024; run `cargo fmt` before each backend commit.
 - Tests colocate as `*_test.rs` next to source, wired via `#[cfg(test)] #[path = "..._test.rs"] mod ..._test;`.
-- Detection applies to **pipe-backed devices only**; `input_type == "gb28181"` is excluded (no pipe). The 检测 tab is hidden for gb28181.
+- Detection applies to **pipe-backed devices only** — those whose manager entry is `Entry::Pipe`: `net`/`rtsp`/`rtmp`/`file`/`v4l2`/`x11grab`/`lavfi`. The 检测 tab is hidden for every other input type.
+- **Correction (2026-08-04, found while wiring Task 4):** the design spec claims onvif counts as pipe-backed "because it reuses that path". It reuses the pipe *driver* (`livestream::run_session`), not the *registration* — `upsert_onvif` and `upsert_stream` register `Entry::Task`, `upsert_xiaomi` registers `Entry::Worker`, and `manager::get_pipe` returns `None` for both. `start_tap` therefore fails with "pipe not found" on onvif/stream/xiaomi devices. This is pre-existing (the manual `/detect/{pipe}/start` API has the same limit), not introduced by this plan. Phase 1 reflects the real boundary in the UI (Task 6); exposing the inner pipe so detection can attach to onvif/stream is deferred to a separate Phase 2 task.
 - Confidence floor is a **post-inference filter** (no per-device model rebuild). The existing manual `/detect/{pipe}/start|stop` API and the preview overlay stay working (overlay only checks `res.ok`).
 - **No DB migration** — device config rides in the existing KV JSON blob; new struct fields use `#[serde(default)]` for back-compat with existing rows.
 - Frontend: use PrimeVue components; all HTTP lives in `src/api/`; `npm run type-check` and `npm run lint` must pass before any frontend commit. Keep the dark control-room theme (reuse `.field` / `.field-grid` / `.field-hint`).
@@ -695,6 +696,20 @@ import Slider from "primevue/slider";
 
 Add a detect-API import `import { listDetectModels } from "../api/detect";` (there is no existing `../api/detect` import in this file), and add `DeviceConfig` to the existing `import type { ... } from "../api/device";`.
 
+Also add the capability predicate that both Step 3 and Step 4 use — see the "Correction" note under Global Constraints for why these four are excluded:
+
+```ts
+// A detection tap subscribes to a manager-registered `Entry::Pipe`. onvif and
+// stream register `Entry::Task` supervisors, xiaomi an `Entry::Worker`, and
+// gb28181 has no pipe at all — none expose a pipe `start_tap` can attach to, so
+// the 检测 tab is hidden rather than silently failing at save time.
+const DETECT_UNSUPPORTED_INPUT_TYPES = ["gb28181", "onvif", "stream", "xiaomi"];
+
+function detectSupported(inputType?: string): boolean {
+  return !!inputType && !DETECT_UNSUPPORTED_INPUT_TYPES.includes(inputType);
+}
+```
+
 - [ ] **Step 2: Add detect state + loader + reset/hydrate**
 
 Add near the other standalone refs (e.g. after the gb picker refs):
@@ -747,7 +762,7 @@ In `openCreateDialog`, add `resetDetectFields();` alongside the existing resets.
 In `onSubmit`, after the `const payload: DevicePayload = { ... }` object is built and before `saving.value = true;`, add:
 
 ```ts
-  if (inputType !== "gb28181") {
+  if (detectSupported(inputType)) {
     const config: DeviceConfig = {
       detect: {
         enabled: detectEnabled.value,
@@ -776,7 +791,7 @@ In the `<template>`, inside `<Form v-slot="$form" ...>`, wrap the existing field
         <Tabs value="basic">
           <TabList>
             <Tab value="basic">基本</Tab>
-            <Tab v-if="$form.input_type?.value !== 'gb28181'" value="detect">检测</Tab>
+            <Tab v-if="detectSupported($form.input_type?.value)" value="detect">检测</Tab>
           </TabList>
           <TabPanels>
             <TabPanel value="basic">
@@ -863,7 +878,7 @@ git commit -m "feat(dashboard): 检测 tab for per-device detection config"
 3. Confirm the log shows the tap starting for that device id; open the device preview and confirm boxes appear via the existing overlay.
 4. Edit the device → disable detection → save → confirm the tap stops.
 5. Remove the device → confirm the tap stops.
-6. Confirm the 检测 tab is absent for a gb28181 device.
+6. Confirm the 检测 tab is absent for gb28181, onvif, stream, and xiaomi devices.
 
 ## Self-Review
 
