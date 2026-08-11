@@ -22,6 +22,16 @@ static HUB: OnceLock<DetectHub> = OnceLock::new();
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TapEpoch(u64);
 
+impl TapEpoch {
+    pub(crate) fn from_raw(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub(crate) fn raw(self) -> u64 {
+        self.0
+    }
+}
+
 pub struct DetectHub {
     configs: Vec<DetectorConfig>,
     models_dir: PathBuf,
@@ -35,10 +45,15 @@ pub struct DetectHub {
 }
 
 impl DetectHub {
-    pub fn init(configs: Vec<DetectorConfig>, models_dir: PathBuf, sample_interval_ms: u64) {
+    pub fn init(
+        configs: Vec<DetectorConfig>,
+        models_dir: PathBuf,
+        sample_interval_ms: u64,
+    ) -> &'static DetectHub {
         HUB.set(Self::new_for_test(configs, models_dir, sample_interval_ms))
             .ok()
             .expect("DetectHub::init called twice");
+        HUB.get().expect("DetectHub was just initialized")
     }
 
     /// Construct a hub without installing it globally (for tests).
@@ -58,10 +73,6 @@ impl DetectHub {
             next_epoch: AtomicU64::new(0),
             latest: Mutex::new(HashMap::new()),
         }
-    }
-
-    pub fn get() -> Option<&'static DetectHub> {
-        HUB.get()
     }
 
     pub fn sample_interval_ms(&self) -> u64 {
@@ -85,10 +96,21 @@ impl DetectHub {
     }
 
     /// Cancel a pending auto-start and prevent it from claiming a tap later.
-    pub fn cancel_auto_start(&self, pipe: &str) {
+    pub fn cancel_auto_start(&self, pipe: &str) -> bool {
         if let Some((_, token)) = self.auto_start.lock().unwrap().remove(pipe) {
             token.cancel();
+            true
+        } else {
+            false
         }
+    }
+
+    /// Stop all detection work for `pipe`, including an auto-start that is
+    /// still waiting for the pipe to become subscribable.
+    pub fn stop(&self, pipe: &str) -> bool {
+        let pending = self.cancel_auto_start(pipe);
+        let running = self.unregister(pipe);
+        pending || running
     }
 
     /// Build (or return cached) all configured detectors. Heavy on first call
@@ -136,11 +158,26 @@ impl DetectHub {
         names: &Option<Vec<String>>,
     ) -> Vec<Arc<dyn Detector>> {
         match names {
-            Some(want) if !want.is_empty() => all
-                .iter()
-                .filter(|d| want.iter().any(|n| n == d.name()))
-                .cloned()
-                .collect(),
+            Some(want) if !want.is_empty() => {
+                let selected: Vec<_> = all
+                    .iter()
+                    .filter(|detector| want.iter().any(|name| name == detector.name()))
+                    .cloned()
+                    .collect();
+                let unknown: Vec<_> = want
+                    .iter()
+                    .filter(|name| !all.iter().any(|detector| detector.name() == name.as_str()))
+                    .collect();
+                if !unknown.is_empty() {
+                    log::warn!("detect: ignoring unknown model names: {unknown:?}");
+                }
+                if selected.is_empty() {
+                    log::warn!("detect: requested model set resolved empty; using all models");
+                    all.to_vec()
+                } else {
+                    selected
+                }
+            }
             _ => all.to_vec(),
         }
     }
@@ -191,6 +228,21 @@ impl DetectHub {
             true
         } else {
             false
+        }
+    }
+
+    /// Stop a manually-started tap only while its lease still owns the slot.
+    /// This keeps a stale UI/client from stopping a replacement tap that was
+    /// started after its original tap ended.
+    pub fn stop_tap(&self, pipe: &str, epoch: TapEpoch) -> bool {
+        let mut running = self.running.lock().unwrap();
+        match running.get(pipe) {
+            Some((current, _)) if *current == epoch => {
+                let (_, token) = running.remove(pipe).expect("matching tap exists");
+                token.cancel();
+                true
+            }
+            _ => false,
         }
     }
 

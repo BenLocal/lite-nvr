@@ -1,5 +1,8 @@
 // control_test is a child module of `control` (this file), so `super` == control.
-use super::{should_auto_start, should_keep_retrying, validate_detect_config};
+use super::{
+    MAX_DETECT_MODEL_NAME_CHARS, MAX_DETECT_MODELS, normalize_detect_config, should_auto_start,
+    should_keep_retrying, validate_detect_config,
+};
 use nvr_db::device::{DetectConfig, DeviceConfig, DeviceInfo};
 
 fn cfg(enabled: bool) -> DetectConfig {
@@ -44,23 +47,17 @@ fn no_auto_start_for_non_pipe_inputs() {
 #[test]
 fn detect_config_rejects_confidence_outside_unit_interval() {
     assert!(
-        validate_detect_config(
-            Some(&DetectConfig {
-                min_confidence: 1.1,
-                ..cfg(true)
-            }),
-            None
-        )
+        validate_detect_config(Some(&DetectConfig {
+            min_confidence: 1.1,
+            ..cfg(true)
+        }))
         .is_err()
     );
     assert!(
-        validate_detect_config(
-            Some(&DetectConfig {
-                min_confidence: -0.1,
-                ..cfg(true)
-            }),
-            None
-        )
+        validate_detect_config(Some(&DetectConfig {
+            min_confidence: -0.1,
+            ..cfg(true)
+        }))
         .is_err()
     );
 }
@@ -68,54 +65,75 @@ fn detect_config_rejects_confidence_outside_unit_interval() {
 #[test]
 fn detect_config_rejects_empty_model_names() {
     assert!(
-        validate_detect_config(
-            Some(&DetectConfig {
-                models: vec!["".to_string()],
-                ..cfg(true)
-            }),
-            None
-        )
+        validate_detect_config(Some(&DetectConfig {
+            models: vec!["".to_string()],
+            ..cfg(true)
+        }))
         .is_err()
     );
 }
 
 #[test]
 fn detect_config_accepts_default_and_bounded_values() {
-    assert!(validate_detect_config(Some(&cfg(true)), None).is_ok());
+    assert!(validate_detect_config(Some(&cfg(true))).is_ok());
     assert!(
-        validate_detect_config(
-            Some(&DetectConfig {
-                sample_every_ms: super::MAX_DETECT_SAMPLE_INTERVAL_MS,
-                min_confidence: 1.0,
-                ..cfg(true)
-            }),
-            None
-        )
+        validate_detect_config(Some(&DetectConfig {
+            sample_every_ms: super::MAX_DETECT_SAMPLE_INTERVAL_MS,
+            min_confidence: 1.0,
+            ..cfg(true)
+        }))
         .is_ok()
     );
     assert!(
-        validate_detect_config(
-            Some(&DetectConfig {
-                sample_every_ms: super::MAX_DETECT_SAMPLE_INTERVAL_MS + 1,
-                ..cfg(true)
-            }),
-            None
-        )
+        validate_detect_config(Some(&DetectConfig {
+            sample_every_ms: super::MAX_DETECT_SAMPLE_INTERVAL_MS + 1,
+            ..cfg(true)
+        }))
         .is_err()
     );
 }
 
 #[test]
-fn detect_config_rejects_unknown_model_when_manifest_is_available() {
-    let available = ["yolo".to_string()];
+fn detect_config_accepts_unknown_model_for_backward_compatibility() {
     assert!(
-        validate_detect_config(
-            Some(&DetectConfig {
-                models: vec!["missing".to_string()],
-                ..cfg(true)
-            }),
-            Some(&available),
-        )
+        validate_detect_config(Some(&DetectConfig {
+            models: vec!["missing".to_string()],
+            ..cfg(true)
+        }))
+        .is_ok()
+    );
+}
+
+#[test]
+fn detect_config_trims_and_deduplicates_model_names() {
+    let normalized = normalize_detect_config(Some(&DetectConfig {
+        models: vec![
+            " person ".to_string(),
+            "vehicle".to_string(),
+            "person".to_string(),
+        ],
+        ..cfg(true)
+    }))
+    .expect("valid config")
+    .expect("detection config");
+
+    assert_eq!(normalized.models, vec!["person", "vehicle"]);
+}
+
+#[test]
+fn detect_config_bounds_model_count_and_name_length() {
+    assert!(
+        normalize_detect_config(Some(&DetectConfig {
+            models: vec!["model".to_string(); MAX_DETECT_MODELS + 1],
+            ..cfg(true)
+        }))
+        .is_err()
+    );
+    assert!(
+        normalize_detect_config(Some(&DetectConfig {
+            models: vec!["x".repeat(MAX_DETECT_MODEL_NAME_CHARS + 1)],
+            ..cfg(true)
+        }))
         .is_err()
     );
 }

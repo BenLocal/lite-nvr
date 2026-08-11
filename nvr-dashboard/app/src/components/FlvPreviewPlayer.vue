@@ -8,6 +8,7 @@ import { createStreamPlayer, type StreamPlayerHandle } from '../utils/streamPlay
 const props = defineProps<{
   url: string
   detectDeviceId?: string
+  persistentDetectEnabled?: boolean
 }>()
 
 const videoRef = ref<HTMLVideoElement | null>(null)
@@ -335,6 +336,7 @@ function formatAudioCodec(codec: string) {
           v-if="detectDeviceId"
           :key="detectDeviceId"
           :device-id="detectDeviceId"
+          :persistent-enabled="persistentDetectEnabled"
         />
       </div>
     </div>

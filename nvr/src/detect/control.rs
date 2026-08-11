@@ -2,16 +2,16 @@
 //! device-config auto-start go through `start_tap`, so the tap is built the
 //! same way regardless of trigger.
 
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use tokio_util::sync::CancellationToken;
 
 use nvr_db::device::{DetectConfig, DeviceInfo};
 
-use super::hub::DetectHub;
+use super::hub::{DetectHub, TapEpoch};
 
 pub(crate) enum StartOutcome {
-    Started,
+    Started(TapEpoch),
     AlreadyRunning,
 }
 
@@ -22,24 +22,49 @@ pub(crate) enum StartOutcome {
 const AUTO_START_ATTEMPTS: u32 = 30;
 const AUTO_START_RETRY: Duration = Duration::from_secs(1);
 pub(crate) const MAX_DETECT_SAMPLE_INTERVAL_MS: u64 = 3_600_000;
+pub(crate) const MAX_DETECT_MODELS: usize = 32;
+pub(crate) const MAX_DETECT_MODEL_NAME_CHARS: usize = 128;
+pub(crate) const DETECT_SUPPORTED_INPUT_TYPES: &[&str] =
+    &["net", "rtsp", "rtmp", "file", "v4l2", "x11grab", "lavfi"];
 
 /// Whether a device should have detection auto-started: enabled config on an
 /// input backed by a manager `Entry::Pipe`. Native workers and supervisors
 /// (`gb28181`, `onvif`, `stream`, `xiaomi`) do not expose a subscribable pipe.
 pub(crate) fn should_auto_start(detect: Option<&DetectConfig>, input_type: &str) -> bool {
-    detect.is_some_and(|d| d.enabled)
-        && matches!(
-            input_type,
-            "net" | "rtsp" | "rtmp" | "file" | "v4l2" | "x11grab" | "lavfi"
-        )
+    detect.is_some_and(|d| d.enabled) && DETECT_SUPPORTED_INPUT_TYPES.contains(&input_type)
 }
 
-pub(crate) fn validate_detect_config(
+pub(crate) fn normalize_model_names(models: &[String]) -> anyhow::Result<Vec<String>> {
+    if models.len() > MAX_DETECT_MODELS {
+        anyhow::bail!("detect models must contain at most {MAX_DETECT_MODELS} names");
+    }
+    let normalized = models
+        .iter()
+        .map(|name| {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!("detect model names must not be empty");
+            }
+            if trimmed.chars().count() > MAX_DETECT_MODEL_NAME_CHARS {
+                anyhow::bail!(
+                    "detect model names must contain at most {MAX_DETECT_MODEL_NAME_CHARS} characters"
+                );
+            }
+            Ok(trimmed.to_string())
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mut seen = HashSet::new();
+    Ok(normalized
+        .into_iter()
+        .filter(|name| seen.insert(name.clone()))
+        .collect())
+}
+
+pub(crate) fn normalize_detect_config(
     config: Option<&DetectConfig>,
-    available_models: Option<&[String]>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<DetectConfig>> {
     let Some(config) = config else {
-        return Ok(());
+        return Ok(None);
     };
     if config.min_confidence.is_nan() || !(0.0..=1.0).contains(&config.min_confidence) {
         anyhow::bail!("detect min_confidence must be between 0.0 and 1.0");
@@ -49,19 +74,16 @@ pub(crate) fn validate_detect_config(
             "detect sample_every_ms must be 0 or at most {MAX_DETECT_SAMPLE_INTERVAL_MS}"
         );
     }
-    if config.models.iter().any(|name| name.trim().is_empty()) {
-        anyhow::bail!("detect model names must not be empty");
-    }
-    if let Some(available) = available_models {
-        if let Some(unknown) = config
-            .models
-            .iter()
-            .find(|name| !available.iter().any(|known| known == *name))
-        {
-            anyhow::bail!("detect model is not configured: {unknown}");
-        }
-    }
-    Ok(())
+    Ok(Some(DetectConfig {
+        enabled: config.enabled,
+        models: normalize_model_names(&config.models)?,
+        sample_every_ms: config.sample_every_ms,
+        min_confidence: config.min_confidence,
+    }))
+}
+
+pub(crate) fn validate_detect_config(config: Option<&DetectConfig>) -> anyhow::Result<()> {
+    normalize_detect_config(config).map(|_| ())
 }
 
 /// Start a detection tap for `pipe`. `sample_interval_ms == 0` uses the hub
@@ -117,39 +139,22 @@ pub(crate) async fn start_tap(
         cancel,
         min_confidence,
     ));
-    Ok(StartOutcome::Started)
-}
-
-/// Stop a running tap for `pipe` (idempotent no-op if not running / hub down).
-pub(crate) fn stop_detection(pipe: &str) {
-    if let Some(hub) = DetectHub::get() {
-        hub.cancel_auto_start(pipe);
-        hub.unregister(pipe);
-    }
+    Ok(StartOutcome::Started(epoch))
 }
 
 /// Reconcile a device's persisted detection config against the running tap:
 /// start when enabled + pipe-backed, stop otherwise.
-pub(crate) async fn reconcile_detection(device: &DeviceInfo) {
-    let want_on = should_auto_start(device.config.detect.as_ref(), &device.input_type);
-
-    let Some(hub) = DetectHub::get() else {
-        if want_on {
-            log::warn!(
-                "detect: hub not initialized; skipping auto-start for {}",
-                device.id
-            );
+pub(crate) async fn reconcile_detection(hub: &'static DetectHub, device: &DeviceInfo) {
+    let detect_config = match normalize_detect_config(device.config.detect.as_ref()) {
+        Ok(config) => config,
+        Err(e) => {
+            log::warn!("detect: invalid config for {}: {e:#}", device.id);
+            hub.cancel_auto_start(&device.id);
+            hub.unregister(&device.id);
+            return;
         }
-        return;
     };
-
-    if let Err(e) = validate_detect_config(device.config.detect.as_ref(), Some(&hub.config_names()))
-    {
-        log::warn!("detect: invalid config for {}: {e:#}", device.id);
-        hub.cancel_auto_start(&device.id);
-        hub.unregister(&device.id);
-        return;
-    }
+    let want_on = should_auto_start(detect_config.as_ref(), &device.input_type);
 
     if !want_on {
         hub.cancel_auto_start(&device.id);
@@ -166,7 +171,7 @@ pub(crate) async fn reconcile_detection(device: &DeviceInfo) {
     hub.unregister(&device.id);
 
     // want_on implies detect is Some(enabled).
-    let cfg = device.config.detect.as_ref().unwrap().clone();
+    let cfg = detect_config.expect("enabled detection config exists");
     let id = device.id.clone();
     let (generation, cancel) = hub.begin_auto_start(&id);
     // Spawned for two reasons: it yields, letting the `Pipe::start` task that
@@ -204,7 +209,7 @@ async fn auto_start_with_retry(
         )
         .await
         {
-            Ok(StartOutcome::Started) => {
+            Ok(StartOutcome::Started(_)) => {
                 log::info!("detect: auto-started {id} (attempt {attempt})");
                 return;
             }

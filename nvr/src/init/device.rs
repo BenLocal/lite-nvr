@@ -8,6 +8,7 @@ use crate::{db::app_db_conn, manager};
 use media_pipe_core::{InputConfig, PipeConfig};
 
 pub(crate) fn init_device_pipes(
+    detect_hub: &'static crate::detect::hub::DetectHub,
     zlm_ready: oneshot::Receiver<()>,
     cancel: CancellationToken,
 ) -> anyhow::Result<()> {
@@ -15,7 +16,7 @@ pub(crate) fn init_device_pipes(
         tokio::select! {
          _ = zlm_ready => {
             log::info!("ZLM server is ready");
-            init_device_pipes_inner().await.unwrap_or_else(|e| {
+            init_device_pipes_inner(detect_hub).await.unwrap_or_else(|e| {
                 log::error!("Failed to init device pipes: {:#}", e);
              });
          },
@@ -28,13 +29,15 @@ pub(crate) fn init_device_pipes(
     Ok(())
 }
 
-async fn init_device_pipes_inner() -> anyhow::Result<()> {
+async fn init_device_pipes_inner(
+    detect_hub: &'static crate::detect::hub::DetectHub,
+) -> anyhow::Result<()> {
     let conn = app_db_conn()?;
     let devices = nvr_db::device::list(&conn).await?;
     let total = devices.len();
 
     for device in devices {
-        if let Err(err) = ensure_device_pipe(&device).await {
+        if let Err(err) = ensure_device_pipe(detect_hub, &device).await {
             log::error!("Failed to init device pipe {}: {:#}", device.id, err);
         } else {
             log::info!("Initialized device pipe {}", device.id);
@@ -57,7 +60,10 @@ async fn init_device_pipes_inner() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()> {
+pub(crate) async fn ensure_device_pipe(
+    detect_hub: &'static crate::detect::hub::DetectHub,
+    device: &DeviceInfo,
+) -> anyhow::Result<()> {
     // Xiaomi cameras bypass ffmpeg entirely: a native worker pushes the
     // decoded H264 straight into a ZLM Media. `input_value` carries the
     // XiaomiConfig as JSON.
@@ -71,7 +77,9 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
             device.record,
             false,
         ));
-        return manager::upsert_xiaomi(&device.id, media, cfg, true).await;
+        manager::upsert_xiaomi(&device.id, media, cfg, true).await?;
+        crate::detect::control::reconcile_detection(detect_hub, device).await;
+        return Ok(());
     }
 
     // GB28181 cameras have no always-on pipe: they only register a mapping so
@@ -109,6 +117,7 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
                 );
             }
         }
+        crate::detect::control::reconcile_detection(detect_hub, device).await;
         return Ok(());
     }
 
@@ -129,7 +138,7 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
             false,
         ));
         manager::upsert_onvif(&device.id, media, cfg, device.include_audio, true).await?;
-        crate::detect::control::reconcile_detection(device).await;
+        crate::detect::control::reconcile_detection(detect_hub, device).await;
         return Ok(());
     }
 
@@ -153,7 +162,7 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
             true,
         )
         .await?;
-        crate::detect::control::reconcile_detection(device).await;
+        crate::detect::control::reconcile_detection(detect_hub, device).await;
         return Ok(());
     }
 
@@ -190,7 +199,7 @@ pub(crate) async fn ensure_device_pipe(device: &DeviceInfo) -> anyhow::Result<()
 
     let config = PipeConfig { input, outputs };
     manager::update_pipe(&device.id, config).await?;
-    crate::detect::control::reconcile_detection(device).await;
+    crate::detect::control::reconcile_detection(detect_hub, device).await;
     Ok(())
 }
 

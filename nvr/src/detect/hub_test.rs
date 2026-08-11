@@ -1,7 +1,20 @@
 use super::hub::DetectHub;
 use super::result::FrameResult;
-use nvr_detect::ModelResult;
+use nvr_detect::{Detection, Detector, ModelResult};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
+
+struct NamedDetector(&'static str);
+
+impl Detector for NamedDetector {
+    fn name(&self) -> &str {
+        self.0
+    }
+
+    fn detect(&self, _rgb: &[u8], _width: u32, _height: u32) -> anyhow::Result<Vec<Detection>> {
+        Ok(vec![])
+    }
+}
 
 #[test]
 fn store_and_latest_roundtrip_and_register_is_idempotent() {
@@ -31,6 +44,44 @@ fn store_and_latest_roundtrip_and_register_is_idempotent() {
     assert!(hub.is_running("cam1"));
     assert!(hub.unregister("cam1"));
     assert!(!hub.is_running("cam1"));
+}
+
+#[test]
+fn unknown_only_model_selection_falls_back_to_all_models() {
+    let hub = DetectHub::new_for_test(vec![], std::path::PathBuf::from("."), 500);
+    let all: Vec<Arc<dyn Detector>> = vec![Arc::new(NamedDetector("current"))];
+
+    let selected = hub.detectors_named(&all, &Some(vec!["retired".to_string()]));
+
+    assert_eq!(
+        selected
+            .iter()
+            .map(|detector| detector.name())
+            .collect::<Vec<_>>(),
+        vec!["current"]
+    );
+}
+
+#[test]
+fn mixed_known_and_unknown_model_selection_runs_the_known_subset() {
+    let hub = DetectHub::new_for_test(vec![], std::path::PathBuf::from("."), 500);
+    let all: Vec<Arc<dyn Detector>> = vec![
+        Arc::new(NamedDetector("person")),
+        Arc::new(NamedDetector("vehicle")),
+    ];
+
+    let selected = hub.detectors_named(
+        &all,
+        &Some(vec!["retired".to_string(), "vehicle".to_string()]),
+    );
+
+    assert_eq!(
+        selected
+            .iter()
+            .map(|detector| detector.name())
+            .collect::<Vec<_>>(),
+        vec!["vehicle"]
+    );
 }
 
 #[test]
@@ -70,6 +121,19 @@ fn replacing_auto_start_cancels_the_previous_generation() {
 }
 
 #[test]
+fn stop_cancels_a_pending_auto_start_before_it_can_register() {
+    let hub = DetectHub::new_for_test(vec![], std::path::PathBuf::new(), 500);
+    let (generation, pending) = hub.begin_auto_start("cam1");
+
+    assert!(hub.stop("cam1"));
+    assert!(pending.is_cancelled());
+    assert!(
+        hub.register_auto_start("cam1", generation, CancellationToken::new())
+            .is_none()
+    );
+}
+
+#[test]
 fn a_stale_tap_cannot_evict_the_tap_that_replaced_it() {
     let hub = DetectHub::new_for_test(vec![], std::path::PathBuf::from("."), 500);
 
@@ -91,5 +155,28 @@ fn a_stale_tap_cannot_evict_the_tap_that_replaced_it() {
 
     // B's own cleanup still works.
     assert!(hub.unregister_tap("cam1", epoch_b));
+    assert!(!hub.is_running("cam1"));
+}
+
+#[test]
+fn a_stale_manual_lease_cannot_stop_the_tap_that_replaced_it() {
+    let hub = DetectHub::new_for_test(vec![], std::path::PathBuf::from("."), 500);
+
+    let old_cancel = CancellationToken::new();
+    let old_epoch = hub.register("cam1", old_cancel).expect("register old tap");
+    assert!(hub.unregister("cam1"));
+
+    let replacement_cancel = CancellationToken::new();
+    let replacement_epoch = hub
+        .register("cam1", replacement_cancel.clone())
+        .expect("register replacement tap");
+    assert_ne!(old_epoch, replacement_epoch);
+
+    assert!(!hub.stop_tap("cam1", old_epoch));
+    assert!(hub.is_running("cam1"));
+    assert!(!replacement_cancel.is_cancelled());
+
+    assert!(hub.stop_tap("cam1", replacement_epoch));
+    assert!(replacement_cancel.is_cancelled());
     assert!(!hub.is_running("cam1"));
 }

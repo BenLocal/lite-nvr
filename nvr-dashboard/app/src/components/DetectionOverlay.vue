@@ -11,14 +11,18 @@ import {
 } from '../api/detect'
 import { colorForIndex, frameToScreen } from '../utils/detectOverlay'
 
-const props = defineProps<{ deviceId: string }>()
+const props = withDefaults(
+  defineProps<{ deviceId: string; persistentEnabled?: boolean }>(),
+  { persistentEnabled: false },
+)
 
 const POLL_MS = 1000
 
 const rootRef = ref<HTMLDivElement | null>(null)
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 
-const active = ref(false)
+const active = ref(props.persistentEnabled)
+const ownedTapLease = ref<string | null>(null)
 const latest = ref<FrameResult | null>(null)
 const models = ref<string[]>([])
 const visible = ref<Record<string, boolean>>({})
@@ -26,6 +30,7 @@ const errorMsg = ref('')
 
 let timer: ReturnType<typeof setInterval> | undefined
 let resizeObs: ResizeObserver | undefined
+let generation = 0
 
 const colorOf = (name: string) => colorForIndex(models.value.indexOf(name))
 const countOf = (name: string) =>
@@ -61,31 +66,50 @@ async function poll() {
   }
 }
 
+async function startPolling(requestGeneration: number) {
+  await poll()
+  if (!active.value || requestGeneration !== generation) return
+  stopPolling()
+  timer = setInterval(poll, POLL_MS)
+}
+
 async function start() {
+  const requestGeneration = ++generation
   errorMsg.value = ''
+  if (props.persistentEnabled) {
+    await startPolling(requestGeneration)
+    return
+  }
+  let outcome: Awaited<ReturnType<typeof startDetect>>
   try {
-    await startDetect(props.deviceId)
+    outcome = await startDetect(props.deviceId)
   } catch (e) {
     errorMsg.value = e instanceof Error ? e.message : String(e)
     active.value = false
     return
   }
-  // user may have toggled off during the startDetect round-trip
-  if (!active.value) return
-  await poll()
-  // ...or during the first poll
-  if (!active.value) return
-  stopPolling()
-  timer = setInterval(poll, POLL_MS)
+  if (!active.value || requestGeneration !== generation) {
+    if (outcome.status === 'started') {
+      await stopDetect(props.deviceId, outcome.lease).catch(() => {})
+    }
+    return
+  }
+  ownedTapLease.value = outcome.status === 'started' ? outcome.lease : null
+  await startPolling(requestGeneration)
 }
 
 async function stop() {
+  generation++
   stopPolling()
   latest.value = null
-  try {
-    await stopDetect(props.deviceId)
-  } catch {
-    // best effort
+  const lease = ownedTapLease.value
+  ownedTapLease.value = null
+  if (lease) {
+    try {
+      await stopDetect(props.deviceId, lease)
+    } catch {
+      // best effort
+    }
   }
   draw()
 }
@@ -145,14 +169,17 @@ onMounted(() => {
   loadModels()
   resizeObs = new ResizeObserver(() => draw())
   if (rootRef.value) resizeObs.observe(rootRef.value)
+  if (active.value) void start()
 })
 
 onBeforeUnmount(() => {
+  generation++
   stopPolling()
   if (resizeObs) resizeObs.disconnect()
-  // stop detection server-side if it was running
-  if (active.value) {
-    stopDetect(props.deviceId).catch(() => {})
+  const lease = ownedTapLease.value
+  ownedTapLease.value = null
+  if (lease) {
+    stopDetect(props.deviceId, lease).catch(() => {})
   }
 })
 </script>

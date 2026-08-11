@@ -40,14 +40,11 @@ tab in the device dialog to edit it; the reusable tabbed-form shell and the
 
 **Out of scope / explicit boundaries:**
 
-- **GB28181 devices** have no always-on pipe (they publish straight to ZLM via
-  RtpServer), and the detection tap consumes a pipe's decoded frames. Detection
-  therefore applies only to **pipe-backed devices** — the normal livestream
-  path (rtsp/rtmp/file/v4l2/screen/test) and onvif (which reuses that path). The
-  检测 tab is **hidden** for `input_type == "gb28181"`. *(Xiaomi uses a separate
-  `upsert_xiaomi` manager path; whether the tap can subscribe to its video is
-  unverified — treat xiaomi as out of scope for Phase 1 unless confirmed during
-  implementation.)*
+- Detection applies only to manager `Entry::Pipe` inputs:
+  `net`/`rtsp`/`rtmp`/`file`/`v4l2`/`x11grab`/`lavfi`. Native supervisors and
+  workers (`gb28181`, `onvif`, `stream`, `xiaomi`) do not expose a subscribable
+  pipe. The backend publishes this list from `GET /api/detect/capabilities`;
+  the dashboard uses that response instead of maintaining a second whitelist.
 - No detection **persistence of results** and no **alarm/event** system — those
   are separate (category-B) work, not part of this phase.
 
@@ -110,16 +107,25 @@ is ensured, reconcile detection:
   subset, `sample_every_ms`, and `min_confidence`.
 - Otherwise: stop the tap for `device.id` (idempotent no-op if not running).
 
-This reuses the existing hub/tap. `DetectHub::register` is idempotent, so a
-restart on update cleanly replaces a running tap.
+`DetectHub` is initialized synchronously before the ZLM/device/API tasks are
+spawned and is passed explicitly to each consumer. This guarantees startup
+reconciliation always sees the hub. A manual stop cancels both the running tap
+and any pending auto-start generation, so a delayed retry cannot restart it.
 
 ### Tap knobs
 
 - **Sample interval:** `tap::run` already accepts `sample_interval_ms`; pass the
   device value, falling back to `hub.sample_interval_ms()` when 0.
 - **Model subset:** filter `DetectorConfig`s by `cfg.models` (mirrors the
-  existing `StartBody.models` semantics). Unknown names are ignored; an empty
-  resolved set means "all".
+  existing `StartBody.models` semantics). Unknown names are logged and ignored;
+  a mixed list runs its valid subset, while an unknown-only/empty resolved set
+  falls back to all configured models for historical-config compatibility.
+  New API/persisted input is trimmed and deduplicated, with at most 32 names
+  and 128 characters per name. These limits are returned by the capabilities
+  endpoint together with the configured model list.
+- **Sample interval validation:** `0` means the hub default; explicit values
+  are bounded to `1..=3_600_000` ms (one hour). The same maximum is returned by
+  the capabilities endpoint and enforced by the form resolver.
 - **min_confidence:** applied as a **post-inference filter** — drop detections
   below the floor before `hub.store`. Chosen over rebuilding models per device
   (which would re-instantiate the ONNX session per device); the filter is O(n)
@@ -127,11 +133,17 @@ restart on update cleanly replaces a running tap.
 
 ### Relationship to the manual `/detect/{pipe}/start` API
 
-The existing manual start/stop endpoints and the preview overlay are unchanged.
 Device config is the source of truth for **auto-start**; the overlay remains a
 **live visualization + manual toggle**. Both drive the same idempotent hub, so
 they coexist: a device with persistent detection is simply already running when
-its preview opens. *(Decision (b), approved — manual toggle retained.)*
+its preview opens. The overlay owns a tap only when its start request returns
+`started` together with the opaque `x-detection-tap-lease` response header. It
+includes that lease when stopping; the hub stops the tap only if the lease still
+matches the current epoch. Therefore an old preview cannot stop a replacement
+tap. `already running` and persisted detection are observation-only, so closing
+the preview never stops a tap owned by device configuration. An unleased manual
+stop remains authoritative: it cancels pending auto-start and the current tap.
+*(Decision (b), approved — manual toggle retained.)*
 
 ## 3. Frontend design
 
@@ -144,29 +156,33 @@ Convert the device dialog's `@primevue/forms` `Form` body into a PrimeVue
   plus the existing GB/ONVIF/Xiaomi structured sub-forms).
 - **检测** — new (this phase). Phases 2–4 add their own tabs beside it.
 
-The 检测 tab is hidden when `input_type == "gb28181"`.
+The 检测 tab is shown only for input types returned by the backend capabilities
+endpoint.
 
 ### 检测 tab controls
 
 Bound to a `config.detect` structure, following the existing "structured
 sub-fields serialized on submit" precedent (as Xiaomi/ONVIF fields already do):
 
-- `enabled` — ToggleSwitch.
-- `models` — MultiSelect populated from `listDetectModels()`. If the list is
-  empty (no `models.json` configured), disable it and show a "未配置检测模型"
-  hint.
-- `sample_every_ms` — InputNumber (default 1000).
+- `enabled` — `@primevue/forms` ToggleSwitch field.
+- `models` — `@primevue/forms` MultiSelect populated from the capabilities
+  response. A successful empty list shows "未配置检测模型"; request failure has
+  its own error and retry state.
+- `sample_every_ms` — `@primevue/forms` InputNumber (default 1000, `0` means
+  server default, maximum 3,600,000).
 - `min_confidence` — Slider 0.0–1.0 (default 0.0 = model default).
 
-On submit, assemble `config.detect` and include `config` in the add/update
-payload via `device.ts`. The DetectionOverlay component is not modified.
+All four controls participate in the shared form resolver and render field
+errors. On submit, assemble a new payload/config/model array without mutating
+the form or prior payload.
 
 ## 4. Error handling
 
 - Unknown model names in `config.detect.models` → ignored server-side with a
   log; the valid subset runs. Empty resolved set → treat as "all".
-- `DetectHub` not initialized (no `models.json`) → auto-start is a no-op with a
-  warn log; the 检测 tab shows the "no models" hint (models list is empty).
+- Missing `models.json` is represented by a successful capabilities response
+  with an empty model list; transport/server failures are shown separately and
+  can be retried.
 - Detection errors never break the pipe — the tap already isolates model
   failures per frame.
 - Non-pipe-backed device (gb28181) with a stale `detect.enabled` → auto-start
@@ -180,11 +196,12 @@ payload via `device.ts`. The DetectionOverlay component is not modified.
 - **handler/device** (`device_test.rs`): add/update persists `config.detect`.
 - **init/device**: unit-test the auto-start decision — `enabled` +
   pipe-backed → start; `enabled=false` or gb28181 → stop/skip.
-- **detect/tap** (`tap_test.rs`): `min_confidence` post-filter drops
+- **detect/tap/hub/api**: `min_confidence` post-filter drops
   detections below the floor; model-subset filtering selects the right
-  detectors.
-- **Frontend**: `npm run type-check` and `npm run lint`; the 检测 tab renders
-  and the MultiSelect is disabled when no models are configured.
+  detectors; stale tap/overlay leases cannot stop a replacement generation.
+- **Frontend**: Vitest covers form validation, immutable payload construction,
+  capability error state, and overlay ownership; Playwright covers the
+  capability failure/retry flow; type-check and lint remain required.
 
 ## 6. Approved decisions
 

@@ -61,15 +61,23 @@ pub async fn fanout(
     out
 }
 
-/// Drop detections whose confidence is below `min` from every model result.
-/// `min <= 0.0` is a no-op (keep the model's built-in threshold).
-pub(crate) fn apply_min_confidence(models: &mut [ModelResult], min: f32) {
+/// Return model results whose detections below `min` have been removed.
+/// `min <= 0.0` keeps the model's built-in threshold unchanged.
+pub(crate) fn filter_min_confidence(models: Vec<ModelResult>, min: f32) -> Vec<ModelResult> {
     if min <= 0.0 {
-        return;
+        return models;
     }
-    for m in models.iter_mut() {
-        m.detections.retain(|d| d.confidence >= min);
-    }
+    models
+        .into_iter()
+        .map(|model| ModelResult {
+            detections: model
+                .detections
+                .into_iter()
+                .filter(|detection| detection.confidence >= min)
+                .collect(),
+            ..model
+        })
+        .collect()
 }
 
 /// Drive one pipe's detection until `cancel` fires or the video broadcast ends.
@@ -115,8 +123,10 @@ pub async fn run(
                         continue;
                     }
                 };
-                let mut models = fanout(&detectors, Arc::new(rgb), w, h).await;
-                apply_min_confidence(&mut models, min_confidence);
+                let models = filter_min_confidence(
+                    fanout(&detectors, Arc::new(rgb), w, h).await,
+                    min_confidence,
+                );
                 hub.store(
                     &pipe,
                     FrameResult {

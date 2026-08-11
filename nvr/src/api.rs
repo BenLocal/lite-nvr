@@ -2,10 +2,14 @@ use axum::Router;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-pub(crate) fn start_api_server(cancel: CancellationToken, port: u16) {
+pub(crate) fn start_api_server(
+    detect_hub: &'static crate::detect::hub::DetectHub,
+    cancel: CancellationToken,
+    port: u16,
+) {
     tokio::spawn(async move {
         let api = Router::new()
-            .nest("/device", crate::handler::device::device_router())
+            .nest("/device", crate::handler::device::device_router(detect_hub))
             .nest("/playback", crate::handler::playback::playback_router())
             .nest("/user", crate::handler::user::user_router())
             .nest("/pipe", crate::handler::media_pipe::media_pipe_router())
@@ -17,7 +21,7 @@ pub(crate) fn start_api_server(cancel: CancellationToken, port: u16) {
             .nest("/audiomixer", crate::audiomixer::api::audiomixer_router())
             .nest("/asr", crate::asr::api::asr_router())
             .nest("/onvif", crate::onvif::api::onvif_router())
-            .nest("/detect", crate::detect::api::detect_router())
+            .nest("/detect", crate::detect::api::detect_router(detect_hub))
             // Session auth for everything above; sees the nest-stripped path
             // (e.g. `/user/login`), which is what the exempt list matches on.
             .layer(axum::middleware::from_fn(crate::auth::require_auth));
@@ -36,11 +40,6 @@ pub(crate) fn start_api_server(cancel: CancellationToken, port: u16) {
             .layer(asr_layer);
 
         crate::asr::hub::AsrHub::init(asr_io, crate::asr::model_config());
-        {
-            let (configs, dir) = crate::detect::model_config();
-            crate::detect::hub::DetectHub::init(configs, dir, 500);
-        }
-
         let listener = TcpListener::bind(format!("0.0.0.0:{}", port))
             .await
             .unwrap();

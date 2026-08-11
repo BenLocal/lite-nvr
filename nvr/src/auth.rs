@@ -161,4 +161,4 @@ fn unauthorized() -> Response {
 
 #[cfg(test)]
 #[path = "auth_test.rs"]
-mod auth_test;
+pub(crate) mod auth_test;

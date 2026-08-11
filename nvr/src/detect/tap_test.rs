@@ -52,26 +52,26 @@ fn det(conf: f32) -> Detection {
 
 #[test]
 fn min_confidence_drops_low_scores() {
-    let mut models = vec![ModelResult {
+    let models = vec![ModelResult {
         name: "m".to_string(),
         infer_ms: 1.0,
         detections: vec![det(0.9), det(0.3), det(0.5)],
         error: None,
     }];
-    super::apply_min_confidence(&mut models, 0.5);
+    let models = super::filter_min_confidence(models, 0.5);
     let confs: Vec<f32> = models[0].detections.iter().map(|d| d.confidence).collect();
     assert_eq!(confs, vec![0.9, 0.5]);
 }
 
 #[test]
 fn min_confidence_zero_is_noop() {
-    let mut models = vec![ModelResult {
+    let models = vec![ModelResult {
         name: "m".to_string(),
         infer_ms: 1.0,
         detections: vec![det(0.1)],
         error: None,
     }];
-    super::apply_min_confidence(&mut models, 0.0);
+    let models = super::filter_min_confidence(models, 0.0);
     assert_eq!(models[0].detections.len(), 1);
 }
 

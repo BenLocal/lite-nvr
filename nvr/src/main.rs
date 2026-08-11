@@ -62,6 +62,13 @@ async fn main() -> ! {
 
     let cancel = CancellationToken::new();
 
+    // Detection must be available before the device-init task can reconcile
+    // persisted per-device settings. Initializing it inside the independently
+    // spawned API task races ZLM readiness and can skip auto-start for the
+    // lifetime of this process.
+    let (detect_configs, detect_models_dir) = detect::model_config();
+    let detect_hub = detect::hub::DetectHub::init(detect_configs, detect_models_dir, 500);
+
     let (ready_tx, ready_rx) = oneshot::channel();
     // start zlm server
     let cancel_clone = cancel.clone();
@@ -76,7 +83,7 @@ async fn main() -> ! {
 
     // init device pipes
     let cancel_clone = cancel.clone();
-    crate::init::device::init_device_pipes(ready_rx, cancel_clone).unwrap();
+    crate::init::device::init_device_pipes(detect_hub, ready_rx, cancel_clone).unwrap();
 
     // start the record-segment transport worker (copies segments to remote
     // storage targets configured via the API)
@@ -92,7 +99,7 @@ async fn main() -> ! {
 
     // start api server
     let cancel_clone = cancel.clone();
-    api::start_api_server(cancel_clone, 18080);
+    api::start_api_server(detect_hub, cancel_clone, 18080);
 
     loop {
         tokio::select! {

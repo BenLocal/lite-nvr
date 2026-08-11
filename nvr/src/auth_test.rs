@@ -19,7 +19,7 @@ static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// Initialize the process-wide APP_DB once (all tests share one binary) with
 /// an in-memory database carrying the `kvs` table sessions live in, and take
 /// the serialization lock for the calling test.
-async fn ensure_test_db() -> tokio::sync::MutexGuard<'static, ()> {
+pub(crate) async fn ensure_test_db() -> tokio::sync::MutexGuard<'static, ()> {
     static INIT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
     INIT.get_or_init(|| async {
         let db = crate::db::init_app_db(":memory:").await.unwrap();

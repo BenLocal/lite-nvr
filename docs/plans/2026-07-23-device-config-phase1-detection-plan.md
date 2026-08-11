@@ -14,7 +14,10 @@
 - Tests colocate as `*_test.rs` next to source, wired via `#[cfg(test)] #[path = "..._test.rs"] mod ..._test;`.
 - Detection applies to **pipe-backed devices only** — those whose manager entry is `Entry::Pipe`: `net`/`rtsp`/`rtmp`/`file`/`v4l2`/`x11grab`/`lavfi`. The 检测 tab is hidden for every other input type.
 - **Correction (2026-08-04, found while wiring Task 4):** the design spec claims onvif counts as pipe-backed "because it reuses that path". It reuses the pipe *driver* (`livestream::run_session`), not the *registration* — `upsert_onvif` and `upsert_stream` register `Entry::Task`, `upsert_xiaomi` registers `Entry::Worker`, and `manager::get_pipe` returns `None` for both. `start_tap` therefore fails with "pipe not found" on onvif/stream/xiaomi devices. This is pre-existing (the manual `/detect/{pipe}/start` API has the same limit), not introduced by this plan. Phase 1 reflects the real boundary in the UI (Task 6); exposing the inner pipe so detection can attach to onvif/stream is deferred to a separate Phase 2 task.
-- Confidence floor is a **post-inference filter** (no per-device model rebuild). The existing manual `/detect/{pipe}/start|stop` API and the preview overlay stay working (overlay only checks `res.ok`).
+- Confidence floor is a **post-inference filter** (no per-device model rebuild). The manual `/detect/{pipe}/start|stop` API and preview overlay stay working; a `started` response includes an opaque tap lease, and the overlay can stop only the still-current tap matching that lease.
+- **Correction (2026-08-10):** `DetectHub` must be initialized synchronously before device/API tasks and passed explicitly into both routers and device reconciliation. Manual stop cancels pending auto-start generations as well as running taps.
+- **Correction (2026-08-10):** detection capabilities are served by `GET /api/detect/capabilities` (model names, supported input types, `max_sample_interval_ms = 3_600_000`, `max_model_count = 32`, and `max_model_name_chars = 128`). The dashboard must not duplicate these constants. Unknown model names are ignored; a valid subset runs, and an unknown-only set falls back to all models. New model-name input is trimmed/deduplicated and bounded before persistence or manual start.
+- **Correction (2026-08-10):** a successful manual start keeps the plain-text `started` body for compatibility and returns its epoch in `x-detection-tap-lease`. A stop carrying that lease is conditional and cannot kill a replacement tap; an unleased manual stop remains unconditional and also cancels pending auto-start.
 - **No DB migration** — device config rides in the existing KV JSON blob; new struct fields use `#[serde(default)]` for back-compat with existing rows.
 - Frontend: use PrimeVue components; all HTTP lives in `src/api/`; `npm run type-check` and `npm run lint` must pass before any frontend commit. Keep the dark control-room theme (reuse `.field` / `.field-grid` / `.field-hint`).
 - API verbs are GET/POST only.
@@ -39,7 +42,7 @@
 
 **Frontend**
 - `nvr-dashboard/app/src/api/device.ts` — add `DeviceConfig`/`DetectConfig` types; `config?` on `DeviceItem` and `DevicePayload`.
-- `nvr-dashboard/app/src/views/DeviceListView.vue` — detect refs + model loader + reset/hydrate; wrap form in `Tabs`; add 检测 `TabPanel`; assemble `config` in `onSubmit`.
+- `nvr-dashboard/app/src/components/DetectionConfigFields.vue` and `src/forms/detectionForm.ts` — PrimeVue form fields, validation, capability states, and immutable payload construction; `DeviceListView.vue` only composes them.
 
 ---
 
@@ -884,4 +887,4 @@ git commit -m "feat(dashboard): 检测 tab for per-device detection config"
 
 - **Spec coverage:** Data model (Task 1), auto-start wiring (Tasks 3–4), tap knobs — model subset (Task 3 via `detectors_named`), sample interval (Task 3), min_confidence post-filter (Task 2); frontend tab + controls (Tasks 5–6); reconciliation with overlay (Task 3, API unchanged behavior); error handling — unknown models (`detectors_named` ignores), hub-not-initialized (reconcile warn + empty tab hint), gb28181 exclusion (`should_auto_start`); tests (Tasks 1–3). All spec sections map to a task.
 - **Placeholder scan:** none — every code step shows full code; the two "MOVE/KEEP existing markup" notes in Task 6 Step 4 reference verbatim-preserved existing template, not missing content.
-- **Type consistency:** `DetectConfig` fields (`enabled`/`models`/`sample_every_ms`/`min_confidence`) match across nvr-db (Task 1), control (Task 3), and TS (Task 5); `start_tap` signature used identically in api.rs (Task 3 Step 5) and reconcile (Task 3 Step 3); `apply_min_confidence` name matches test (Task 2) and tap call.
+- **Type consistency:** `DetectConfig` fields (`enabled`/`models`/`sample_every_ms`/`min_confidence`) match across nvr-db (Task 1), control (Task 3), and TS (Task 5); `start_tap` signature used identically in api.rs (Task 3 Step 5) and reconcile (Task 3 Step 3); `filter_min_confidence` returns a new result vector and is used by both its test and tap call.

@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::Path,
+    extract::{Path, State},
     routing::{get, post},
 };
 use chrono::Utc;
@@ -28,13 +28,14 @@ fn device_id_from_name(name: &str) -> String {
         .encode(&[source])
 }
 
-pub fn device_router() -> Router {
+pub fn device_router(hub: &'static crate::detect::hub::DetectHub) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/list", get(list_devices))
         .route("/add", post(add_device))
         .route("/update/{id}", post(update_device))
         .route("/remove/{id}", post(remove_device))
+        .with_state(hub)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -87,10 +88,14 @@ async fn list_devices() -> ApiJsonResult<Vec<DeviceListItem>> {
     ))
 }
 
-async fn add_device(Json(payload): Json<DevicePayload>) -> ApiJsonResult<DeviceInfo> {
+async fn add_device(
+    State(detect_hub): State<&'static crate::detect::hub::DetectHub>,
+    Json(payload): Json<DevicePayload>,
+) -> ApiJsonResult<DeviceInfo> {
     let conn = app_db_conn()?;
     let now = Utc::now();
     let name = payload.name.trim().to_string();
+    let config = normalize_device_config(&payload.config)?;
     let device = DeviceInfo {
         id: payload.id.unwrap_or_else(|| device_id_from_name(&name)),
         name,
@@ -99,17 +104,18 @@ async fn add_device(Json(payload): Json<DevicePayload>) -> ApiJsonResult<DeviceI
         description: payload.description.unwrap_or_default().trim().to_string(),
         include_audio: payload.include_audio,
         record: payload.record,
-        config: payload.config,
+        config,
         created_at: now,
         updated_at: now,
     };
     validate_device(&device)?;
     nvr_db::device::upsert(&device, &conn).await?;
-    ensure_device_pipe(&device).await?;
+    ensure_device_pipe(detect_hub, &device).await?;
     Ok(ok_json(device))
 }
 
 async fn update_device(
+    State(detect_hub): State<&'static crate::detect::hub::DetectHub>,
     Path(id): Path<String>,
     Json(payload): Json<DevicePayload>,
 ) -> ApiJsonResult<DeviceInfo> {
@@ -117,6 +123,7 @@ async fn update_device(
     let existing = nvr_db::device::get(&id, &conn)
         .await?
         .ok_or_else(|| anyhow::anyhow!("device not found"))?;
+    let config = normalize_device_config(&payload.config)?;
     let device = DeviceInfo {
         id,
         name: payload.name.trim().to_string(),
@@ -125,7 +132,7 @@ async fn update_device(
         description: payload.description.unwrap_or_default().trim().to_string(),
         include_audio: payload.include_audio,
         record: payload.record,
-        config: payload.config,
+        config,
         created_at: existing.created_at,
         updated_at: Utc::now(),
     };
@@ -152,17 +159,20 @@ async fn update_device(
             manager::remove_pipe(&device.id).await?;
         }
     }
-    ensure_device_pipe(&device).await?;
+    ensure_device_pipe(detect_hub, &device).await?;
     Ok(ok_json(device))
 }
 
-async fn remove_device(Path(id): Path<String>) -> ApiJsonResult<String> {
+async fn remove_device(
+    State(detect_hub): State<&'static crate::detect::hub::DetectHub>,
+    Path(id): Path<String>,
+) -> ApiJsonResult<String> {
     let conn = app_db_conn()?;
     nvr_db::device::delete(&id, &conn).await?;
     manager::remove_pipe(&id).await?;
     // The tap holds a video subscription to a pipe that no longer exists; it
     // would end on its own at EOF, but stop it now so the slot frees promptly.
-    crate::detect::control::stop_detection(&id);
+    detect_hub.stop(&id);
     if let Some(bridge) = crate::gb::bridge() {
         bridge.unregister_mapping(&id).await;
     }
@@ -182,10 +192,16 @@ fn validate_device(device: &DeviceInfo) -> anyhow::Result<()> {
     if device.input_value.is_empty() {
         return Err(anyhow::anyhow!("input value is required"));
     }
-    let available_models = crate::detect::hub::DetectHub::get().map(|hub| hub.config_names());
-    crate::detect::control::validate_detect_config(
-        device.config.detect.as_ref(),
-        available_models.as_deref(),
-    )?;
+    crate::detect::control::validate_detect_config(device.config.detect.as_ref())?;
     Ok(())
 }
+
+fn normalize_device_config(config: &DeviceConfig) -> anyhow::Result<DeviceConfig> {
+    Ok(DeviceConfig {
+        detect: crate::detect::control::normalize_detect_config(config.detect.as_ref())?,
+    })
+}
+
+#[cfg(test)]
+#[path = "device_test.rs"]
+mod device_test;
