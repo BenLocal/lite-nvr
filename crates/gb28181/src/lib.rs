@@ -1,5 +1,5 @@
-//! GB/T 28181 signaling core (media-agnostic). See
-//! docs/superpowers/specs/2026-07-01-gb28181-crate-design.md.
+//! GB/T 28181 signaling core (media-agnostic). Design notes:
+//! docs/agents-dot-md/design-gb28181.md.
 
 pub mod auth;
 pub mod client;
