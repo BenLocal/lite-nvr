@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use super::{Pipe, dest_name};
 use crate::{
     stream::RawSinkSource,
-    types::{EncodeConfig, InputConfig, OutputDest, PipeConfig, VideoRawFrame},
+    types::{EncodeConfig, InputConfig, OutputConfig, OutputDest, PipeConfig, VideoRawFrame},
 };
 
 #[test]
@@ -60,6 +60,7 @@ fn test_builder_add_rtsp_output_with_encode() {
         bitrate: Some(2_000_000),
         preset: Some("fast".to_string()),
         pixel_format: Some("yuv420p".to_string()),
+        ..Default::default()
     };
 
     let config = PipeConfig::builder()
@@ -166,6 +167,7 @@ fn test_encode_config_equality() {
         bitrate: Some(4_000_000),
         preset: Some("medium".to_string()),
         pixel_format: Some("yuv420p".to_string()),
+        ..Default::default()
     };
 
     let config2 = EncodeConfig {
@@ -175,6 +177,7 @@ fn test_encode_config_equality() {
         bitrate: Some(4_000_000),
         preset: Some("medium".to_string()),
         pixel_format: Some("yuv420p".to_string()),
+        ..Default::default()
     };
 
     let config3 = EncodeConfig {
@@ -197,6 +200,7 @@ fn test_encode_config_hash() {
         bitrate: None,
         preset: None,
         pixel_format: None,
+        ..Default::default()
     };
 
     let config2 = EncodeConfig {
@@ -206,6 +210,7 @@ fn test_encode_config_hash() {
         bitrate: None,
         preset: None,
         pixel_format: None,
+        ..Default::default()
     };
 
     let config3 = EncodeConfig {
@@ -215,6 +220,7 @@ fn test_encode_config_hash() {
         bitrate: None,
         preset: None,
         pixel_format: None,
+        ..Default::default()
     };
 
     let mut set = HashSet::new();
@@ -441,4 +447,33 @@ async fn test_pipe_raw_frame_output() {
     handle.await.unwrap();
 
     assert!(frame_count > 0, "Should have received at least one frame");
+}
+
+#[test]
+fn test_audio_encode_params_reach_ffmpeg_bus() {
+    let audio = EncodeConfig {
+        codec: "aac".to_string(),
+        sample_rate: Some(48000),
+        channels: Some(2),
+        audio_bitrate: Some(128_000),
+        ..Default::default()
+    };
+    let config = OutputConfig::new(
+        OutputDest::Network {
+            url: "rtmp://localhost/live/s".to_string(),
+            format: "flv".to_string(),
+        },
+        None,
+    )
+    .with_audio()
+    .with_audio_encode(audio);
+
+    let fb: Option<ffmpeg_bus::bus::OutputConfig> = config.into();
+    let fb = fb.expect("network output maps to an ffmpeg-bus output");
+    let e = fb.audio_encode.expect("audio_encode is forwarded");
+    assert_eq!(e.codec, "aac");
+    assert_eq!(e.sample_rate, Some(48000));
+    assert_eq!(e.channels, Some(2));
+    assert_eq!(e.audio_bitrate, Some(128_000));
+    assert!(fb.include_audio);
 }

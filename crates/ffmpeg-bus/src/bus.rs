@@ -45,6 +45,18 @@ struct MuxPlanEntry {
     encode: Option<EncodeConfig>,
     /// Target codec id for the muxed output stream.
     codec_id: ffmpeg_next::codec::Id,
+    /// Encoder serving this stream, set once its task starts (transcode only).
+    encoder_key: Option<EncoderKey>,
+}
+
+/// Identity of a shared encoder. Outputs with the same stream, encode config
+/// and loss policy share one encoder; any difference starts another, so one
+/// output's config is never silently applied to another.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct EncoderKey {
+    stream_index: usize,
+    encode: Option<EncodeConfig>,
+    lossless: bool,
 }
 
 pub struct Bus {
@@ -102,113 +114,26 @@ impl Bus {
                 }
                 state.pending_input = None;
                 state.input_config = None;
+                // Everything below was derived from the removed input; dropping
+                // the tasks cancels them (no leaked relay / blocking threads),
+                // and a later AddInput starts from a clean state.
+                state.decoder_tasks.clear();
+                state.encoder_tasks.clear();
+                state.encoder_output_streams.clear();
+                state.input_streams.clear();
+                state.output_config.clear();
                 result
                     .send(Ok(()))
                     .map_err(|e| anyhow::anyhow!("send result error: {:#?}", e))?;
             }
             BusCommand::AddOutput { output, result } => {
-                let id = &output.id;
-                if state.output_config.contains_key(id) {
-                    let _ = result.send(Err(anyhow::anyhow!("output already exists")));
-                    return Err(anyhow::anyhow!("output already exists"));
-                }
-
-                // try to start input task
-                if state.input_task.is_none() && state.input_config.is_some() {
-                    if let Err(e) = Self::prepare_input_task(state).await {
-                        let msg = format!("{:#}", e);
-                        let _ = result.send(Err(anyhow::anyhow!("{}", msg)));
-                        return Err(anyhow::anyhow!("{}", msg));
-                    }
-                }
-                let input_stream = state
-                    .input_streams
-                    .iter()
-                    .find(|s| match output.av_type {
-                        OutputAvType::Video => s.is_video(),
-                        OutputAvType::Audio => s.is_audio(),
-                    })
-                    .ok_or(anyhow::anyhow!("stream not found"))?;
-                let input_stream_index = input_stream.index();
-                let need_decoder = Self::try_decoder(input_stream, &output)?;
-                let need_encoder = Self::try_encoder(input_stream, &output)?;
-                let is_file_net = matches!(
-                    &output.dest,
-                    OutputDest::File { .. } | OutputDest::Net { .. }
-                );
-                // File/Net decide copy vs transcode per stream and start their
-                // decoder/encoder tasks inside the muxer builder; every other
-                // dest starts the primary stream's tasks here.
-                if !is_file_net {
-                    // Live/streaming outputs keep the lossy (low-latency) path.
-                    if need_decoder {
-                        Self::start_decoder_task(state, input_stream_index, false).await?;
-                    }
-                    if need_encoder {
-                        Self::start_encoder_task(
-                            state,
-                            input_stream_index,
-                            output.encode.as_ref(),
-                            false,
-                        )
-                        .await?;
-                    }
-                }
-
-                let stream_result = match &output.dest {
-                    OutputDest::Raw => {
-                        Self::create_decoder_raw_output_stream(state, input_stream_index).await
-                    }
-                    OutputDest::File { path } => {
-                        Self::create_mux_to_file(state, path, input_stream_index, &output).await
-                    }
-                    OutputDest::Net { url, format } => {
-                        Self::create_mux_to_net(
-                            state,
-                            url,
-                            format.as_deref(),
-                            input_stream_index,
-                            &output,
-                        )
-                        .await
-                    }
-                    OutputDest::Mux { format } => {
-                        if need_encoder {
-                            Self::create_mux_output_stream_from_encoder(
-                                state,
-                                format,
-                                input_stream_index,
-                            )
-                            .await
-                        } else {
-                            Self::create_mux_output_stream(state, format, input_stream_index).await
-                        }
-                    }
-                    OutputDest::Encoded => {
-                        Self::create_encoded_output_stream(state, input_stream_index).await
-                    }
-                    OutputDest::Demuxed => {
-                        Self::create_demuxed_output_stream(state, input_stream_index).await
-                    }
-                };
-
-                match stream_result {
-                    Ok((av, stream)) => {
-                        state.output_config.insert(id.clone(), output);
-                        if let Err(e) = Self::start_input_task(state).await {
-                            let msg = format!("{:#}", e);
-                            let _ = result.send(Err(anyhow::anyhow!("{}", msg)));
-                            return Err(anyhow::anyhow!("{}", msg));
-                        }
-                        result
-                            .send(Ok((av, stream)))
-                            .map_err(|_| anyhow::anyhow!("send result error: receiver dropped"))?;
-                    }
-                    Err(e) => {
-                        let msg = format!("{:#}", e);
-                        let _ = result.send(Err(anyhow::anyhow!("{}", msg)));
-                        return Err(anyhow::anyhow!("{}", msg));
-                    }
+                let r = Self::add_output_internal(state, output).await;
+                let err = r.as_ref().err().map(|e| format!("{e:#}"));
+                // Always reply (with the real error), even if the caller has
+                // stopped waiting; then log the failure via the loop.
+                let _ = result.send(r);
+                if let Some(msg) = err {
+                    return Err(anyhow::anyhow!(msg));
                 }
             }
             BusCommand::SubscribeAudio { result } => {
@@ -222,6 +147,170 @@ impl Bus {
         }
 
         Ok(())
+    }
+
+    /// Register one output: start (or reuse) the decoder/encoder it needs and
+    /// build its stream. On failure, tear down only the shared tasks this call
+    /// started, so a rejected output leaves nothing running behind.
+    async fn add_output_internal(
+        state: &mut BusState,
+        output: OutputConfig,
+    ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
+        if state.output_config.contains_key(&output.id) {
+            anyhow::bail!("output already exists");
+        }
+        if state.input_task.is_none() && state.input_config.is_some() {
+            Self::prepare_input_task(state).await?;
+        }
+        let decoders_before: HashSet<usize> = state.decoder_tasks.keys().copied().collect();
+        let encoders_before: HashSet<EncoderKey> = state.encoder_tasks.keys().cloned().collect();
+        match Self::build_output(state, &output).await {
+            Ok(built) => {
+                state.output_config.insert(output.id.clone(), output);
+                Self::start_input_task(state).await?;
+                Ok(built)
+            }
+            Err(e) => {
+                state
+                    .decoder_tasks
+                    .retain(|k, _| decoders_before.contains(k));
+                state
+                    .encoder_tasks
+                    .retain(|k, _| encoders_before.contains(k));
+                state
+                    .encoder_output_streams
+                    .retain(|k, _| encoders_before.contains(k));
+                Err(e)
+            }
+        }
+    }
+
+    async fn build_output(
+        state: &mut BusState,
+        output: &OutputConfig,
+    ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
+        let input_stream = state
+            .input_streams
+            .iter()
+            .find(|s| match output.av_type {
+                OutputAvType::Video => s.is_video(),
+                OutputAvType::Audio => s.is_audio(),
+            })
+            .ok_or_else(|| anyhow::anyhow!("input has no {:?} stream", output.av_type))?;
+        let input_stream_index = input_stream.index();
+        let need_decoder = Self::try_decoder(input_stream, output)?;
+        let need_encoder = Self::try_encoder(input_stream, output)?;
+        let is_file_net = matches!(
+            &output.dest,
+            OutputDest::File { .. } | OutputDest::Net { .. }
+        );
+        // File/Net decide copy vs transcode per stream and start their
+        // decoder/encoder tasks inside the muxer builder; every other
+        // dest starts the primary stream's tasks here.
+        let mut encoder_key = None;
+        if !is_file_net {
+            if need_decoder {
+                Self::start_decoder_task(state, input_stream_index).await?;
+            }
+            if need_encoder {
+                // Live/streaming outputs keep the lossy (low-latency) path.
+                encoder_key = Some(
+                    Self::start_encoder_task(
+                        state,
+                        input_stream_index,
+                        output.encode.as_ref(),
+                        false,
+                    )
+                    .await?,
+                );
+            }
+        }
+
+        match &output.dest {
+            OutputDest::Raw => {
+                Self::create_decoder_raw_output_stream(state, input_stream_index).await
+            }
+            OutputDest::File { path } => {
+                Self::create_mux_to_file(state, path, input_stream_index, output).await
+            }
+            OutputDest::Net { url, format } => {
+                Self::create_mux_to_net(state, url, format.as_deref(), input_stream_index, output)
+                    .await
+            }
+            OutputDest::Mux { format } => match &encoder_key {
+                Some(key) => Self::create_mux_output_stream_from_encoder(state, format, key).await,
+                None => Self::create_mux_output_stream(state, format, input_stream_index).await,
+            },
+            OutputDest::Encoded => {
+                Self::create_encoded_output_stream(state, input_stream_index, encoder_key.as_ref())
+                    .await
+            }
+            OutputDest::Demuxed => {
+                Self::create_demuxed_output_stream(state, input_stream_index).await
+            }
+        }
+    }
+
+    /// The input is still producing (or about to): restarting a stopped
+    /// decoder/encoder makes sense. Once it has ended, a fresh task would only
+    /// wait forever, so subscribers get end-of-stream instead.
+    fn input_running(state: &BusState) -> bool {
+        state.input_task.as_ref().is_some_and(|t| t.is_running())
+    }
+
+    /// Subscribe to the stream's shared decoder, (re)starting it if it stopped
+    /// because nobody was using it.
+    async fn subscribe_decoder(
+        state: &mut BusState,
+        stream_index: usize,
+        lossless: bool,
+    ) -> anyhow::Result<crate::frame::RawFrameReceiver> {
+        for _ in 0..2 {
+            Self::start_decoder_task(state, stream_index).await?;
+            let task = state
+                .decoder_tasks
+                .get(&stream_index)
+                .ok_or(anyhow::anyhow!("decoder task not found"))?;
+            if let Some(rx) = task.try_subscribe(lossless) {
+                return Ok(rx);
+            }
+            if !Self::input_running(state) {
+                return Ok(crate::decoder::closed_receiver());
+            }
+            // It stopped between the check and the subscribe: start afresh.
+            state.decoder_tasks.remove(&stream_index);
+        }
+        Err(anyhow::anyhow!(
+            "decoder for stream {stream_index} keeps stopping"
+        ))
+    }
+
+    /// Subscribe to a shared encoder, (re)starting it if it stopped because
+    /// nobody was reading it.
+    async fn subscribe_encoder(
+        state: &mut BusState,
+        key: &EncoderKey,
+    ) -> anyhow::Result<RawPacketReceiver> {
+        for _ in 0..2 {
+            Self::start_encoder_task(state, key.stream_index, key.encode.as_ref(), key.lossless)
+                .await?;
+            let task = state
+                .encoder_tasks
+                .get(key)
+                .ok_or(anyhow::anyhow!("encoder task not found"))?;
+            if let Some(rx) = task.try_subscribe() {
+                return Ok(rx);
+            }
+            if !Self::input_running(state) {
+                return Ok(tokio::sync::broadcast::channel(1).1);
+            }
+            state.encoder_tasks.remove(key);
+            state.encoder_output_streams.remove(key);
+        }
+        Err(anyhow::anyhow!(
+            "encoder for stream {} keeps stopping",
+            key.stream_index
+        ))
     }
 
     fn try_decoder(input_stream: &AvStream, output: &OutputConfig) -> anyhow::Result<bool> {
@@ -377,8 +466,8 @@ impl Bus {
         primary_index: usize,
         output: &OutputConfig,
     ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
-        let plan = Self::build_mux_plan(state, primary_index, output)?;
-        Self::start_mux_transcoders(state, &plan).await?;
+        let mut plan = Self::build_mux_plan(state, primary_index, output)?;
+        Self::start_mux_transcoders(state, &mut plan).await?;
         Self::spawn_multi_stream_mux(state, MuxTarget::File(path.to_string()), plan).await
     }
 
@@ -391,8 +480,8 @@ impl Bus {
         primary_index: usize,
         output: &OutputConfig,
     ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
-        let plan = Self::build_mux_plan(state, primary_index, output)?;
-        Self::start_mux_transcoders(state, &plan).await?;
+        let mut plan = Self::build_mux_plan(state, primary_index, output)?;
+        Self::start_mux_transcoders(state, &mut plan).await?;
         Self::spawn_multi_stream_mux(
             state,
             MuxTarget::Net {
@@ -446,20 +535,24 @@ impl Bus {
             transcode,
             encode: if transcode { encode.cloned() } else { None },
             codec_id,
+            encoder_key: None,
         }
     }
 
     /// Start a decoder + encoder task for each transcoded stream in the plan.
     async fn start_mux_transcoders(
         state: &mut BusState,
-        plan: &[MuxPlanEntry],
+        plan: &mut [MuxPlanEntry],
     ) -> anyhow::Result<()> {
         // File/Net transcode must be lossless (no dropped frames), or audio/video
         // gaps and A/V drift appear when a fast source (e.g. a file) is decoded
         // in a burst. Backpressure is a no-op for realtime sources.
-        for entry in plan.iter().filter(|e| e.transcode) {
-            Self::start_decoder_task(state, entry.input_index, true).await?;
-            Self::start_encoder_task(state, entry.input_index, entry.encode.as_ref(), true).await?;
+        for entry in plan.iter_mut().filter(|e| e.transcode) {
+            Self::start_decoder_task(state, entry.input_index).await?;
+            entry.encoder_key = Some(
+                Self::start_encoder_task(state, entry.input_index, entry.encode.as_ref(), true)
+                    .await?,
+            );
         }
         Ok(())
     }
@@ -506,45 +599,55 @@ impl Bus {
                 .find(|s| s.index() == entry.input_index)
                 .ok_or(anyhow::anyhow!("no matching stream in input"))?
                 .clone();
-            let out_stream = if entry.transcode {
+            let out_stream = match &entry.encoder_key {
                 // Use the encoder's real output params (rate/channels/dims +
                 // extradata), captured when its task started, so the muxed
                 // header matches the transcoded packets.
-                state
+                Some(key) => state
                     .encoder_output_streams
-                    .get(&entry.input_index)
+                    .get(key)
                     .cloned()
                     .ok_or_else(|| {
                         anyhow::anyhow!(
                             "no encoder output stream for transcoded input {}",
                             entry.input_index
                         )
-                    })?
-            } else {
-                input_stream
+                    })?,
+                None => input_stream,
             };
             output.add_stream(&out_stream)?;
             if primary_av.is_none() {
                 primary_av = Some(out_stream.clone());
             }
-            if entry.transcode {
-                let recv = state
-                    .encoder_tasks
-                    .get(&entry.input_index)
-                    .ok_or(anyhow::anyhow!("encoder task not found"))?
-                    .subscribe();
-                enc_receivers.push((entry.input_index, recv));
-            } else {
-                copied_indices.insert(entry.input_index);
+            match &entry.encoder_key {
+                Some(key) => {
+                    let recv = Self::subscribe_encoder(state, key).await?;
+                    enc_receivers.push((entry.input_index, recv));
+                }
+                None => {
+                    copied_indices.insert(entry.input_index);
+                }
             }
         }
         let primary_av = primary_av.ok_or(anyhow::anyhow!("mux plan is empty"))?;
+        // Connect / write the header now so a dead target (e.g. nothing
+        // listening on an RTSP URL) fails this add_output call.
+        output
+            .write_header()
+            .map_err(|e| anyhow::anyhow!("mux write_header({}): {:#}", label, e))?;
 
-        let input_receiver = state
+        let input_task = state
             .input_task
             .as_ref()
-            .ok_or(anyhow::anyhow!("input task not found"))?
-            .subscribe();
+            .ok_or(anyhow::anyhow!("input task not found"))?;
+        // File/Net outputs are lossless end to end: the copied packets come
+        // straight from the input, so the reader must not outrun this muxer.
+        input_task.set_lossless();
+        // Subscribe to the input only when something is copied from it. A
+        // fully transcoded mux ends on its encoders' EOFs; waiting on an input
+        // EOF too would hang forever when this output joins after a fast
+        // source (e.g. a short file) has already been read to the end.
+        let input_receiver = (!copied_indices.is_empty()).then(|| input_task.subscribe());
 
         tokio::spawn(async move {
             // One MuxSignal stream per source. A source's channel may stay open
@@ -553,7 +656,7 @@ impl Bus {
             // channel close.
             let mut sources: Vec<Pin<Box<dyn Stream<Item = MuxSignal> + Send>>> = Vec::new();
             let copied = Arc::new(copied_indices);
-            {
+            if let Some(input_receiver) = input_receiver {
                 let copied = copied.clone();
                 let s = BroadcastStream::new(input_receiver).filter_map(move |r| {
                     let copied = copied.clone();
@@ -619,17 +722,16 @@ impl Bus {
     async fn create_encoded_output_stream(
         state: &mut BusState,
         input_stream_index: usize,
+        encoder_key: Option<&EncoderKey>,
     ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
         let av = state
             .input_streams
             .iter()
             .find(|s| s.index() == input_stream_index)
-            .ok_or(anyhow::anyhow!("stream not found"))?;
-        let encoder_receiver = state
-            .encoder_tasks
-            .get(&input_stream_index)
-            .ok_or(anyhow::anyhow!("encoder task not found"))?
-            .subscribe();
+            .ok_or(anyhow::anyhow!("stream not found"))?
+            .clone();
+        let key = encoder_key.ok_or(anyhow::anyhow!("encoder task not found"))?;
+        let encoder_receiver = Self::subscribe_encoder(state, key).await?;
 
         let stream = BroadcastStream::new(encoder_receiver).filter_map(|r| async move {
             match r {
@@ -647,18 +749,14 @@ impl Bus {
     async fn create_mux_output_stream_from_encoder(
         state: &mut BusState,
         format: &str,
-        input_stream_index: usize,
+        encoder_key: &EncoderKey,
     ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
-        let mut encoder_receiver = state
-            .encoder_tasks
-            .get(&input_stream_index)
-            .ok_or(anyhow::anyhow!("encoder task not found"))?
-            .subscribe();
+        let mut encoder_receiver = Self::subscribe_encoder(state, encoder_key).await?;
 
         let input_stream = state
             .input_streams
             .iter()
-            .find(|s| s.index() == input_stream_index)
+            .find(|s| s.index() == encoder_key.stream_index)
             .ok_or(anyhow::anyhow!("no matching stream in input"))?;
 
         let codec_id = match format {
@@ -685,6 +783,10 @@ impl Bus {
                 match encoder_receiver.recv().await {
                     Ok(cmd) => match cmd {
                         RawPacketCmd::Data(mut packet) => {
+                            // Reader dropped: stop, releasing the encoder.
+                            if writer.is_closed() {
+                                break;
+                            }
                             packet.get_mut().set_stream(0);
                             if let Err(e) = writer.write_packet(packet) {
                                 log::error!("mux write_packet error: {}", e.to_string());
@@ -740,6 +842,10 @@ impl Bus {
             loop {
                 match input_receiver.recv().await {
                     Ok(RawPacketCmd::Data(packet)) => {
+                        // Reader dropped: stop instead of muxing for nobody.
+                        if writer.is_closed() {
+                            break;
+                        }
                         if packet.index() == target_stream_index {
                             if let Err(e) = writer.write_packet(packet) {
                                 log::error!("mux write_packet error: {}", e.to_string());
@@ -833,27 +939,27 @@ impl Bus {
             .iter()
             .find(|s| s.index() == stream_index)
             .ok_or(anyhow::anyhow!("stream not found"))?;
-        let stream = BroadcastStream::new(
-            state
-                .decoder_tasks
-                .get(&stream_index)
-                .ok_or(anyhow::anyhow!("decoder task not found"))?
-                .subscribe(),
-        )
-        .map(|cmd| match cmd {
-            Ok(cmd) => match cmd {
-                RawFrameCmd::Data(frame) => Some(VideoFrame::try_from(frame).unwrap()),
-                RawFrameCmd::EOF => None,
-            },
-            Err(e) => {
-                log::error!(
-                    "decoder task error: {:#?}\nbacktrace:\n{}",
-                    e,
-                    Backtrace::capture()
-                );
-                None
-            }
-        });
+        let av = av.clone();
+        let stream =
+            BroadcastStream::new(Self::subscribe_decoder(state, stream_index, false).await?)
+                .filter_map(|cmd| async move {
+                    match cmd {
+                        Ok(RawFrameCmd::Data(frame)) => match VideoFrame::try_from(frame) {
+                            Ok(frame) => Some(Some(frame)),
+                            Err(e) => {
+                                log::debug!("raw output: skip unconvertible frame: {:#}", e);
+                                None
+                            }
+                        },
+                        Ok(RawFrameCmd::EOF) => Some(None),
+                        // A lossy subscriber that falls behind just loses its oldest
+                        // frames; that is not end of stream.
+                        Err(e) => {
+                            log::debug!("raw output: {}", e);
+                            None
+                        }
+                    }
+                });
 
         Ok((av.clone(), Box::pin(stream)))
     }
@@ -872,12 +978,7 @@ impl Bus {
             .find(|s| s.is_audio())
             .ok_or_else(|| anyhow::anyhow!("pipe has no audio stream"))?
             .index();
-        Self::start_decoder_task(state, audio_index, false).await?;
-        let receiver = state
-            .decoder_tasks
-            .get(&audio_index)
-            .ok_or_else(|| anyhow::anyhow!("audio decoder task not found after start"))?
-            .subscribe();
+        let receiver = Self::subscribe_decoder(state, audio_index, false).await?;
         Self::start_input_task(state).await?;
         Ok(receiver)
     }
@@ -896,12 +997,7 @@ impl Bus {
             .find(|s| s.is_video())
             .ok_or_else(|| anyhow::anyhow!("pipe has no video stream"))?
             .index();
-        Self::start_decoder_task(state, video_index, false).await?;
-        let receiver = state
-            .decoder_tasks
-            .get(&video_index)
-            .ok_or_else(|| anyhow::anyhow!("video decoder task not found after start"))?
-            .subscribe();
+        let receiver = Self::subscribe_decoder(state, video_index, false).await?;
         Self::start_input_task(state).await?;
         Ok(receiver)
     }
@@ -985,45 +1081,54 @@ impl Bus {
         }
     }
 
+    /// Start (or reuse) the encoder for `(stream, encode, lossless)` and return
+    /// its key. Same key → shared encoder; a different config gets its own.
     async fn start_encoder_task(
         state: &mut BusState,
         input_stream_index: usize,
         encode: Option<&EncodeConfig>,
         lossless: bool,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<EncoderKey> {
+        let key = EncoderKey {
+            stream_index: input_stream_index,
+            encode: encode.cloned(),
+            lossless,
+        };
+        // Reuse a running encoder; keep an ended one when the input is done
+        // too (subscribers then get end-of-stream, see `subscribe_encoder`).
+        if let Some(task) = state.encoder_tasks.get(&key)
+            && (task.is_running() || !Self::input_running(state))
+        {
+            return Ok(key);
+        }
+        // Owned copy: the decoder subscription below needs `state` mutably.
         let input_stream = state
             .input_streams
             .iter()
             .find(|s| s.index() == input_stream_index)
-            .ok_or(anyhow::anyhow!("stream not found"))?;
-        if state.encoder_tasks.contains_key(&input_stream_index) {
-            return Ok(());
-        }
+            .ok_or(anyhow::anyhow!("stream not found"))?
+            .clone();
+        let input_stream = &input_stream;
 
         // Audio encoder path
         if input_stream.is_audio() {
-            let encoder_task = EncoderTask::new();
-            let encoder_receiver = state
-                .decoder_tasks
-                .get(&input_stream_index)
-                .ok_or(anyhow::anyhow!("decoder task not found for audio stream"))?
-                .subscribe();
+            let encoder_task = EncoderTask::new_auto_stop();
+            let encoder_receiver =
+                Self::subscribe_decoder(state, input_stream_index, lossless).await?;
             let audio_settings = Self::audio_settings_from_config(encode);
             let encoder = Encoder::new_audio(input_stream, audio_settings, None)?;
             let out_stream = encoder.output_stream(input_stream_index);
             encoder_task
                 .start(encoder, encoder_receiver, lossless)
                 .await;
-            state.encoder_tasks.insert(input_stream_index, encoder_task);
-            state
-                .encoder_output_streams
-                .insert(input_stream_index, out_stream);
-            return Ok(());
+            state.encoder_tasks.insert(key.clone(), encoder_task);
+            state.encoder_output_streams.insert(key.clone(), out_stream);
+            return Ok(key);
         }
 
         // Video encoder path
         let codec_id = input_stream.parameters().id();
-        let encoder_task = EncoderTask::new();
+        let encoder_task = EncoderTask::new_auto_stop();
         // Encoder-derived output stream descriptor for the muxer, set in each branch.
         let out_stream: AvStream;
         // Only RAWVIDEO has raw pixel data in packets; use packet->frame conversion.
@@ -1057,19 +1162,33 @@ impl Bus {
                 let frame_tx = frame_tx;
                 tokio::spawn(async move {
                     loop {
-                        match packet_rx.recv().await {
+                        let msg = match packet_rx.recv().await {
                             Ok(RawPacketCmd::Data(packet)) => {
-                                if let Ok(frame) =
-                                    packet_to_raw_video_frame(packet, width, height, pixel_format)
+                                match packet_to_raw_video_frame(packet, width, height, pixel_format)
                                 {
-                                    let _ = frame_tx.send(RawFrameCmd::Data(frame));
+                                    Ok(frame) => RawFrameCmd::Data(frame),
+                                    Err(_) => continue,
                                 }
                             }
-                            Ok(RawPacketCmd::EOF) => {
-                                let _ = frame_tx.send(RawFrameCmd::EOF);
-                                break;
+                            Ok(RawPacketCmd::EOF) => RawFrameCmd::EOF,
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                log::warn!("rawvideo relay lagged, lost {} packets", n);
+                                continue;
                             }
-                            Err(_) => continue,
+                            // Input gone: stop (dropping frame_tx ends the encoder relay).
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        };
+                        let is_eof = matches!(msg, RawFrameCmd::EOF);
+                        if lossless {
+                            while frame_tx.len() >= RAW_FRAME_CHAN_CAP
+                                && frame_tx.receiver_count() > 0
+                            {
+                                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                            }
+                        }
+                        // No receiver left: the encoder is gone, stop relaying.
+                        if frame_tx.send(msg).is_err() || is_eof {
+                            break;
                         }
                     }
                 });
@@ -1077,11 +1196,8 @@ impl Bus {
             out_stream = encoder.output_stream(input_stream_index);
             encoder_task.start(encoder, frame_rx, lossless).await;
         } else {
-            let encoder_receiver = state
-                .decoder_tasks
-                .get(&input_stream_index)
-                .ok_or(anyhow::anyhow!("decoder task not found"))?
-                .subscribe();
+            let encoder_receiver =
+                Self::subscribe_decoder(state, input_stream_index, lossless).await?;
             // Decoded path: decoder outputs RawFrame; encoder needs correct size/format.
             // For WRAPPED_AVFRAME (e.g. lavfi testsrc), use stream params so output resolution matches source.
             let codec = Self::encoder_codec_from_config(encode);
@@ -1124,26 +1240,29 @@ impl Bus {
                 .await;
         }
 
-        state.encoder_tasks.insert(input_stream_index, encoder_task);
-        state
-            .encoder_output_streams
-            .insert(input_stream_index, out_stream);
-        Ok(())
+        state.encoder_tasks.insert(key.clone(), encoder_task);
+        state.encoder_output_streams.insert(key.clone(), out_stream);
+        Ok(key)
     }
 
+    /// Start the stream's shared decoder if not running. One decoder per input
+    /// stream; each subscriber picks its own loss policy (see `DecoderTask::subscribe`).
     async fn start_decoder_task(
         state: &mut BusState,
         input_stream_index: usize,
-        lossless: bool,
     ) -> anyhow::Result<()> {
+        // Reuse a running decoder; keep an ended one when the input is done
+        // too (subscribers then get end-of-stream, see `subscribe_decoder`).
+        if let Some(task) = state.decoder_tasks.get(&input_stream_index)
+            && (task.is_running() || !Self::input_running(state))
+        {
+            return Ok(());
+        }
         let input_stream = state
             .input_streams
             .iter()
             .find(|s| s.index() == input_stream_index)
             .ok_or(anyhow::anyhow!("stream not found"))?;
-        if state.decoder_tasks.contains_key(&input_stream_index) {
-            return Ok(());
-        }
         let codec_id = input_stream.parameters().id();
         if codec_id == ffmpeg_next::codec::Id::RAWVIDEO {
             return Ok(());
@@ -1154,10 +1273,8 @@ impl Bus {
             .ok_or(anyhow::anyhow!("input task not found"))?
             .subscribe();
         let decoder = Decoder::new(input_stream)?;
-        let decoder_task = DecoderTask::new();
-        decoder_task
-            .start(decoder, decoder_receiver, lossless)
-            .await;
+        let decoder_task = DecoderTask::new_auto_stop();
+        decoder_task.start(decoder, decoder_receiver).await;
         state.decoder_tasks.insert(input_stream_index, decoder_task);
 
         Ok(())
@@ -1283,11 +1400,11 @@ struct BusState {
     pending_input: Option<AvInput>,
     input_streams: Vec<AvStream>,
     decoder_tasks: HashMap<usize, DecoderTask>,
-    encoder_tasks: HashMap<usize, EncoderTask>,
-    /// Encoder-derived output stream descriptors, keyed by input stream index.
+    encoder_tasks: HashMap<EncoderKey, EncoderTask>,
+    /// Encoder-derived output stream descriptors, keyed like `encoder_tasks`.
     /// Populated when an encoder task starts; the muxer uses these (not the
     /// input params) for transcoded streams so the header matches the packets.
-    encoder_output_streams: HashMap<usize, AvStream>,
+    encoder_output_streams: HashMap<EncoderKey, AvStream>,
 }
 
 impl BusState {
@@ -1482,3 +1599,7 @@ impl std::hash::Hash for EncodeConfig {
 #[cfg(test)]
 #[path = "bus_test.rs"]
 mod bus_test;
+
+#[cfg(test)]
+#[path = "bus_rtsp_test.rs"]
+mod bus_rtsp_test;

@@ -1,4 +1,8 @@
-use std::{backtrace::Backtrace, time::Duration};
+use std::{
+    backtrace::Backtrace,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use ffmpeg_next::Rational;
 use tokio_util::sync::CancellationToken;
@@ -12,16 +16,16 @@ use crate::{
     stream::AvStream,
 };
 
-/// Decoder output ring-buffer size. Balances memory vs avoiding Lagged
-/// (dropped frames break a stream). Used both to size the broadcast channel and
-/// as the backpressure high-water mark in lossless mode.
+/// Per-subscriber decoded-frame ring-buffer size. Balances memory vs avoiding
+/// Lagged (dropped frames break a stream). Used both to size each subscriber's
+/// channel and as the backpressure high-water mark for lossless subscribers.
 const FRAME_CHAN_CAP: usize = 16;
 
-/// Send a decoded frame downstream. In `lossless` mode (file/net transcode),
-/// wait for ring-buffer room so a fast producer (e.g. a whole file decoded in a
-/// burst) does not overwrite unconsumed frames. Realtime sources keep the
-/// buffer near-empty, so this never actually waits for them. Not lossless:
-/// send immediately (old behaviour), dropping the oldest if consumers lag.
+/// Send a decoded frame to one subscriber. A `lossless` subscriber (file/net
+/// transcode) makes the decoder wait for room in *its own* ring buffer, so a
+/// fast producer (e.g. a whole file decoded in a burst) does not overwrite
+/// unconsumed frames. A lossy subscriber (live, raw, ASR, detection) never
+/// blocks the decoder: when it lags, its own oldest frames are dropped.
 fn send_frame_backpressure(
     sender: &RawFrameSender,
     cancel: &CancellationToken,
@@ -37,6 +41,90 @@ fn send_frame_backpressure(
         }
     }
     let _ = sender.send(msg);
+}
+
+/// One consumer of a decoder's output, with its own channel and drop policy.
+struct FrameSubscriber {
+    tx: RawFrameSender,
+    lossless: bool,
+}
+
+/// Fan-out state shared between [`DecoderTask::subscribe`] and the decode loop.
+#[derive(Default)]
+struct SubscriberState {
+    subs: Vec<FrameSubscriber>,
+    /// Someone subscribed at least once (auto-stop only after that).
+    had_any: bool,
+    /// The decoder has ended or stopped: no further subscriptions.
+    closed: bool,
+}
+
+#[derive(Clone, Default)]
+struct FrameSubscribers(Arc<Mutex<SubscriberState>>);
+
+/// A receiver whose sender is already gone: yields `Closed` immediately, so a
+/// subscriber of an ended decoder sees end-of-stream instead of hanging.
+pub(crate) fn closed_receiver() -> RawFrameReceiver {
+    tokio::sync::broadcast::channel(1).1
+}
+
+impl FrameSubscribers {
+    /// `None` once the decoder has ended (see [`Self::close`]).
+    fn add(&self, lossless: bool) -> Option<RawFrameReceiver> {
+        let mut state = self.lock();
+        if state.closed {
+            return None;
+        }
+        let (tx, rx) = tokio::sync::broadcast::channel(FRAME_CHAN_CAP);
+        state.subs.push(FrameSubscriber { tx, lossless });
+        state.had_any = true;
+        Some(rx)
+    }
+
+    /// Deliver `msg` to every live subscriber. Senders are snapshotted so the
+    /// lock is not held while a lossless subscriber applies backpressure.
+    /// With `auto_stop`, the last subscriber leaving closes the fan-out and
+    /// cancels the decoder: nobody is left to use the frames.
+    fn publish(&self, cancel: &CancellationToken, auto_stop: bool, msg: RawFrameCmd) {
+        let targets: Vec<(RawFrameSender, bool)> = {
+            let mut state = self.lock();
+            state.subs.retain(|s| s.tx.receiver_count() > 0);
+            if auto_stop && state.had_any && state.subs.is_empty() {
+                // Checked and closed under the lock, so a concurrent
+                // subscribe either lands before (and keeps us alive) or sees
+                // `closed` and is refused.
+                state.closed = true;
+                cancel.cancel();
+                return;
+            }
+            state
+                .subs
+                .iter()
+                .map(|s| (s.tx.clone(), s.lossless))
+                .collect()
+        };
+        for (tx, lossless) in targets {
+            send_frame_backpressure(&tx, cancel, lossless, msg.clone());
+        }
+    }
+
+    /// Refuse new subscriptions and drop the senders, so existing receivers
+    /// see `Closed` once they have drained (after the final EOF).
+    fn close(&self) {
+        let mut state = self.lock();
+        state.closed = true;
+        state.subs.clear();
+    }
+
+    fn is_closed(&self) -> bool {
+        self.lock().closed
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, SubscriberState> {
+        // A panic while holding this lock cannot leave the state inconsistent
+        // (push/retain/flag updates only), so recover from poisoning instead.
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
 }
 
 enum DecoderType {
@@ -237,12 +325,16 @@ impl Decoder {
     }
 
     pub fn send_packet(&mut self, packet: RawPacket) -> anyhow::Result<()> {
+        // Keep a handle (Arc clone, no data copy) while on hardware so the
+        // packet can be replayed into the software decoder after a downgrade.
+        let retry = self.is_hw.then(|| packet.clone());
         match self.inner.send_packet(packet, self.decoder_time_base) {
             Ok(()) => Ok(()),
             // A hardware decoder can open cleanly yet fail on the first real
             // packet (e.g. QSV "MFX session" errors), with no built-in fallback.
-            // Downgrade to software once and keep going: the failed packet is
-            // dropped and the software decoder resyncs at the next keyframe.
+            // Downgrade to software once and replay the failed packet: it is
+            // often the stream's first keyframe, and dropping it leaves the
+            // software decoder with nothing to decode until the next one.
             Err(e) if self.is_hw => {
                 log::warn!(
                     "stream {}: hardware decode failed at runtime ({e:#}); \
@@ -253,7 +345,10 @@ impl Decoder {
                 self.inner = DecoderType::Video(video_decoder);
                 self.decoder_time_base = time_base;
                 self.is_hw = false;
-                Ok(())
+                match retry {
+                    Some(packet) => self.inner.send_packet(packet, self.decoder_time_base),
+                    None => Ok(()),
+                }
             }
             Err(e) => Err(e),
         }
@@ -274,41 +369,59 @@ impl Decoder {
 
 pub struct DecoderTask {
     cancel: CancellationToken,
-    raw_chan: RawFrameSender,
+    subscribers: FrameSubscribers,
+    /// Stop once the last subscriber leaves (bus-managed decoders). Off for
+    /// long-lived decoders whose subscribers come and go (e.g. audio mixer).
+    auto_stop: bool,
 }
 
 impl DecoderTask {
     pub fn new() -> Self {
-        let cancel = CancellationToken::new();
-        let (sender, _) = tokio::sync::broadcast::channel(FRAME_CHAN_CAP);
-
         Self {
-            cancel,
-            raw_chan: sender,
+            cancel: CancellationToken::new(),
+            subscribers: FrameSubscribers::default(),
+            auto_stop: false,
         }
     }
 
-    pub fn subscribe(&self) -> RawFrameReceiver {
-        self.raw_chan.subscribe()
+    /// A decoder that stops itself when its last subscriber goes away, so a
+    /// shared decoder nobody uses any more does not keep burning CPU.
+    pub(crate) fn new_auto_stop() -> Self {
+        let mut task = Self::new();
+        task.auto_stop = true;
+        task
+    }
+
+    /// Subscribe to decoded frames. `lossless` subscribers backpressure the
+    /// shared decoder; lossy ones drop their own oldest frames when they lag.
+    /// On a decoder that has ended, the receiver reports `Closed` at once.
+    pub fn subscribe(&self, lossless: bool) -> RawFrameReceiver {
+        self.try_subscribe(lossless).unwrap_or_else(closed_receiver)
+    }
+
+    /// Like [`Self::subscribe`], but `None` if the decoder has ended, so the
+    /// caller can start a fresh one.
+    pub(crate) fn try_subscribe(&self, lossless: bool) -> Option<RawFrameReceiver> {
+        self.subscribers.add(lossless)
+    }
+
+    /// Still decoding and accepting subscribers.
+    pub(crate) fn is_running(&self) -> bool {
+        !self.cancel.is_cancelled() && !self.subscribers.is_closed()
     }
 
     pub fn stop(&self) {
         self.cancel.cancel();
     }
 
-    pub async fn start(
-        &self,
-        decoder: Decoder,
-        mut decoder_receiver: RawPacketReceiver,
-        lossless: bool,
-    ) {
+    pub async fn start(&self, decoder: Decoder, mut decoder_receiver: RawPacketReceiver) {
         log::info!(
-            "decoder loop started, stream index: {}, lossless: {}",
-            decoder.stream_index(),
-            lossless
+            "decoder loop started, stream index: {}",
+            decoder.stream_index()
         );
         let cancel_clone = self.cancel.clone();
-        let sender_clone = self.raw_chan.clone();
+        let subscribers = self.subscribers.clone();
+        let auto_stop = self.auto_stop;
         /// Bounded queue: when decoder is slower than producer, back-pressure instead of unbounded growth (OOM).
         const PACKET_QUEUE_BOUND: usize = 16;
         tokio::spawn(async move {
@@ -318,16 +431,16 @@ impl DecoderTask {
 
             let handle_cancel = cancel_clone.clone();
             let handle = tokio::task::spawn_blocking(move || {
-                Self::decoder_loop(decoder, handle_cancel, packet_rx, sender_clone, lossless)
+                Self::decoder_loop(decoder, handle_cancel, packet_rx, subscribers, auto_stop)
             });
             loop {
                 tokio::select! {
                     _ = cancel_clone.cancelled() => {
                         break;
                     }
-                    Ok(packet) = decoder_receiver.recv() => {
-                        match packet {
-                            RawPacketCmd::Data(packet) => {
+                    result = decoder_receiver.recv() => {
+                        match result {
+                            Ok(RawPacketCmd::Data(packet)) => {
                                 if packet.index() != current_stream_index {
                                     continue;
                                 }
@@ -345,7 +458,7 @@ impl DecoderTask {
                                     break;
                                 }
                             }
-                            RawPacketCmd::EOF => {
+                            Ok(RawPacketCmd::EOF) => {
                                 let _ = Self::packet_send_backpressure(
                                     &packet_tx,
                                     &cancel_clone,
@@ -354,10 +467,21 @@ impl DecoderTask {
                                 .await;
                                 break;
                             }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                log::warn!(
+                                    "decoder relay (stream {}): lagged, lost {} packets",
+                                    current_stream_index,
+                                    n
+                                );
+                            }
+                            // Input gone (removed / bus dropped): dropping
+                            // `packet_tx` below ends the decode loop.
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                         }
                     }
                 }
             }
+            drop(packet_tx);
             let _ = handle.await;
         });
     }
@@ -390,8 +514,8 @@ impl DecoderTask {
         mut decoder: Decoder,
         cancel: CancellationToken,
         packet_rx: std::sync::mpsc::Receiver<RawPacketCmd>,
-        out_sender: RawFrameSender,
-        lossless: bool,
+        subscribers: FrameSubscribers,
+        auto_stop: bool,
     ) {
         loop {
             if cancel.is_cancelled() {
@@ -425,21 +549,8 @@ impl DecoderTask {
 
                     'outer: loop {
                         match decoder.receive_frame() {
-                            Ok(Some(RawFrame::Video(frame))) => {
-                                send_frame_backpressure(
-                                    &out_sender,
-                                    &cancel,
-                                    lossless,
-                                    RawFrameCmd::Data(RawFrame::Video(frame)),
-                                );
-                            }
-                            Ok(Some(RawFrame::Audio(frame))) => {
-                                send_frame_backpressure(
-                                    &out_sender,
-                                    &cancel,
-                                    lossless,
-                                    RawFrameCmd::Data(RawFrame::Audio(frame)),
-                                );
+                            Ok(Some(frame)) => {
+                                subscribers.publish(&cancel, auto_stop, RawFrameCmd::Data(frame));
                             }
                             Ok(None) => break 'outer,
                             Err(e) => {
@@ -453,7 +564,10 @@ impl DecoderTask {
                         }
                     }
                 }
-                Err(_) => (),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (),
+                // Relay gone (input closed or task cancelled): nothing more
+                // will arrive, so stop instead of spinning on a dead queue.
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             }
 
             if eof {
@@ -466,6 +580,19 @@ impl DecoderTask {
             decoder.decoder_time_base
         );
         // Backpressure EOF too, so it doesn't evict an unread tail frame.
-        send_frame_backpressure(&out_sender, &cancel, lossless, RawFrameCmd::EOF);
+        subscribers.publish(&cancel, false, RawFrameCmd::EOF);
+        subscribers.close();
     }
 }
+
+impl Drop for DecoderTask {
+    /// Dropping the task (bus teardown / input removal) stops the relay and the
+    /// blocking decode loop, so they never outlive the bus.
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
+#[cfg(test)]
+#[path = "decoder_test.rs"]
+mod decoder_test;

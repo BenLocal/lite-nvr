@@ -115,6 +115,30 @@ impl RawVideoFrame {
         Arc::make_mut(&mut self.frame)
     }
 
+    /// Mutable access for frame *properties* (pts, picture type, ...) only.
+    /// When the frame is shared (a decoded frame fanned out to several
+    /// subscribers), this makes a new `AVFrame` referencing the same
+    /// ref-counted pixel buffers instead of copying them like [`Self::get_mut`].
+    /// Never write pixel data through it: the buffers are still shared.
+    pub fn props_mut(&mut self) -> &mut ffmpeg_next::frame::Video {
+        if Arc::get_mut(&mut self.frame).is_none() {
+            let mut shallow = ffmpeg_next::frame::Video::empty();
+            // SAFETY: both pointers are valid AVFrames owned by live wrappers;
+            // av_frame_ref only adds references to the source's buffers and
+            // copies its properties into the empty destination.
+            let ret = unsafe {
+                ffmpeg_next::ffi::av_frame_ref(shallow.as_mut_ptr(), self.frame.as_ptr())
+            };
+            if ret < 0 {
+                // Not ref-counted (cannot share buffers): fall back to a copy.
+                return Arc::make_mut(&mut self.frame);
+            }
+            self.frame = Arc::new(shallow);
+        }
+        // Unique now, so make_mut hands out the frame without copying.
+        Arc::make_mut(&mut self.frame)
+    }
+
     pub fn data(&self) -> Bytes {
         Bytes::copy_from_slice(self.frame.data(0))
     }

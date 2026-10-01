@@ -112,13 +112,24 @@ impl AvStream {
     }
 }
 
+/// Prefer the average frame rate; fall back to the real base frame rate when
+/// the demuxer leaves it unset (0/0), as raw video and many RTSP cameras do.
+/// Without this the encoder gets no frame rate and mis-sizes its rate control.
+fn frame_rate(avg: Rational, real: Rational) -> Rational {
+    if avg.numerator() > 0 && avg.denominator() > 0 {
+        avg
+    } else {
+        real
+    }
+}
+
 impl From<stream::Stream<'_>> for AvStream {
     fn from(stream: stream::Stream<'_>) -> Self {
         Self {
             index: stream.index(),
             parameters: stream.parameters(),
             time_base: stream.time_base(),
-            rate: stream.avg_frame_rate(),
+            rate: frame_rate(stream.avg_frame_rate(), stream.rate()),
         }
     }
 }
@@ -133,3 +144,7 @@ impl Clone for AvStream {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "stream_test.rs"]
+mod stream_test;

@@ -58,3 +58,23 @@ fn raw_video_frame_exposes_inner_via_as_video() {
     assert_eq!(inner.height(), 2);
     assert_eq!(inner.format(), ffmpeg_next::format::Pixel::RGB24);
 }
+
+/// Changing a shared frame's properties must not copy its pixels: the
+/// property copy references the same buffers, and the original is untouched.
+#[test]
+fn test_props_mut_shares_pixel_buffers() {
+    let mut src = ffmpeg_next::frame::Video::new(ffmpeg_next::format::Pixel::YUV420P, 64, 48);
+    src.set_pts(Some(7));
+    let original = RawVideoFrame::from(src);
+    let mut shared = original.clone();
+
+    shared.props_mut().set_pts(Some(42));
+
+    assert_eq!(shared.pts(), Some(42));
+    assert_eq!(original.pts(), Some(7), "original frame must be untouched");
+    assert_eq!(
+        shared.as_video().data(0).as_ptr(),
+        original.as_video().data(0).as_ptr(),
+        "props_mut must reference the same pixel buffer, not copy it"
+    );
+}

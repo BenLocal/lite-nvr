@@ -188,8 +188,8 @@ async fn open_connection(id: &str, url: &str) -> Result<Connection> {
     let decoder = Decoder::new(&video_stream)?;
     let decoder_task = DecoderTask::new();
     // Compositor keeps only the latest frame per source, so lossy is fine.
-    decoder_task.start(decoder, input_task.subscribe(), false).await;
-    let frames = decoder_task.subscribe();
+    decoder_task.start(decoder, input_task.subscribe()).await;
+    let frames = decoder_task.subscribe(false);
     input_task.start(input).await;
     log::info!("compositor source {id}: connected");
 

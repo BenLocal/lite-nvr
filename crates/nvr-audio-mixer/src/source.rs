@@ -34,9 +34,7 @@ impl AudioSource {
         let input_task = AvInputTask::new();
         let decoder = Decoder::new(&audio_stream)?;
         let decoder_task = DecoderTask::new();
-        decoder_task
-            .start(decoder, input_task.subscribe(), false)
-            .await;
+        decoder_task.start(decoder, input_task.subscribe()).await;
         input_task.start(input).await;
 
         Ok(Self {
@@ -51,7 +49,7 @@ impl AudioSource {
     /// A fresh receiver on this source's decoded-audio broadcast. Each bus that
     /// consumes the source gets its own receiver.
     pub fn subscribe(&self) -> RawFrameReceiver {
-        self.decoder_task.subscribe()
+        self.decoder_task.subscribe(false)
     }
 }
 

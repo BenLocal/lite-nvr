@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use ffmpeg_next::Dictionary;
 use tokio_util::sync::CancellationToken;
@@ -13,6 +16,9 @@ use crate::{
 pub struct AvInputTask {
     cancel: CancellationToken,
     raw_chan: RawPacketSender,
+    /// Set once a lossless (File/Net) output exists: the reader then waits for
+    /// its slowest subscriber instead of overwriting unread packets.
+    lossless: Arc<AtomicBool>,
 }
 
 impl AvInputTask {
@@ -25,12 +31,20 @@ impl AvInputTask {
         Self {
             cancel,
             raw_chan: sender,
+            lossless: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Switch the reader to lossless mode (one-way). A fast source (e.g. a file
+    /// read in a burst) then cannot outrun subscribers and make them lag.
+    pub fn set_lossless(&self) {
+        self.lossless.store(true, Ordering::Relaxed);
     }
 
     pub async fn start(&self, mut input: AvInput) {
         let cancel_clone = self.cancel.clone();
         let sender_clone = self.raw_chan.clone();
+        let lossless = self.lossless.clone();
         tokio::spawn(async move {
             let cancel_inner = cancel_clone.clone();
             let handle = tokio::task::spawn_blocking(move || {
@@ -40,6 +54,14 @@ impl AvInputTask {
                     }
                     match input.read_packet() {
                         Some(packet) => {
+                            if lossless.load(Ordering::Relaxed) {
+                                while sender_clone.len() >= Self::PACKET_CHAN_CAP
+                                    && sender_clone.receiver_count() > 0
+                                    && !cancel_inner.is_cancelled()
+                                {
+                                    std::thread::sleep(Duration::from_millis(2));
+                                }
+                            }
                             // Attempt to send, ignore send error (receiver dropped)
                             let _ = sender_clone.send(RawPacketCmd::Data(packet));
                         }
@@ -82,6 +104,18 @@ impl AvInputTask {
     pub fn stop(&self) {
         self.cancel.cancel();
     }
+
+    /// Still reading (or not yet started). The reader cancels itself at EOF.
+    pub(crate) fn is_running(&self) -> bool {
+        !self.cancel.is_cancelled()
+    }
+}
+
+impl Drop for AvInputTask {
+    /// Dropping the task stops the blocking reader so it never outlives the bus.
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
 }
 
 pub struct AvInput {
@@ -117,11 +151,8 @@ impl AvInput {
             }
             (Some(fmt_name), None) => {
                 let fmt = Self::find_input_format(fmt_name)?;
-                let ctx = ffmpeg_next::format::open_with(
-                    path,
-                    &Format::Input(fmt),
-                    Dictionary::new(),
-                )?;
+                let ctx =
+                    ffmpeg_next::format::open_with(path, &Format::Input(fmt), Dictionary::new())?;
                 ctx.input()
             }
             (None, Some(opts)) => ffmpeg_next::format::input_with_dictionary(path, opts)?,
@@ -152,3 +183,7 @@ impl AvInput {
             .map(|(stream, packet)| (packet, stream.time_base()).into())
     }
 }
+
+#[cfg(test)]
+#[path = "input_test.rs"]
+mod input_test;

@@ -9,7 +9,7 @@ use crate::input::AvInput;
 use crate::metadata::probe;
 
 /// Path to scripts/test.mp4 at the workspace root (crates/ffmpeg-bus/../..). Works regardless of cwd.
-fn test_mp4_path() -> PathBuf {
+pub(super) fn test_mp4_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -18,10 +18,18 @@ fn test_mp4_path() -> PathBuf {
         .join("test.mp4")
 }
 
+/// Path for a test-generated media file under `crates/ffmpeg-bus/.test_media/`
+/// (git-ignored), creating the directory if needed.
+pub(super) fn test_media(name: &str) -> String {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(".test_media");
+    std::fs::create_dir_all(&dir).expect("create .test_media dir");
+    dir.join(name).to_string_lossy().into_owned()
+}
+
 /// Requires scripts/test.mp4 (~5s, 10fps).
 #[tokio::test]
 async fn test_mux_h264() -> anyhow::Result<()> {
-    let file_name = "output.h264";
+    let file_name = &test_media("output.h264");
     if Path::new(file_name).exists() {
         std::fs::remove_file(file_name).unwrap();
     }
@@ -65,7 +73,7 @@ async fn test_mux_h264() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_mux_aac() -> anyhow::Result<()> {
-    let file_name = "output.aac";
+    let file_name = &test_media("output.aac");
     if Path::new(file_name).exists() {
         std::fs::remove_file(file_name).unwrap();
     }
@@ -107,6 +115,7 @@ async fn test_mux_aac() -> anyhow::Result<()> {
 /// Requires scripts/test.mp4 (~5s, 10fps).
 #[tokio::test]
 async fn test_mux_only_video_mp4() -> anyhow::Result<()> {
+    let file_name = &test_media("output.mp4");
     let input_path = test_mp4_path();
     if !input_path.exists() {
         log::warn!("skip: {} not found", input_path.display());
@@ -124,14 +133,14 @@ async fn test_mux_only_video_mp4() -> anyhow::Result<()> {
         "mux_h264".to_string(),
         OutputAvType::Video,
         OutputDest::File {
-            path: "output.mp4".to_string(),
+            path: file_name.to_string(),
         },
     );
     let _stream = bus.add_output(output_config).await?;
 
     // Source is ~5s @ 10fps; wait for mux to finish (read + write) then verify
     tokio::time::sleep(std::time::Duration::from_secs(8)).await;
-    verify_output_mp4("output.mp4", Some(5.0), Some(10)).await?;
+    verify_output_mp4(file_name, Some(5.0), Some(10)).await?;
     Ok(())
 }
 
@@ -140,7 +149,7 @@ async fn test_mux_only_video_mp4() -> anyhow::Result<()> {
 /// output is a valid MP4 with a video stream.
 #[tokio::test]
 async fn test_transcode_video_to_file() -> anyhow::Result<()> {
-    let file_name = "output_transcode.mp4";
+    let file_name = &test_media("output_transcode.mp4");
     if Path::new(file_name).exists() {
         std::fs::remove_file(file_name).ok();
     }
@@ -182,13 +191,106 @@ async fn test_transcode_video_to_file() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Two File outputs on the same video stream with different encode configs
+/// must each get their own encoder (no "first config wins"), while sharing one
+/// decoder. A lossy decoded-video subscriber that is never read must not stall
+/// the lossless transcodes. Also checks the encoder GOP yields periodic keyframes.
+#[tokio::test]
+async fn test_separate_encoders_per_config_share_decoder() -> anyhow::Result<()> {
+    let input_path = test_mp4_path();
+    if !input_path.exists() {
+        log::warn!("skip: {} not found", input_path.display());
+        return Ok(());
+    }
+    // test.mp4 is 320x240; both sizes differ so both outputs really transcode.
+    let (file_a, file_b) = (
+        test_media("output_enc_a.mp4"),
+        test_media("output_enc_b.mp4"),
+    );
+    let outputs = [
+        (file_a.as_str(), 240u32, 180u32),
+        (file_b.as_str(), 160, 120),
+    ];
+    for (file, _, _) in outputs {
+        std::fs::remove_file(file).ok();
+    }
+
+    let bus = Bus::new("t");
+    bus.add_input(
+        InputConfig::File {
+            path: input_path.to_string_lossy().into_owned(),
+        },
+        None,
+    )
+    .await?;
+    for (file, w, h) in outputs {
+        let encode = EncodeConfig {
+            codec: "h264".to_string(),
+            width: Some(w),
+            height: Some(h),
+            ..Default::default()
+        };
+        let output = OutputConfig::new(
+            file.to_string(),
+            OutputAvType::Video,
+            OutputDest::File {
+                path: file.to_string(),
+            },
+        )
+        .with_encode(encode);
+        let _ = bus.add_output(output).await?;
+    }
+    // Lossy subscriber on the shared decoder that never reads.
+    let _idle = bus.subscribe_video().await?;
+
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
+    for (file, w, h) in outputs {
+        let info = probe(file)?;
+        let video = info
+            .streams
+            .iter()
+            .find(|s| s.codec_type == "video")
+            .ok_or_else(|| anyhow::anyhow!("{file}: no video stream"))?;
+        assert_eq!((video.width, video.height), (Some(w), Some(h)), "{file}");
+
+        let mut input = ffmpeg_next::format::input(file)?;
+        let (mut frames, mut keys) = (0u32, 0u32);
+        for (stream, packet) in input.packets() {
+            if stream.index() == video.index {
+                frames += 1;
+                keys += u32::from(packet.is_key());
+            }
+        }
+        // Transcoded timestamps must keep the source timing (5s), not
+        // collapse when frames move into the encoder's time base.
+        let duration = probe(file)?.format.duration_sec.unwrap_or(0.0);
+        assert!(
+            (4.5..=5.5).contains(&duration),
+            "{file}: duration {duration}s"
+        );
+        if file == outputs[0].0 {
+            // The first output starts the input, so it sees the whole 5s @
+            // 10fps source and, being lossless, every frame lands.
+            assert_eq!(frames, 50, "{file}: frame count");
+            // GOP 25 → keyframes at 0 and 25.
+            assert!(keys >= 2, "{file}: expected periodic keyframes, got {keys}");
+        } else {
+            // A later output joins a running source and may miss its start,
+            // but must still produce a finished, decodable file.
+            assert!(frames > 0, "{file}: no frames");
+        }
+    }
+    Ok(())
+}
+
 /// Transcodes audio (copying video), forcing a resample (44100->48000), a
 /// channel change (mono->stereo), and FIFO reframing to the AAC frame size.
 /// Verifies both streams land in the MP4, the audio is really re-encoded to the
 /// requested params, and audio/video stay time-aligned end to end (A/V sync).
 #[tokio::test]
 async fn test_transcode_audio_av_sync() -> anyhow::Result<()> {
-    let file_name = "output_transcode_audio.mp4";
+    let file_name = &test_media("output_transcode_audio.mp4");
     if Path::new(file_name).exists() {
         std::fs::remove_file(file_name).ok();
     }
@@ -492,7 +594,7 @@ async fn verify_output_mp4(
 async fn test_device_rawvideo_lavfi() -> anyhow::Result<()> {
     crate::init()?;
 
-    let file_name = "output_rawvideo_test.h264";
+    let file_name = &test_media("output_rawvideo_test.h264");
     if Path::new(file_name).exists() {
         std::fs::remove_file(file_name).unwrap();
     }
@@ -560,7 +662,7 @@ fn test_audio_encoder_init() -> anyhow::Result<()> {
 async fn test_audio_encode_aac() -> anyhow::Result<()> {
     crate::init()?;
 
-    let output_path = "output_encode.aac";
+    let output_path = &test_media("output_encode.aac");
     if Path::new(output_path).exists() {
         std::fs::remove_file(output_path).unwrap();
     }
@@ -623,7 +725,7 @@ async fn test_audio_encode_aac() -> anyhow::Result<()> {
 async fn test_mux_mp4_video_and_audio() -> anyhow::Result<()> {
     crate::init()?;
 
-    let output_path = "output_va.mp4";
+    let output_path = &test_media("output_va.mp4");
     if Path::new(output_path).exists() {
         std::fs::remove_file(output_path).unwrap();
     }
@@ -860,4 +962,410 @@ fn audio_copy_vs_transcode() {
         2,
         &opus
     ));
+}
+
+/// Write `frames` raw yuv420p frames of `w`x`h` (a moving gradient) and return
+/// the path. Opened via the `rawvideo` demuxer this gives a real RAWVIDEO
+/// stream (lavfi `testsrc` does not: it yields WRAPPED_AVFRAME).
+fn write_raw_yuv(name: &str, w: usize, h: usize, frames: usize) -> String {
+    let path = test_media(name);
+    let mut data = Vec::with_capacity(w * h * 3 / 2 * frames);
+    for f in 0..frames {
+        data.extend((0..w * h).map(|i| ((i + f * 7) % 256) as u8));
+        data.extend(std::iter::repeat_n(128u8, w * h / 2));
+    }
+    std::fs::write(&path, data).expect("write raw yuv");
+    path
+}
+
+async fn raw_yuv_bus(path: &str) -> anyhow::Result<Bus> {
+    crate::init()?;
+    let bus = Bus::new("rawvideo");
+    let options = [
+        ("video_size", "64x48"),
+        ("pixel_format", "yuv420p"),
+        ("framerate", "10"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    bus.add_input(
+        InputConfig::Device {
+            display: path.to_string(),
+            format: "rawvideo".to_string(),
+        },
+        Some(options),
+    )
+    .await?;
+    Ok(bus)
+}
+
+/// Collect a bus output stream until its EOF item (`None`).
+async fn drain_frames(
+    mut stream: crate::bus::VideoRawFrameStream,
+) -> anyhow::Result<Vec<crate::frame::VideoFrame>> {
+    tokio::time::timeout(std::time::Duration::from_secs(20), async move {
+        let mut out = Vec::new();
+        while let Some(Some(frame)) = stream.next().await {
+            out.push(frame);
+        }
+        out
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("stream never ended"))
+}
+
+/// Genuine RAWVIDEO input: the packet → frame relay feeds the encoder directly
+/// (no decoder). A lossless File transcode keeps every frame and the source
+/// timing; a lossy Encoded output yields H.264 packets starting on a keyframe.
+/// Each output gets its own bus so it is the one that starts the input.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_rawvideo_input_transcode() -> anyhow::Result<()> {
+    let yuv = write_raw_yuv("input_64x48.yuv", 64, 48, 20);
+    let mp4 = test_media("rawvideo_transcode.mp4");
+    std::fs::remove_file(&mp4).ok();
+
+    let file_bus = raw_yuv_bus(&yuv).await?;
+    let _ = file_bus
+        .add_output(
+            OutputConfig::new(
+                "file".to_string(),
+                OutputAvType::Video,
+                OutputDest::File { path: mp4.clone() },
+            )
+            .with_encode(EncodeConfig::default()),
+        )
+        .await?;
+
+    let enc_bus = raw_yuv_bus(&yuv).await?;
+    let (_, enc) = enc_bus
+        .add_output(
+            OutputConfig::new(
+                "encoded".to_string(),
+                OutputAvType::Video,
+                OutputDest::Encoded,
+            )
+            .with_encode(EncodeConfig::default()),
+        )
+        .await?;
+    let packets = drain_frames(enc).await?;
+    assert!(!packets.is_empty(), "encoded output produced no packets");
+    assert!(packets[0].is_key, "first encoded packet must be a keyframe");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while probe(&mp4).is_err() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    let info = probe(&mp4)?;
+    let video = info
+        .streams
+        .iter()
+        .find(|s| s.codec_type == "video")
+        .ok_or_else(|| anyhow::anyhow!("no video stream"))?;
+    assert_eq!((video.width, video.height), (Some(64), Some(48)));
+    assert_eq!(video.codec_name, "h264");
+    let mut input = ffmpeg_next::format::input(&mp4)?;
+    let frames = input
+        .packets()
+        .filter(|(s, _)| s.index() == video.index)
+        .count();
+    assert_eq!(frames, 20, "lossless rawvideo transcode keeps every frame");
+    // 20 frames @ 10fps: the last starts at 1.9s.
+    let duration = info.format.duration_sec.unwrap_or(0.0);
+    assert!((1.7..=2.2).contains(&duration), "duration {duration}s");
+    Ok(())
+}
+
+/// Mux to a raw codec format that differs from the input: packets come from
+/// the encoder (`create_mux_output_stream_from_encoder`).
+#[tokio::test(flavor = "multi_thread")]
+async fn test_mux_from_encoder_output() -> anyhow::Result<()> {
+    let yuv = write_raw_yuv("input_mux.yuv", 64, 48, 20);
+    let out = test_media("mux_from_encoder.h264");
+    let bus = raw_yuv_bus(&yuv).await?;
+    let (av, stream) = bus
+        .add_output(OutputConfig::new(
+            "mux".to_string(),
+            OutputAvType::Video,
+            OutputDest::Mux {
+                format: "h264".to_string(),
+            },
+        ))
+        .await?;
+    assert_eq!(av.parameters().id(), ffmpeg_next::codec::Id::H264);
+    let chunks = drain_frames(stream).await?;
+    let bytes: Vec<u8> = chunks.iter().flat_map(|c| c.data.iter().copied()).collect();
+    assert!(!bytes.is_empty(), "mux produced no bytes");
+    std::fs::write(&out, &bytes)?;
+    let mut input = ffmpeg_next::format::input(&out)?;
+    assert!(input.packets().count() > 0, "muxed h264 is not decodable");
+    Ok(())
+}
+
+/// Two outputs with the same stream + encode config + loss policy share one
+/// encoder: both get the same packets.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_same_encode_config_shares_encoder() -> anyhow::Result<()> {
+    let yuv = write_raw_yuv("input_shared.yuv", 64, 48, 20);
+    let bus = raw_yuv_bus(&yuv).await?;
+    let encoded = |id: &str| {
+        OutputConfig::new(id.to_string(), OutputAvType::Video, OutputDest::Encoded)
+            .with_encode(EncodeConfig::default())
+    };
+    let (_, a) = bus.add_output(encoded("a")).await?;
+    let (_, b) = bus.add_output(encoded("b")).await?;
+    let (a, b) = tokio::join!(drain_frames(a), drain_frames(b));
+    let (a, b) = (a?, b?);
+    assert!(!a.is_empty());
+    // A shared encoder fans one packet sequence out: b is a suffix of a.
+    let tail: Vec<_> = a[a.len() - b.len()..].iter().map(|p| p.pts).collect();
+    assert_eq!(tail, b.iter().map(|p| p.pts).collect::<Vec<_>>());
+    Ok(())
+}
+
+/// Decoded audio subscription delivers every audio frame of the file, then EOF.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_subscribe_audio() -> anyhow::Result<()> {
+    let input_path = test_mp4_path();
+    if !input_path.exists() {
+        return Ok(());
+    }
+    let bus = Bus::new("audio");
+    bus.add_input(
+        InputConfig::File {
+            path: input_path.to_string_lossy().into_owned(),
+        },
+        None,
+    )
+    .await?;
+    let mut rx = bus.subscribe_audio().await?;
+    let frames = tokio::time::timeout(std::time::Duration::from_secs(20), async move {
+        let mut n = 0usize;
+        loop {
+            match rx.recv().await {
+                Ok(crate::frame::RawFrameCmd::Data(crate::frame::RawFrame::Audio(_))) => n += 1,
+                Ok(crate::frame::RawFrameCmd::Data(_)) => {}
+                // Lossy subscriber: a lag just means dropped frames.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Ok(crate::frame::RawFrameCmd::EOF)
+                | Err(tokio::sync::broadcast::error::RecvError::Closed) => return n,
+            }
+        }
+    })
+    .await?;
+    // Lossy subscriber: it may drop some of the 217 frames under load, but
+    // must see audio and then the EOF that ended the loop.
+    assert!(frames > 0, "decoded audio frames: {frames}");
+    Ok(())
+}
+
+/// A Raw output on an audio stream cannot convert frames to `VideoFrame`: it
+/// skips them (no panic) and still ends with EOF.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_raw_audio_output_skips_unconvertible_frames() -> anyhow::Result<()> {
+    let input_path = test_mp4_path();
+    if !input_path.exists() {
+        return Ok(());
+    }
+    let bus = Bus::new("raw-audio");
+    bus.add_input(
+        InputConfig::File {
+            path: input_path.to_string_lossy().into_owned(),
+        },
+        None,
+    )
+    .await?;
+    let (_, stream) = bus
+        .add_output(OutputConfig::new(
+            "raw".to_string(),
+            OutputAvType::Audio,
+            OutputDest::Raw,
+        ))
+        .await?;
+    assert!(drain_frames(stream).await?.is_empty());
+    Ok(())
+}
+
+/// API misuse is reported as errors, not panics or hangs.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_bus_api_errors() -> anyhow::Result<()> {
+    // Output before any input: there are no streams to pick from.
+    let bus = Bus::new("errors");
+    assert!(
+        bus.add_output(OutputConfig::new(
+            "early".to_string(),
+            OutputAvType::Video,
+            OutputDest::Demuxed,
+        ))
+        .await
+        .is_err()
+    );
+
+    // Second input on the same bus.
+    let yuv = write_raw_yuv("input_errors.yuv", 64, 48, 5);
+    let bus = raw_yuv_bus(&yuv).await?;
+    let again = bus
+        .add_input(InputConfig::File { path: yuv.clone() }, None)
+        .await;
+    assert!(
+        again
+            .unwrap_err()
+            .to_string()
+            .contains("input already exists")
+    );
+
+    // Duplicate output id.
+    let demuxed = || {
+        OutputConfig::new(
+            "same-id".to_string(),
+            OutputAvType::Video,
+            OutputDest::Demuxed,
+        )
+    };
+    let _ = bus.add_output(demuxed()).await?;
+    let dup = bus.add_output(demuxed()).await.err().map(|e| e.to_string());
+    assert!(dup.is_some_and(|e| e.contains("output already exists")));
+
+    // The source has no audio.
+    let no_audio = bus.subscribe_audio().await;
+    assert!(
+        no_audio
+            .unwrap_err()
+            .to_string()
+            .contains("no audio stream")
+    );
+
+    // Net output to a port nobody listens on.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port();
+    let net = bus
+        .add_output(
+            OutputConfig::new(
+                "net".to_string(),
+                OutputAvType::Video,
+                OutputDest::Net {
+                    url: format!("rtsp://127.0.0.1:{port}/none"),
+                    format: Some("rtsp".to_string()),
+                },
+            )
+            .with_encode(EncodeConfig::default()),
+        )
+        .await;
+    assert!(net.is_err(), "net output to a closed port must fail");
+
+    // Unsupported encoder-output mux format.
+    let bad_mux = bus
+        .add_output(OutputConfig::new(
+            "bad-mux".to_string(),
+            OutputAvType::Video,
+            OutputDest::Mux {
+                format: "matroska".to_string(),
+            },
+        ))
+        .await;
+    assert!(bad_mux.is_err());
+    Ok(())
+}
+
+/// The real reason for a rejected output reaches the caller (it used to be
+/// lost as "channel closed").
+#[tokio::test(flavor = "multi_thread")]
+async fn test_add_output_reports_real_error() -> anyhow::Result<()> {
+    let yuv = write_raw_yuv("input_no_audio.yuv", 64, 48, 5);
+    let bus = raw_yuv_bus(&yuv).await?;
+    let err = bus
+        .add_output(OutputConfig::new(
+            "audio".to_string(),
+            OutputAvType::Audio,
+            OutputDest::Demuxed,
+        ))
+        .await
+        .err()
+        .map(|e| format!("{e:#}"))
+        .unwrap_or_default();
+    assert!(err.contains("no Audio stream"), "got: {err}");
+    Ok(())
+}
+
+/// A failed output tears down the encoder it had started; nothing is left
+/// running behind (driven on the bus state directly to inspect it).
+#[tokio::test(flavor = "multi_thread")]
+async fn test_failed_output_rolls_back_started_tasks() -> anyhow::Result<()> {
+    crate::init()?;
+    let yuv = write_raw_yuv("input_rollback.yuv", 64, 48, 5);
+    let mut state = super::BusState::new();
+    let options = [
+        ("video_size", "64x48"),
+        ("pixel_format", "yuv420p"),
+        ("framerate", "10"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    Bus::add_input_internal(
+        &mut state,
+        InputConfig::Device {
+            display: yuv,
+            format: "rawvideo".to_string(),
+        },
+        Some(options),
+    )
+    .await?;
+
+    // Transcoding Net output to a dead RTSP port: the encoder starts, then the
+    // connect fails.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port();
+    let output = OutputConfig::new(
+        "net".to_string(),
+        OutputAvType::Video,
+        OutputDest::Net {
+            url: format!("rtsp://127.0.0.1:{port}/none"),
+            format: Some("rtsp".to_string()),
+        },
+    )
+    .with_encode(EncodeConfig::default());
+    assert!(Bus::add_output_internal(&mut state, output).await.is_err());
+    assert!(state.encoder_tasks.is_empty(), "encoder left running");
+    assert!(state.encoder_output_streams.is_empty());
+    assert!(state.output_config.is_empty());
+    Ok(())
+}
+
+/// When the only consumer of a shared encoder leaves, the encoder stops; a
+/// later output with the same config gets a fresh one and still receives data.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_new_output_after_shared_encoder_stopped() -> anyhow::Result<()> {
+    crate::init()?;
+    let bus = Bus::new("restart");
+    bus.add_input(
+        InputConfig::Device {
+            display: "testsrc=duration=4:size=160x120:rate=25,realtime".to_string(),
+            format: "lavfi".to_string(),
+        },
+        None,
+    )
+    .await?;
+    let encoded = |id: &str| {
+        OutputConfig::new(id.to_string(), OutputAvType::Video, OutputDest::Encoded)
+            .with_encode(EncodeConfig::default())
+    };
+
+    let (_, mut first) = bus.add_output(encoded("a")).await?;
+    for _ in 0..3 {
+        tokio::time::timeout(std::time::Duration::from_secs(5), first.next())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("first output ended early"))?;
+    }
+    drop(first);
+    // Let the encoder notice it has no readers and stop.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let (_, second) = bus.add_output(encoded("b")).await?;
+    let packets = drain_frames(second).await?;
+    assert!(!packets.is_empty(), "restarted encoder produced nothing");
+    assert!(packets[0].is_key, "a fresh encoder starts on a keyframe");
+    Ok(())
 }

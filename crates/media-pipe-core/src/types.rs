@@ -44,6 +44,12 @@ pub struct EncodeConfig {
     pub preset: Option<String>,
     // "yuv420p", "rgb24", etc.
     pub pixel_format: Option<String>,
+    // Audio: sample rate (e.g. 48000). None = keep original
+    pub sample_rate: Option<u32>,
+    // Audio: number of channels. None = keep original
+    pub channels: Option<u32>,
+    // Audio: bitrate in bps
+    pub audio_bitrate: Option<u64>,
 }
 
 impl Default for EncodeConfig {
@@ -55,6 +61,9 @@ impl Default for EncodeConfig {
             bitrate: None,
             preset: None,
             pixel_format: None,
+            sample_rate: None,
+            channels: None,
+            audio_bitrate: None,
         }
     }
 }
@@ -67,6 +76,9 @@ impl PartialEq for EncodeConfig {
             && self.bitrate == other.bitrate
             && self.preset == other.preset
             && self.pixel_format == other.pixel_format
+            && self.sample_rate == other.sample_rate
+            && self.channels == other.channels
+            && self.audio_bitrate == other.audio_bitrate
     }
 }
 
@@ -80,6 +92,9 @@ impl Hash for EncodeConfig {
         self.bitrate.hash(state);
         self.preset.hash(state);
         self.pixel_format.hash(state);
+        self.sample_rate.hash(state);
+        self.channels.hash(state);
+        self.audio_bitrate.hash(state);
     }
 }
 
@@ -113,6 +128,8 @@ pub struct OutputConfig {
     pub av_type: OutputAvType,
     /// Include audio stream in File/Net mux outputs
     pub include_audio: bool,
+    /// Encoding for the audio carried by `include_audio`. None = copy
+    pub audio_encode: Option<EncodeConfig>,
 }
 
 impl OutputConfig {
@@ -124,6 +141,7 @@ impl OutputConfig {
             encode,
             av_type: OutputAvType::Video,
             include_audio: false,
+            audio_encode: None,
         }
     }
 
@@ -135,6 +153,7 @@ impl OutputConfig {
             encode,
             av_type: OutputAvType::Video,
             include_audio: false,
+            audio_encode: None,
         }
     }
 
@@ -146,6 +165,12 @@ impl OutputConfig {
     #[allow(dead_code)]
     pub fn with_audio(mut self) -> Self {
         self.include_audio = true;
+        self
+    }
+
+    /// Set the encoding for the audio carried by [`Self::with_audio`].
+    pub fn with_audio_encode(mut self, encode: EncodeConfig) -> Self {
+        self.audio_encode = Some(encode);
         self
     }
 }
@@ -264,6 +289,9 @@ fn to_fb_output(config: &OutputConfig) -> Option<FbOutputConfig> {
     if let Some(ref e) = config.encode {
         fb = fb.with_encode(to_fb_encode_config(e));
     }
+    if let Some(ref e) = config.audio_encode {
+        fb = fb.with_audio_encode(to_fb_encode_config(e));
+    }
     if config.include_audio {
         fb = fb.with_audio();
     }
@@ -278,8 +306,8 @@ fn to_fb_encode_config(e: &EncodeConfig) -> ffmpeg_bus::bus::EncodeConfig {
         bitrate: e.bitrate,
         preset: e.preset.clone(),
         pixel_format: e.pixel_format.clone(),
-        sample_rate: None,
-        channels: None,
-        audio_bitrate: None,
+        sample_rate: e.sample_rate,
+        channels: e.channels,
+        audio_bitrate: e.audio_bitrate,
     }
 }

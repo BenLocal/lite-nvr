@@ -45,9 +45,9 @@ impl Source {
         let decoder = Decoder::new(&video_stream)?;
         let decoder_task = DecoderTask::new();
         // Switcher keeps only the latest frame per source, so lossy is fine.
-        decoder_task.start(decoder, input_task.subscribe(), false).await;
+        decoder_task.start(decoder, input_task.subscribe()).await;
 
-        let mut frames = decoder_task.subscribe();
+        let mut frames = decoder_task.subscribe(false);
         input_task.start(input).await;
 
         let id_owned = id.to_string();

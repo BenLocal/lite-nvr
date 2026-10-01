@@ -1,6 +1,9 @@
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
-use ffmpeg_next::{Dictionary, Rational, picture};
+use ffmpeg_next::{Dictionary, Rational, Rescale};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -41,20 +44,17 @@ impl EncoderType {
     pub fn send_frame(&mut self, frame: RawFrame, frame_index: i64) -> anyhow::Result<()> {
         match (self, frame) {
             (EncoderType::Video(encoder), RawFrame::Video(mut frame)) => {
-                let frame = frame.get_mut();
-                // todo
-                if frame_index % 5 == 0 {
-                    frame.set_kind(picture::Type::I);
-                }
+                // Only the PTS may change: never copy the (shared) pixels.
+                let frame = frame.props_mut();
+                // Keyframe cadence comes from the encoder GOP (`Settings::keyframe_interval`).
                 // Set PTS if not already set
                 if frame.pts().is_none() {
                     frame.set_pts(Some(frame_index));
                 }
                 encoder.send_frame(frame)?;
             }
-            (EncoderType::Audio(encoder), RawFrame::Audio(mut frame)) => {
-                let frame = frame.get_mut();
-                encoder.send_frame(frame)?;
+            (EncoderType::Audio(encoder), RawFrame::Audio(frame)) => {
+                encoder.send_frame(frame.as_audio())?;
             }
             _ => anyhow::bail!("invalid frame type"),
         };
@@ -320,6 +320,8 @@ impl Encoder {
         encoder.set_format(settings.pixel_format);
         encoder.set_frame_rate(Some(stream.rate()));
         encoder.set_time_base(ffmpeg_next::util::mathematics::rescale::TIME_BASE);
+        // Bounded GOP so live viewers can start decoding within one interval.
+        encoder.set_gop(u32::try_from(settings.keyframe_interval).unwrap_or(u32::MAX));
 
         let need_defaults = options.is_none();
         let mut opts = options.unwrap_or_default();
@@ -357,8 +359,7 @@ impl Encoder {
                 }
                 Err(e) => {
                     if candidate.is_hw && first_hw_failure.is_none() {
-                        first_hw_failure =
-                            Some(format!("{} open failed: {}", candidate.name, e));
+                        first_hw_failure = Some(format!("{} open failed: {}", candidate.name, e));
                     }
                     log::info!(
                         "video encoder candidate rejected: name={}, hw={}, reason={}",
@@ -384,7 +385,10 @@ impl Encoder {
             );
         } else {
             if let Some(reason) = first_hw_failure {
-                log::info!("hardware encode unavailable, fallback to software: {}", reason);
+                log::info!(
+                    "hardware encode unavailable, fallback to software: {}",
+                    reason
+                );
             } else {
                 log::info!("video encoder selected: software fallback");
             }
@@ -419,26 +423,18 @@ impl Encoder {
         let mut encoder = encoder_context.encoder().audio()?;
 
         // Use settings or fall back to input stream parameters
-        let sample_rate = settings.sample_rate.unwrap_or_else(|| {
-            unsafe {
-                let ptr =
-                    stream.parameters().as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
-                (*ptr).sample_rate.max(0) as u32
-            }
+        let sample_rate = settings.sample_rate.unwrap_or_else(|| unsafe {
+            let ptr = stream.parameters().as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
+            (*ptr).sample_rate.max(0) as u32
         });
         let sample_rate = if sample_rate == 0 { 44100 } else { sample_rate };
         encoder.set_rate(sample_rate as i32);
 
         // Set channel layout
-        let channels = settings.channels.unwrap_or_else(|| {
-            unsafe {
-                let ptr =
-                    stream.parameters().as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
-                let ch = ffmpeg_next::ffi::AVChannelLayout {
-                    ..(*ptr).ch_layout
-                };
-                ch.nb_channels.max(0) as u32
-            }
+        let channels = settings.channels.unwrap_or_else(|| unsafe {
+            let ptr = stream.parameters().as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
+            let ch = ffmpeg_next::ffi::AVChannelLayout { ..(*ptr).ch_layout };
+            ch.nb_channels.max(0) as u32
         });
         let channels = if channels == 0 { 2 } else { channels };
         unsafe {
@@ -452,9 +448,7 @@ impl Encoder {
         if let Some(ref fmt_name) = settings.sample_format {
             let av_fmt: ffmpeg_next::ffi::AVSampleFormat = unsafe {
                 ffmpeg_next::ffi::av_get_sample_fmt(
-                    std::ffi::CString::new(fmt_name.as_str())
-                        .unwrap()
-                        .as_ptr(),
+                    std::ffi::CString::new(fmt_name.as_str()).unwrap().as_ptr(),
                 )
             };
             let fmt: ffmpeg_next::format::Sample = av_fmt.into();
@@ -520,11 +514,23 @@ impl Encoder {
 
         let action = match &mut frame {
             RawFrame::Video(vf) => {
+                // Decoded and raw-video frames carry PTS in the input stream's
+                // time base; the encoder runs in its own (1/1_000_000), and its
+                // packets are tagged with that, so convert before encoding or
+                // the output plays back at the wrong speed.
+                let src_tb = self.stream.time_base();
+                if src_tb.numerator() > 0 && src_tb != self.encoder_time_base {
+                    let f = vf.props_mut();
+                    if let Some(pts) = f.pts() {
+                        f.set_pts(Some(pts.rescale(src_tb, self.encoder_time_base)));
+                    }
+                }
                 let (ef, ew, eh) = match &self.inner {
                     EncoderType::Video(e) => (e.format(), e.width(), e.height()),
                     _ => anyhow::bail!("video frame sent to non-video encoder"),
                 };
-                let f = vf.get_mut();
+                // Read-only: the scaler writes into a new frame.
+                let f = vf.as_video();
                 if f.format() != ef || f.width() != ew || f.height() != eh {
                     if self.scaler.is_none() {
                         self.scaler =
@@ -555,7 +561,7 @@ impl Encoder {
                     }
                     _ => anyhow::bail!("audio frame sent to non-audio encoder"),
                 };
-                let in_af = af.get_mut();
+                let in_af = af.as_audio();
                 if self.audio_resampler.is_none() {
                     self.audio_resampler =
                         Some(AudioResampler::new(in_af, rate, fmt, layout, frame_size)?);
@@ -646,26 +652,78 @@ impl Encoder {
     }
 }
 
+/// Encoder output = encoded packets (small). Moderate capacity for bursts.
+/// Also the backpressure high-water mark for a lossless encoder's output.
+const PACKET_CHAN_CAP: usize = 64;
+
+/// Subscription bookkeeping shared between [`EncoderTask::subscribe`] and the
+/// encode loop (see [`EncoderTask::new_auto_stop`]).
+#[derive(Default)]
+struct OutputState {
+    /// Someone subscribed at least once (auto-stop only after that).
+    had_any: bool,
+    /// The encoder has ended or stopped: no further subscriptions.
+    closed: bool,
+}
+
+type SharedOutputState = Arc<Mutex<OutputState>>;
+
+fn lock_state(state: &SharedOutputState) -> std::sync::MutexGuard<'_, OutputState> {
+    // Only flag updates happen under this lock, so a poisoned lock is still
+    // consistent: recover instead of panicking.
+    state.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 pub struct EncoderTask {
     cancel: CancellationToken,
     raw_chan: RawPacketSender,
+    state: SharedOutputState,
+    /// Stop once the last output subscriber leaves (bus-managed encoders).
+    auto_stop: bool,
 }
 
 impl EncoderTask {
     pub fn new() -> Self {
         let cancel = CancellationToken::new();
-        /// Encoder output = encoded packets (small). Moderate capacity for bursts.
-        const PACKET_CHAN_CAP: usize = 64;
         let (sender, _) = tokio::sync::broadcast::channel(PACKET_CHAN_CAP);
 
         Self {
             cancel,
             raw_chan: sender,
+            state: SharedOutputState::default(),
+            auto_stop: false,
         }
     }
 
+    /// An encoder that stops itself when its last output subscriber goes
+    /// away, so a shared encoder nobody reads any more stops encoding.
+    pub(crate) fn new_auto_stop() -> Self {
+        let mut task = Self::new();
+        task.auto_stop = true;
+        task
+    }
+
+    /// Subscribe to encoded packets. On an encoder that has ended, the
+    /// receiver reports `Closed` at once instead of waiting forever.
     pub fn subscribe(&self) -> RawPacketReceiver {
-        self.raw_chan.subscribe()
+        self.try_subscribe()
+            .unwrap_or_else(|| tokio::sync::broadcast::channel(1).1)
+    }
+
+    /// Like [`Self::subscribe`], but `None` if the encoder has ended, so the
+    /// caller can start a fresh one.
+    pub(crate) fn try_subscribe(&self) -> Option<RawPacketReceiver> {
+        let mut state = lock_state(&self.state);
+        if state.closed {
+            return None;
+        }
+        state.had_any = true;
+        Some(self.raw_chan.subscribe())
+    }
+
+    /// Still encoding and accepting subscribers.
+    pub(crate) fn is_running(&self) -> bool {
+        !self.cancel.is_cancelled() && !lock_state(&self.state).closed
     }
 
     pub fn stop(&self) {
@@ -680,6 +738,8 @@ impl EncoderTask {
     ) {
         let cancel_clone = self.cancel.clone();
         let sender_clone = self.raw_chan.clone();
+        let state = self.state.clone();
+        let auto_stop = self.auto_stop;
         log::info!(
             "encoder loop started, stream index: {}, lossless: {}",
             encoder.stream.index(),
@@ -693,7 +753,14 @@ impl EncoderTask {
             let (tx, rx) = std::sync::mpsc::sync_channel::<RawFrameCmd>(FRAME_QUEUE_BOUND);
             let handle_cancel = cancel_clone.clone();
             let handle = tokio::task::spawn_blocking(move || {
-                Self::encoder_loop(encoder, handle_cancel, rx, sender_clone)
+                Self::encoder_loop(
+                    encoder,
+                    handle_cancel,
+                    rx,
+                    sender_clone,
+                    lossless,
+                    (state, auto_stop),
+                )
             });
             let mut dropped_count: u64 = 0;
             loop {
@@ -776,6 +843,8 @@ impl EncoderTask {
         cancel: CancellationToken,
         rx: std::sync::mpsc::Receiver<RawFrameCmd>,
         out: RawPacketSender,
+        lossless: bool,
+        (state, auto_stop): (SharedOutputState, bool),
     ) {
         loop {
             if cancel.is_cancelled() {
@@ -784,6 +853,17 @@ impl EncoderTask {
             let mut eof = false;
             match rx.recv_timeout(Duration::from_millis(1)) {
                 Ok(frame) => {
+                    if auto_stop {
+                        // Checked under the subscription lock, so a concurrent
+                        // subscribe either lands first (keeping us alive) or
+                        // sees `closed` and is refused.
+                        let mut st = lock_state(&state);
+                        if st.had_any && out.receiver_count() == 0 {
+                            st.closed = true;
+                            cancel.cancel();
+                            break;
+                        }
+                    }
                     match frame {
                         RawFrameCmd::Data(frame) => {
                             if let Err(e) = encoder.send_frame(frame) {
@@ -802,7 +882,12 @@ impl EncoderTask {
                     'outer: loop {
                         match encoder.encoder_receive_packet() {
                             Ok(Some(packet)) => {
-                                let _ = out.send(RawPacketCmd::Data(packet));
+                                Self::send_packet_backpressure(
+                                    &out,
+                                    &cancel,
+                                    lossless,
+                                    RawPacketCmd::Data(packet),
+                                );
                             }
                             Ok(None) => {
                                 break 'outer;
@@ -818,9 +903,42 @@ impl EncoderTask {
                         break;
                     }
                 }
-                Err(_) => (),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (),
+                // Relay gone (decoder closed or task cancelled): stop instead
+                // of spinning on a dead queue.
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
-        let _ = out.send(RawPacketCmd::EOF);
+        Self::send_packet_backpressure(&out, &cancel, lossless, RawPacketCmd::EOF);
+        lock_state(&state).closed = true;
+    }
+
+    /// Publish an encoded packet. A lossless encoder (file/net transcode)
+    /// waits for its muxer to catch up instead of overwriting unread packets.
+    fn send_packet_backpressure(
+        out: &RawPacketSender,
+        cancel: &CancellationToken,
+        lossless: bool,
+        msg: RawPacketCmd,
+    ) {
+        if lossless {
+            while out.len() >= PACKET_CHAN_CAP && out.receiver_count() > 0 && !cancel.is_cancelled()
+            {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+        let _ = out.send(msg);
     }
 }
+
+impl Drop for EncoderTask {
+    /// Dropping the task (bus teardown / input removal) stops the relay and the
+    /// blocking encode loop, so they never outlive the bus.
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
+#[cfg(test)]
+#[path = "encoder_test.rs"]
+mod encoder_test;

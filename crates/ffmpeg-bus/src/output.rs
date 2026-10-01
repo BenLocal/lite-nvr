@@ -98,6 +98,18 @@ impl AvOutput {
         Ok(())
     }
 
+    /// Write the container header once all streams are added. For network
+    /// outputs this is where the connection is made (e.g. RTSP ANNOUNCE), so
+    /// calling it up front surfaces connect errors to the caller instead of
+    /// failing silently on the first packet. Idempotent.
+    pub fn write_header(&mut self) -> anyhow::Result<()> {
+        if !self.have_written_header {
+            self.inner.write_header()?;
+            self.have_written_header = true;
+        }
+        Ok(())
+    }
+
     fn stream_time_base(&mut self, stream_index: usize) -> Rational {
         self.output_streams.get(&stream_index).unwrap().time_base()
     }
@@ -112,10 +124,7 @@ impl AvOutput {
             Some(&i) => i,
             None => return Err(anyhow::anyhow!("stream not found: {}", input_stream_index)),
         };
-        if !self.have_written_header {
-            self.inner.write_header()?;
-            self.have_written_header = true;
-        }
+        self.write_header()?;
         let time_base = packet.time_base();
 
         let p = packet.get_mut();
@@ -227,6 +236,11 @@ pub struct AvOutputStreamWriter {
 }
 
 impl AvOutputStreamWriter {
+    /// The reader half has been dropped: nobody consumes the muxed bytes.
+    pub fn is_closed(&self) -> bool {
+        self.context.buffer.is_closed()
+    }
+
     pub fn write_packet(&mut self, mut packet: RawPacket) -> anyhow::Result<()> {
         let input_stream_index = match self.input_stream_index {
             Some(idx) => idx,
