@@ -48,6 +48,13 @@ endif
 
 DASHBOARD_DIR := nvr-dashboard/app
 
+# CPU limits for `make build`: parallel jobs (default: half the cores, min 1)
+# and scheduling priority. Override per run, e.g.
+#   make build BUILD_JOBS=4 BUILD_NICE=19
+NPROC      := $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
+BUILD_JOBS ?= $(shell n=$$(( $(NPROC) / 2 )); [ $$n -lt 1 ] && n=1; echo $$n)
+BUILD_NICE ?= 10
+
 help:
 	@echo "Usage: make <target>"
 	@echo ""
@@ -59,7 +66,7 @@ help:
 	@echo "  frontend-install   npm ci in $(DASHBOARD_DIR)"
 	@echo ""
 	@echo "Build / Run:"
-	@echo "  build              cargo build --workspace"
+	@echo "  build              cargo build --workspace (BUILD_JOBS=$(BUILD_JOBS), BUILD_NICE=$(BUILD_NICE))"
 	@echo "  run                cargo run --package nvr"
 	@echo "  asr-demo           Run nvr-asr streaming demo on a WAV (see ASR_* vars)"
 	@echo "  dummy              Run GB28181 dummy-camera (emulated IPC) vs local NVR"
@@ -109,7 +116,8 @@ install-watch:
 	cargo install cargo-watch
 
 build:
-	cargo build --workspace -vv
+	CMAKE_BUILD_PARALLEL_LEVEL=$(BUILD_JOBS) \
+		nice -n $(BUILD_NICE) cargo build --workspace -j $(BUILD_JOBS) -vv
 
 run:
 	cargo run --package nvr
