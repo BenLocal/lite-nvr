@@ -6,12 +6,14 @@ on:
       - '**/*.rs'
       - '**/Cargo.toml'
       - 'Cargo.lock'
+      - 'scripts/pre_install_deps.sh'
       - '.github/workflows/rust-check.yml'
   pull_request:
     paths:
       - '**/*.rs'
       - '**/Cargo.toml'
       - 'Cargo.lock'
+      - 'scripts/pre_install_deps.sh'
       - '.github/workflows/rust-check.yml'
 
 jobs:
@@ -19,12 +21,10 @@ jobs:
     name: Check and Test
     runs-on: ubuntu-latest
     env:
-      # Override .cargo/config.toml default ("ffmpeg"), use CI-downloaded FFmpeg 7.x.
-      FFMPEG_DIR: /opt/ffmpeg
-      PKG_CONFIG_PATH: /opt/ffmpeg/lib/pkgconfig
-      LD_LIBRARY_PATH: /opt/ffmpeg/lib
-      FFMPEG_PACKAGE: ffmpeg-n7.1-latest-linux64-gpl-shared-7.1.tar.xz
-      FFMPEG_PACKAGE_FALLBACK: ffmpeg-n7.1-latest-linux64-gpl-shared.tar.xz
+      # FFmpeg is installed into ./ffmpeg by scripts/pre_install_deps.sh, which
+      # matches the FFMPEG_DIR default in .cargo/config.toml. Test binaries live
+      # in target/debug/deps, outside the $ORIGIN rpath, so they need this path.
+      LD_LIBRARY_PATH: ${{ github.workspace }}/ffmpeg/lib
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,58 +42,33 @@ jobs:
       - name: Install download dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            pkg-config \
-            curl \
-            jq \
-            tar \
-            xz-utils \
-            unzip
+          sudo apt-get install -y curl tar xz-utils
 
-      - name: Cache FFmpeg build
+      - name: Cache FFmpeg
         id: cache-ffmpeg
         uses: actions/cache@v4
         with:
-          path: /opt/ffmpeg
-          key: ffmpeg-btbn-${{ runner.os }}-${{ env.FFMPEG_PACKAGE }}
+          path: ffmpeg
+          key: ffmpeg-${{ runner.os }}-${{ hashFiles('scripts/pre_install_deps.sh') }}
 
-      - name: Download and install FFmpeg from BtbN releases
+      # The script also downloads ZLMediaKit into ./zlm; that copy is unused in
+      # CI because ZLM_DIR stays unset (see below).
+      - name: Install FFmpeg (scripts/pre_install_deps.sh)
         if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
-        run: |
-          set -euxo pipefail
-          BASE_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
-          ASSET_URL="${BASE_URL}/${FFMPEG_PACKAGE}"
-          FALLBACK_URL="${BASE_URL}/${FFMPEG_PACKAGE_FALLBACK}"
-
-          if ! curl -fL "${ASSET_URL}" -o /tmp/ffmpeg.tar.xz; then
-            curl -fL "${FALLBACK_URL}" -o /tmp/ffmpeg.tar.xz
-          fi
-          rm -rf /tmp/ffmpeg-extract
-          mkdir -p /tmp/ffmpeg-extract
-          tar -xf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg-extract
-          ROOT_DIR="$(find /tmp/ffmpeg-extract -mindepth 1 -maxdepth 1 -type d | head -n1)"
-
-          if [ -z "${ROOT_DIR}" ]; then
-            echo "Extracted FFmpeg directory not found" >&2
-            exit 1
-          fi
-
-          sudo rm -rf "${FFMPEG_DIR}"
-          sudo mkdir -p "${FFMPEG_DIR}"
-          sudo cp -a "${ROOT_DIR}/." "${FFMPEG_DIR}/"
+        run: bash scripts/pre_install_deps.sh
 
       - name: Verify FFmpeg installation
         run: |
           set -euxo pipefail
-          "${FFMPEG_DIR}/bin/ffmpeg" -version | head -n1
-          test -f "${FFMPEG_DIR}/include/libavutil/avutil.h"
-          test -f "${FFMPEG_DIR}/lib/pkgconfig/libavutil.pc"
+          ffmpeg/bin/ffmpeg -version | head -n1
+          test -f ffmpeg/include/libavfilter/avfilter.h
 
       # ZLMediaKit is fetched by rszlm-sys's build script — the prebuilt archive
       # pinned via ZLM_RELEASE_URL in .cargo/config.toml — exactly as in local
-      # dev. Do NOT pre-download it here or set ZLM_DIR: the asset picked from
+      # dev. Do NOT set ZLM_DIR (the ./zlm copy from pre_install_deps.sh is
+      # ignored without it). Historically the asset picked from
       # `releases/latest` was a transcode build linked against FFmpeg 4.x
-      # (libavutil.so.56), which clashed with the FFmpeg 7.x installed above and
+      # (libavutil.so.56), which clashed with the FFmpeg installed above and
       # broke `cargo test` when the nvr binary loaded libmk_api.so (exit 127).
 
       - name: Build embedded dashboard assets
