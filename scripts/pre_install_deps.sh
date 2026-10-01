@@ -5,7 +5,7 @@ set -euo pipefail
 # Using BtbN/FFmpeg-Builds for Linux/Windows
 # For macOS, using homebrew or manual installation is recommended
 
-FFMPEG_VERSION="7.1"
+FFMPEG_VERSION="8.1"
 FFMPEG_BASE_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
 ZLM_VERSION="autobuild-2026-03-17"
 ZLM_BASE_URL="https://github.com/BenLocal/ZLMediaKit-Build/releases/download"
