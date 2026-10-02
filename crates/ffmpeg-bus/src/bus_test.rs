@@ -1956,3 +1956,28 @@ async fn test_stop_interrupts_hanging_open() -> anyhow::Result<()> {
     assert!(res.is_err());
     Ok(())
 }
+
+#[test]
+fn test_net_output_options_set_timeouts() {
+    use super::{DEFAULT_RTSP_TIMEOUT_US, net_output_options};
+    let rtsp = net_output_options(Some("rtsp"));
+    assert_eq!(rtsp.get("rtsp_transport"), Some("tcp"));
+    assert_eq!(rtsp.get("timeout"), Some(DEFAULT_RTSP_TIMEOUT_US));
+    let flv = net_output_options(Some("flv"));
+    assert_eq!(flv.get("rw_timeout"), Some(DEFAULT_RTSP_TIMEOUT_US));
+    assert_eq!(flv.get("timeout"), None);
+}
+
+#[test]
+fn test_is_connection_error() {
+    use super::is_connection_error;
+    let err = |e: ffmpeg_next::Error| anyhow::Error::from(e);
+    assert!(is_connection_error(&err(ffmpeg_next::Error::Exit)));
+    assert!(is_connection_error(&err(ffmpeg_next::Error::Other {
+        errno: ffmpeg_next::util::error::EPIPE
+    })));
+    assert!(!is_connection_error(&err(ffmpeg_next::Error::InvalidData)));
+    assert!(!is_connection_error(&anyhow::anyhow!(
+        "stream not found: 3"
+    )));
+}

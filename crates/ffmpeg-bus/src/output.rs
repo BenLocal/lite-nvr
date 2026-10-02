@@ -1,4 +1,11 @@
-use std::{collections::HashMap, pin::Pin};
+use std::{
+    collections::HashMap,
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use futures::Stream;
 
@@ -8,7 +15,7 @@ use ffmpeg_next::{
     Dictionary, Rational,
     ffi::{
         AV_OPT_SEARCH_CHILDREN, AVIOContext, av_free, av_malloc, av_opt_set,
-        avformat_alloc_output_context2, avio_alloc_context, avio_flush,
+        avformat_alloc_output_context2, avformat_free_context, avio_alloc_context, avio_flush,
     },
     format::context::Output,
     media::Type as MediaType,
@@ -30,6 +37,17 @@ pub struct AvOutput {
     /// the connection there, so `rtsp_transport` / `timeout` only take effect
     /// if passed to it). Kept as strings: `Dictionary` is not `Send`.
     header_options: Vec<(String, String)>,
+    /// Flag polled by the interrupt callback of a network output (see
+    /// [`AvOutput::open_network`]). Declared after `inner` so the context,
+    /// which may call the callback, is dropped first.
+    interrupt: Option<Arc<AtomicBool>>,
+}
+
+extern "C" fn output_interrupt_callback(opaque: *mut std::ffi::c_void) -> std::ffi::c_int {
+    // SAFETY: `opaque` is the `AtomicBool` kept alive by the `AvOutput` whose
+    // context calls us; the context is dropped before it (field order).
+    let flag = unsafe { &*(opaque as *const AtomicBool) };
+    std::ffi::c_int::from(flag.load(Ordering::Relaxed))
 }
 
 /// Allocate RTSP output context without opening AVIO. The RTSP muxer will open
@@ -94,6 +112,86 @@ impl AvOutput {
             have_written_trailer: false,
             last_dts: HashMap::new(),
             header_options,
+            interrupt: None,
+        })
+    }
+
+    /// Open a network output whose blocking I/O (connect, header, every write)
+    /// aborts with `AVERROR_EXIT` once `interrupt` is set — e.g. a push stuck
+    /// on a peer that stopped reading, which a plain `new` would block on
+    /// forever. RTSP keeps its options for `write_header` as in [`Self::new`].
+    pub fn open_network(
+        url: &str,
+        format: Option<&str>,
+        options: Option<Dictionary>,
+        interrupt: Arc<AtomicBool>,
+    ) -> anyhow::Result<Self> {
+        let mut header_options = Vec::new();
+        let url_c = CString::new(url).map_err(|e| anyhow::anyhow!("url CString: {}", e))?;
+        let fmt_c = format
+            .map(CString::new)
+            .transpose()
+            .map_err(|e| anyhow::anyhow!("format CString: {}", e))?;
+        // SAFETY: standard output-context setup. The interrupt callback is
+        // installed before any I/O and its opaque points at `interrupt`, which
+        // the returned `AvOutput` keeps alive past the context. On failure the
+        // context is freed here; on success `Output::wrap` owns it (closing
+        // `pb` and freeing the context on drop).
+        let output = unsafe {
+            let mut ps = std::ptr::null_mut();
+            let res = avformat_alloc_output_context2(
+                &mut ps,
+                std::ptr::null_mut(),
+                fmt_c.as_ref().map_or(std::ptr::null(), |f| f.as_ptr()),
+                url_c.as_ptr(),
+            );
+            if res < 0 || ps.is_null() {
+                anyhow::bail!("avformat_alloc_output_context2(url={:?}): {}", url, res);
+            }
+            (*ps).interrupt_callback = ffmpeg_next::ffi::AVIOInterruptCB {
+                callback: Some(output_interrupt_callback),
+                opaque: Arc::as_ptr(&interrupt) as *mut std::ffi::c_void,
+            };
+            let nofile = (*(*ps).oformat).flags & ffmpeg_next::ffi::AVFMT_NOFILE as i32 != 0;
+            if nofile {
+                // RTSP & co: the muxer connects in write_header, with these.
+                if let Some(opts) = options {
+                    header_options = opts
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect();
+                }
+            } else {
+                let mut opts = options.map_or(std::ptr::null_mut(), |o| o.disown());
+                let res = ffmpeg_next::ffi::avio_open2(
+                    &mut (*ps).pb,
+                    url_c.as_ptr(),
+                    ffmpeg_next::ffi::AVIO_FLAG_WRITE,
+                    &(*ps).interrupt_callback,
+                    &mut opts,
+                );
+                drop(Dictionary::own(opts));
+                if res < 0 {
+                    avformat_free_context(ps);
+                    return Err(anyhow::anyhow!(
+                        "avio_open2(url={:?}): {}",
+                        url,
+                        ffmpeg_next::Error::from(res)
+                    ));
+                }
+            }
+            Output::wrap(ps)
+        };
+        Ok(Self {
+            inner: output,
+            output_streams: HashMap::new(),
+            output_stream_index: HashMap::new(),
+            interleaved: false,
+            have_written_header: false,
+            have_written_trailer: false,
+            last_dts: HashMap::new(),
+            header_options,
+            interrupt: Some(interrupt),
         })
     }
 

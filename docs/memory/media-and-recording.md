@@ -25,3 +25,4 @@
 - 2026-10-02：硬件编解码器运行期失败后会被记进进程级黑名单（`hw::mark_runtime_failure`），之后挑候选时跳过。副作用：同一个测试进程里，只有第一个解码测试会走 QSV 失败、降级的路径
 - 2026-10-02：摄像头掉线后会话一直显示在运行，但没有数据，也不重连；`remove_input` / 进程退出都会卡住 → ffmpeg-next 的 `packets()` 迭代器遇到 EOF 以外的读错误，会在 `next()` 里无限重试；而且阻塞中的读不检查取消 → 改用 `AvInput::read`（`Packet::read`：EAGAIN 重试，其它错误按流结束处理），并通过 `AvInput::open` 给 FFmpeg 设置中断回调，取消输入或 `Bus::stop` 时能打断阻塞中的读和打开（证据：crates/ffmpeg-bus/src/input.rs）
 - 2026-10-02：模拟「读到一半卡住」的测试一开始测错了地方：打开输入时 `avformat_find_stream_info` 会读满默认 5 秒的分析时长，只发一半数据的假服务器让「打开」先卡住了 → 测试输入要设很小的 `analyzeduration` / `probesize`，让打开先完成，后面的读才会卡住
+- 2026-10-02：网络推流（RTMP/FLV over TCP 等）在对端停止读取后，写线程会永远阻塞，`Bus::stop` 也打断不了 → `ffmpeg-next` 的 `output_as_with` 调用 `avio_open2` 时没传中断回调，也没有超时 → 网络输出改用 `AvOutput::open_network`（在 `avio_open2` 之前设好中断回调，由 `Bus::stop` 触发），非 RTSP 网络输出默认加 `rw_timeout`（10s），连接类错误直接结束这路输出。文件输出故意不加中断：停止时如果正在写 mp4 结尾，被打断会产生坏文件（证据：crates/ffmpeg-bus/src/output.rs、bus.rs `open_mux`）

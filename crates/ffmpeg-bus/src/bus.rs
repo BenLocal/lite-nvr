@@ -165,6 +165,38 @@ async fn open_blocking<T: Send + 'static>(
         .map_err(|e| anyhow::anyhow!("codec open task failed: {e}"))?
 }
 
+/// Options for a network output: RTSP publishes over TCP with its socket
+/// timeout; every other protocol gets the generic AVIO `rw_timeout`.
+fn net_output_options(format: Option<&str>) -> Dictionary<'static> {
+    let mut opts = Dictionary::new();
+    if format == Some("rtsp") {
+        // TCP interleaving is the reliable choice for publishing; the timeout
+        // bounds a server that accepts but never answers.
+        opts.set("rtsp_transport", "tcp");
+        opts.set("timeout", DEFAULT_RTSP_TIMEOUT_US);
+    } else {
+        opts.set("rw_timeout", DEFAULT_RTSP_TIMEOUT_US);
+    }
+    opts
+}
+
+/// A write failure that means the network output is gone for good (timeout,
+/// peer reset, broken pipe, interrupted): stop writing instead of failing
+/// every following packet the same way.
+fn is_connection_error(e: &anyhow::Error) -> bool {
+    match e.downcast_ref::<ffmpeg_next::Error>() {
+        Some(ffmpeg_next::Error::Exit) => true,
+        Some(ffmpeg_next::Error::Other { errno }) => [
+            ffmpeg_next::util::error::ETIMEDOUT,
+            ffmpeg_next::util::error::EPIPE,
+            ffmpeg_next::util::error::ECONNRESET,
+            ffmpeg_next::util::error::EIO,
+        ]
+        .contains(errno),
+        _ => false,
+    }
+}
+
 /// Whether an input is a live source when the caller does not say: files are
 /// not; network streams and capture devices are.
 fn infer_live(input: &InputConfig) -> bool {
@@ -823,10 +855,13 @@ impl Bus {
         // Open and write the header now so a dead target (e.g. nothing
         // listening on an RTSP URL) fails this add_output call. Both can block
         // (file create, network connect): keep them off the async workers.
-        let output = tokio::task::spawn_blocking(move || Self::open_mux(target, &out_streams))
-            .await
-            .map_err(|e| anyhow::anyhow!("open mux task failed: {e}"))?
-            .map_err(|e| anyhow::anyhow!("mux open({}): {:#}", label, e))?;
+        let is_net = matches!(target, MuxTarget::Net { .. });
+        let shutdown = state.shutdown.clone();
+        let output =
+            tokio::task::spawn_blocking(move || Self::open_mux(target, &out_streams, shutdown))
+                .await
+                .map_err(|e| anyhow::anyhow!("open mux task failed: {e}"))?
+                .map_err(|e| anyhow::anyhow!("mux open({}): {:#}", label, e))?;
 
         let input_task = state
             .input_task
@@ -890,6 +925,10 @@ impl Bus {
                 let mut output = output;
                 while let Some((idx, packet)) = write_rx.blocking_recv() {
                     if let Err(e) = output.write_packet(idx, packet) {
+                        if is_net && is_connection_error(&e) {
+                            log::error!("mux network output lost: {e:#}; stopping it");
+                            break;
+                        }
                         log::error!("mux write_packet error: {:#?}", e);
                     }
                 }
@@ -959,19 +998,20 @@ impl Bus {
     /// Create the container for `target`, add `streams`, and write the header
     /// (which for RTSP is where the connection is made). Blocking: call it
     /// from a blocking thread.
-    fn open_mux(target: MuxTarget, streams: &[AvStream]) -> anyhow::Result<AvOutput> {
+    fn open_mux(
+        target: MuxTarget,
+        streams: &[AvStream],
+        shutdown: Arc<std::sync::atomic::AtomicBool>,
+    ) -> anyhow::Result<AvOutput> {
         let mut output = match target {
+            // Not interruptible: aborting a local file mid-trailer would leave
+            // a corrupt recording, and disk writes do not hang like sockets.
             MuxTarget::File(path) => AvOutput::new(&path, None, None)?,
+            // Network: interruptible by `Bus::stop`, with an I/O timeout so a
+            // peer that stops reading fails the output instead of hanging it.
             MuxTarget::Net { url, format } => {
-                let options = (format.as_deref() == Some("rtsp")).then(|| {
-                    let mut opts = Dictionary::new();
-                    // TCP interleaving is the reliable choice for publishing;
-                    // the timeout bounds a server that accepts but never answers.
-                    opts.set("rtsp_transport", "tcp");
-                    opts.set("timeout", DEFAULT_RTSP_TIMEOUT_US);
-                    opts
-                });
-                AvOutput::new(&url, format.as_deref(), options)?
+                let options = net_output_options(format.as_deref());
+                AvOutput::open_network(&url, format.as_deref(), Some(options), shutdown)?
             }
         };
         for stream in streams {
