@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::ffi::CString;
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -42,6 +41,7 @@ impl AvInputTask {
     }
 
     pub async fn start(&self, mut input: AvInput) {
+        let interrupter = input.interrupter();
         let cancel_clone = self.cancel.clone();
         let sender_clone = self.raw_chan.clone();
         let lossless = self.lossless.clone();
@@ -52,8 +52,8 @@ impl AvInputTask {
                     if cancel_inner.is_cancelled() {
                         break;
                     }
-                    match input.read_packet() {
-                        Some(packet) => {
+                    match input.read() {
+                        ReadOutcome::Packet(packet) => {
                             if lossless.load(Ordering::Relaxed) {
                                 while sender_clone.len() >= Self::PACKET_CHAN_CAP
                                     && sender_clone.receiver_count() > 0
@@ -65,8 +65,17 @@ impl AvInputTask {
                             // Attempt to send, ignore send error (receiver dropped)
                             let _ = sender_clone.send(RawPacketCmd::Data(packet));
                         }
-                        None => {
-                            // End of stream, break the loop
+                        // Nothing ready yet (some devices): retry, staying
+                        // responsive to cancellation.
+                        ReadOutcome::Again => std::thread::sleep(Duration::from_millis(2)),
+                        outcome @ (ReadOutcome::End | ReadOutcome::Failed(_)) => {
+                            // A read error (camera gone, network timeout or
+                            // reset) ends the stream like EOF does, so
+                            // downstream finalizes and the session can be
+                            // restarted instead of hanging on a dead input.
+                            if let ReadOutcome::Failed(e) = outcome {
+                                log::warn!("input read failed ({e}); ending the stream");
+                            }
                             log::info!("end of read input stream:");
                             for (index, stream) in input.streams.iter() {
                                 log::info!(
@@ -91,6 +100,9 @@ impl AvInputTask {
                     cancel_clone.cancel();
                 }
                 _ = cancel_clone.cancelled() => {
+                    // Abort a read blocked on a silent source, or the reader
+                    // (and process shutdown) would wait on it indefinitely.
+                    interrupter.interrupt();
                     log::info!("read input packet task cancelled");
                 }
             }
@@ -123,9 +135,61 @@ impl Drop for AvInputTask {
     }
 }
 
+/// Result of one [`AvInput::read`].
+pub enum ReadOutcome {
+    Packet(RawPacket),
+    /// Nothing available yet (EAGAIN): try again.
+    Again,
+    /// End of stream.
+    End,
+    /// The read failed (I/O error, timeout, connection reset, ...).
+    Failed(ffmpeg_next::Error),
+}
+
+/// Flags FFmpeg's interrupt callback polls during blocking I/O (open, read).
+/// Set, they make the blocked call return `AVERROR_EXIT` right away.
+#[derive(Default)]
+struct InterruptState {
+    /// This input was stopped (see [`Interrupter`]).
+    local: AtomicBool,
+    /// Owner-wide stop (e.g. the whole bus shutting down mid-open).
+    external: Option<Arc<AtomicBool>>,
+}
+
+impl InterruptState {
+    fn interrupted(&self) -> bool {
+        self.local.load(Ordering::Relaxed)
+            || self
+                .external
+                .as_ref()
+                .is_some_and(|f| f.load(Ordering::Relaxed))
+    }
+}
+
+extern "C" fn interrupt_callback(opaque: *mut std::ffi::c_void) -> std::ffi::c_int {
+    // SAFETY: `opaque` is the `InterruptState` owned by the `AvInput` whose
+    // format context calls us; `AvInput` drops that context before the state
+    // (field order), so the pointer is valid for every call.
+    let state = unsafe { &*(opaque as *const InterruptState) };
+    std::ffi::c_int::from(state.interrupted())
+}
+
+/// Handle that aborts an [`AvInput`]'s blocking I/O from another thread.
+#[derive(Clone)]
+pub struct Interrupter(Arc<InterruptState>);
+
+impl Interrupter {
+    pub fn interrupt(&self) {
+        self.0.local.store(true, Ordering::Relaxed);
+    }
+}
+
 pub struct AvInput {
+    // Field order matters: `inner` (the format context, which may call the
+    // interrupt callback) must drop before `interrupt`.
     inner: ffmpeg_next::format::context::Input,
     streams: HashMap<usize, AvStream>,
+    interrupt: Arc<InterruptState>,
 }
 
 impl AvInput {
@@ -145,23 +209,57 @@ impl AvInput {
         format: Option<&str>,
         options: Option<Dictionary>,
     ) -> anyhow::Result<Self> {
-        use ffmpeg_next::format::format::Format;
+        Self::open(url, format, options, None)
+    }
 
-        let path = Path::new(url);
-        let input = match (format, options) {
-            (Some(fmt_name), Some(opts)) => {
-                let fmt = Self::find_input_format(fmt_name)?;
-                let ctx = ffmpeg_next::format::open_with(path, &Format::Input(fmt), opts)?;
-                ctx.input()
+    /// Open `url` with an interrupt callback, so the (possibly long) open and
+    /// every later read can be aborted: by [`AvInput::interrupter`], or when
+    /// `external` is set (an owner-wide stop flag).
+    pub fn open(
+        url: &str,
+        format: Option<&str>,
+        options: Option<Dictionary>,
+        external: Option<Arc<AtomicBool>>,
+    ) -> anyhow::Result<Self> {
+        let interrupt = Arc::new(InterruptState {
+            local: AtomicBool::new(false),
+            external,
+        });
+        let fmt = format.map(Self::find_input_format).transpose()?;
+        let url_c =
+            CString::new(url).map_err(|e| anyhow::anyhow!("invalid url {:?}: {}", url, e))?;
+        // SAFETY: standard avformat_open_input sequence. The context is
+        // allocated here so the interrupt callback is in place before any
+        // I/O; on open failure FFmpeg frees it, on probe failure we close it.
+        // The callback's opaque points into `interrupt`, which outlives the
+        // context (see the field order of `AvInput`).
+        let input = unsafe {
+            let mut ps = ffmpeg_next::ffi::avformat_alloc_context();
+            if ps.is_null() {
+                anyhow::bail!("avformat_alloc_context failed");
             }
-            (Some(fmt_name), None) => {
-                let fmt = Self::find_input_format(fmt_name)?;
-                let ctx =
-                    ffmpeg_next::format::open_with(path, &Format::Input(fmt), Dictionary::new())?;
-                ctx.input()
+            (*ps).interrupt_callback = ffmpeg_next::ffi::AVIOInterruptCB {
+                callback: Some(interrupt_callback),
+                opaque: Arc::as_ptr(&interrupt) as *mut std::ffi::c_void,
+            };
+            let mut opts = options.map_or(std::ptr::null_mut(), |o| o.disown());
+            let res = ffmpeg_next::ffi::avformat_open_input(
+                &mut ps,
+                url_c.as_ptr(),
+                fmt.as_ref().map_or(std::ptr::null(), |f| f.as_ptr()),
+                &mut opts,
+            );
+            // Leftover (unused) options are ours to free.
+            drop(Dictionary::own(opts));
+            if res < 0 {
+                return Err(ffmpeg_next::Error::from(res).into());
             }
-            (None, Some(opts)) => ffmpeg_next::format::input_with_dictionary(path, opts)?,
-            (None, None) => ffmpeg_next::format::input(path)?,
+            let res = ffmpeg_next::ffi::avformat_find_stream_info(ps, std::ptr::null_mut());
+            if res < 0 {
+                ffmpeg_next::ffi::avformat_close_input(&mut ps);
+                return Err(ffmpeg_next::Error::from(res).into());
+            }
+            ffmpeg_next::format::context::Input::wrap(ps)
         };
 
         let mut streams = HashMap::new();
@@ -172,20 +270,56 @@ impl AvInput {
         Ok(Self {
             inner: input,
             streams,
+            interrupt,
         })
+    }
+
+    /// A handle to abort this input's blocking I/O (e.g. a read stuck on a
+    /// silent network source) from another thread.
+    pub fn interrupter(&self) -> Interrupter {
+        Interrupter(self.interrupt.clone())
     }
 
     pub fn streams(&self) -> &HashMap<usize, AvStream> {
         &self.streams
     }
 
+    /// Read one packet. Unlike ffmpeg-next's `packets()` iterator, which
+    /// retries every non-EOF error forever inside `next()` (so a dead RTSP
+    /// camera hangs the reader, unable to even see cancellation), errors are
+    /// reported to the caller.
+    pub fn read(&mut self) -> ReadOutcome {
+        let mut packet = ffmpeg_next::Packet::empty();
+        match packet.read(&mut self.inner) {
+            Ok(()) => {
+                let time_base = self
+                    .inner
+                    .stream(packet.stream())
+                    .map(|s| s.time_base())
+                    // A packet's stream always exists; 0/1 is a never-hit fallback.
+                    .unwrap_or(ffmpeg_next::Rational(0, 1));
+                ReadOutcome::Packet((packet, time_base).into())
+            }
+            Err(ffmpeg_next::Error::Eof) => ReadOutcome::End,
+            Err(ffmpeg_next::Error::Other { errno })
+                if errno == ffmpeg_next::util::error::EAGAIN =>
+            {
+                ReadOutcome::Again
+            }
+            Err(e) => ReadOutcome::Failed(e),
+        }
+    }
+
+    /// One packet, or `None` at end of stream or on a read error (retrying
+    /// only "try again"). Convenience for synchronous callers.
     pub fn read_packet(&mut self) -> Option<RawPacket> {
-        // One packet per call, or None at end of stream. No loop here: both match
-        // arms returned, so a `loop` never actually iterated (clippy::never_loop).
-        self.inner
-            .packets()
-            .next()
-            .map(|(stream, packet)| (packet, stream.time_base()).into())
+        loop {
+            match self.read() {
+                ReadOutcome::Packet(packet) => return Some(packet),
+                ReadOutcome::Again => std::thread::sleep(Duration::from_millis(1)),
+                ReadOutcome::End | ReadOutcome::Failed(_) => return None,
+            }
+        }
     }
 }
 

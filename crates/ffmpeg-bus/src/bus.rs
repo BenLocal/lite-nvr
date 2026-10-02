@@ -229,6 +229,9 @@ pub struct Bus {
     id: String,
     cancel: CancellationToken,
     tx: tokio::sync::mpsc::Sender<BusCommand>,
+    /// Set by [`Bus::stop`]: aborts an input open in progress (the command
+    /// loop is busy awaiting it, so cancellation alone cannot reach it).
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Bus {
@@ -252,18 +255,29 @@ impl Bus {
         let (tx, rx) = tokio::sync::mpsc::channel(1024);
 
         let cancel_clone = cancel.clone();
-        tokio::spawn(async move { Self::inner_loop(cancel_clone, rx, deferred).await });
-        Self { id: id, cancel, tx }
+        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let shutdown_clone = shutdown.clone();
+        tokio::spawn(
+            async move { Self::inner_loop(cancel_clone, rx, deferred, shutdown_clone).await },
+        );
+        Self {
+            id: id,
+            cancel,
+            tx,
+            shutdown,
+        }
     }
 
     async fn inner_loop(
         cancel: CancellationToken,
         mut rx: tokio::sync::mpsc::Receiver<BusCommand>,
         deferred: bool,
+        shutdown: Arc<std::sync::atomic::AtomicBool>,
     ) {
         let cancel_clone = cancel.clone();
         let mut state = BusState::new();
         state.deferred = deferred;
+        state.shutdown = shutdown;
         loop {
             tokio::select! {
                 _ = cancel_clone.cancelled() => {
@@ -1496,13 +1510,15 @@ impl Bus {
             None => return Err(anyhow::anyhow!("input config is not set")),
         };
         let options = rtsp_input_options(&url, state.input_options.clone());
+        let shutdown = state.shutdown.clone();
         // Opening probes the source (an RTSP connect can take seconds): run it
         // on a blocking thread so the async workers stay free.
         let input = tokio::task::spawn_blocking(move || {
             let options = options.map(|o| {
                 ffmpeg_next::Dictionary::from_iter(o.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             });
-            AvInput::new(&url, format.as_deref(), options)
+            // Interruptible: `Bus::stop` aborts an open stuck on a dead peer.
+            AvInput::open(&url, format.as_deref(), options, Some(shutdown))
         })
         .await
         .map_err(|e| anyhow::anyhow!("open input task failed: {e}"))??;
@@ -1642,6 +1658,8 @@ impl Bus {
     }
 
     pub fn stop(&self) {
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         self.cancel.cancel();
     }
 }
@@ -1671,6 +1689,8 @@ struct BusState {
     started: bool,
     /// The input is a live source (see `Bus::add_input_with_live`).
     live: bool,
+    /// Shared with `Bus::stop`, which sets it to abort a blocking input open.
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl BusState {
@@ -1688,6 +1708,7 @@ impl BusState {
             deferred: false,
             started: false,
             live: false,
+            shutdown: Arc::default(),
         }
     }
 }

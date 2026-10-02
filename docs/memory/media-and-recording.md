@@ -23,3 +23,5 @@
 - 2026-10-02：音频 Mux 成 opus 直接报 `Invalid argument` → libopus 只接受 48k/24k/16k/12k/8k 采样率，编码器原来照搬输入的 44100 → `Encoder::new_audio` 按编码器支持的采样率列表选最接近的（`pick_sample_rate`），由重采样器负责转换（证据：crates/ffmpeg-bus/src/encoder.rs）
 - 2026-10-02：内存 Mux 输出（`AvOutputStream`）的写回调在通道满时会丢掉已经封装好的字节，码流随之损坏 → 回调改用 `blocking_send`，写循环（`run_mux_stream_writer`）因此必须跑在阻塞线程上；在异步上下文里直接写 `AvOutputStream` 会 panic
 - 2026-10-02：硬件编解码器运行期失败后会被记进进程级黑名单（`hw::mark_runtime_failure`），之后挑候选时跳过。副作用：同一个测试进程里，只有第一个解码测试会走 QSV 失败、降级的路径
+- 2026-10-02：摄像头掉线后会话一直显示在运行，但没有数据，也不重连；`remove_input` / 进程退出都会卡住 → ffmpeg-next 的 `packets()` 迭代器遇到 EOF 以外的读错误，会在 `next()` 里无限重试；而且阻塞中的读不检查取消 → 改用 `AvInput::read`（`Packet::read`：EAGAIN 重试，其它错误按流结束处理），并通过 `AvInput::open` 给 FFmpeg 设置中断回调，取消输入或 `Bus::stop` 时能打断阻塞中的读和打开（证据：crates/ffmpeg-bus/src/input.rs）
+- 2026-10-02：模拟「读到一半卡住」的测试一开始测错了地方：打开输入时 `avformat_find_stream_info` 会读满默认 5 秒的分析时长，只发一半数据的假服务器让「打开」先卡住了 → 测试输入要设很小的 `analyzeduration` / `probesize`，让打开先完成，后面的读才会卡住

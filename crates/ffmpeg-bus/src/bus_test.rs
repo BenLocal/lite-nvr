@@ -1807,3 +1807,152 @@ async fn test_mux_format_must_match_encoder() -> anyhow::Result<()> {
     assert!(err.contains("needs"), "got: {err}");
     Ok(())
 }
+
+/// test.mp4's video as an MPEG-TS byte stream (muxed by the bus itself).
+async fn test_ts_bytes() -> anyhow::Result<Vec<u8>> {
+    let bus = Bus::new("ts");
+    bus.add_input(
+        InputConfig::File {
+            path: test_mp4_path().to_string_lossy().into_owned(),
+        },
+        None,
+    )
+    .await?;
+    let (_, stream) = bus
+        .add_output(OutputConfig::new(
+            "ts".to_string(),
+            OutputAvType::Video,
+            OutputDest::Mux {
+                format: "mpegts".to_string(),
+            },
+        ))
+        .await?;
+    Ok(drain_frames(stream)
+        .await?
+        .iter()
+        .flat_map(|c| c.data.to_vec())
+        .collect())
+}
+
+/// Serve the first half of `bytes` over TCP, then go silent while keeping the
+/// connection open: a network source that hangs. Returns the port.
+fn stalling_tcp_server(bytes: Vec<u8>) -> anyhow::Result<u16> {
+    use std::io::Write;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    std::thread::spawn(move || {
+        if let Ok((mut conn, _)) = listener.accept() {
+            let _ = conn.write_all(&bytes[..bytes.len() / 2]);
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            drop(conn);
+        }
+    });
+    Ok(port)
+}
+
+async fn stalled_ts_bus(
+    timeout_us: Option<&str>,
+) -> anyhow::Result<(Bus, crate::bus::VideoRawFrameStream)> {
+    use std::collections::HashMap;
+    let port = stalling_tcp_server(test_ts_bytes().await?)?;
+    let bus = Bus::new("stalled");
+    // Probe only a little, so the open completes on the data that does
+    // arrive and it is the later *read* that blocks on the silence.
+    let mut options: HashMap<String, String> = [
+        ("analyzeduration".to_string(), "100000".to_string()),
+        ("probesize".to_string(), "32768".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    if let Some(t) = timeout_us {
+        options.insert("timeout".to_string(), t.to_string());
+    }
+    let options = Some(options);
+    bus.add_input_with_live(
+        InputConfig::Net {
+            url: format!("tcp://127.0.0.1:{port}"),
+        },
+        options,
+        true,
+    )
+    .await?;
+    let (_, stream) = bus
+        .add_output(OutputConfig::new(
+            "demuxed".to_string(),
+            OutputAvType::Video,
+            OutputDest::Demuxed,
+        ))
+        .await?;
+    Ok((bus, stream))
+}
+
+/// A network input that goes silent mid-stream ends once its read timeout
+/// fires. ffmpeg-next's packet iterator retried such errors forever, leaving
+/// the session "running" with no data and never restarted.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_stalled_network_input_ends_after_timeout() -> anyhow::Result<()> {
+    if !test_mp4_path().exists() {
+        return Ok(());
+    }
+    let (_bus, stream) = stalled_ts_bus(Some("1000000")).await?;
+    let frames = tokio::time::timeout(std::time::Duration::from_secs(10), drain_frames(stream))
+        .await
+        .map_err(|_| anyhow::anyhow!("stalled input never ended"))??;
+    assert!(!frames.is_empty(), "frames before the stall");
+    Ok(())
+}
+
+/// Without any timeout, removing the input still aborts a read blocked on a
+/// silent source right away (interrupt callback), instead of the reader —
+/// and process shutdown — waiting on it forever.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_remove_input_interrupts_blocked_read() -> anyhow::Result<()> {
+    if !test_mp4_path().exists() {
+        return Ok(());
+    }
+    let (bus, stream) = stalled_ts_bus(None).await?;
+    let drain = tokio::spawn(drain_frames(stream));
+    // Let it read what the server sends, then block on the silence.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    bus.remove_input().await?;
+    let frames = tokio::time::timeout(std::time::Duration::from_secs(3), drain)
+        .await
+        .map_err(|_| anyhow::anyhow!("blocked read was not interrupted"))???;
+    assert!(!frames.is_empty());
+    Ok(())
+}
+
+/// `Bus::stop` aborts an input open stuck on a peer that never sends.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_stop_interrupts_hanging_open() -> anyhow::Result<()> {
+    let port = silent_tcp_server()?;
+    let bus = std::sync::Arc::new(Bus::new("hanging-open"));
+    bus.add_input(
+        InputConfig::Net {
+            url: format!("tcp://127.0.0.1:{port}"),
+        },
+        None,
+    )
+    .await?;
+    let b = bus.clone();
+    let output = tokio::spawn(async move {
+        b.add_output(OutputConfig::new(
+            "demuxed".to_string(),
+            OutputAvType::Video,
+            OutputDest::Demuxed,
+        ))
+        .await
+        .map(|_| ())
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !output.is_finished(),
+        "open should be blocked on the silent peer"
+    );
+    bus.stop();
+    let res = tokio::time::timeout(std::time::Duration::from_secs(3), output)
+        .await
+        .map_err(|_| anyhow::anyhow!("hanging open was not interrupted"))??;
+    assert!(res.is_err());
+    Ok(())
+}
