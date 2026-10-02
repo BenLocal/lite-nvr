@@ -62,3 +62,36 @@ fn test_rawvideo_stream_frame_rate() -> anyhow::Result<()> {
     assert_eq!(video.rate(), ffmpeg_next::Rational(10, 1));
     Ok(())
 }
+
+/// Without lossless mode (live sources) the reader never waits: a subscriber
+/// that stops reading just lags, while the others keep receiving everything.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_live_reader_does_not_wait_for_stalled_subscriber() -> anyhow::Result<()> {
+    crate::init()?;
+    let input = AvInput::new(
+        "testsrc=duration=300:size=16x16:rate=25",
+        Some("lavfi"),
+        None,
+    )?;
+    let task = AvInputTask::new();
+    let _stalled = task.subscribe(); // never read
+    let mut rx = task.subscribe();
+    task.start(input).await;
+
+    let count = tokio::time::timeout(Duration::from_secs(60), async move {
+        let mut n = 0usize;
+        loop {
+            match rx.recv().await {
+                Ok(RawPacketCmd::Data(_)) => n += 1,
+                Ok(RawPacketCmd::EOF) => return anyhow::Ok(n),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("reader blocked on the stalled subscriber"))??;
+    assert!(count > 0);
+    assert!(!task.is_lossless());
+    Ok(())
+}

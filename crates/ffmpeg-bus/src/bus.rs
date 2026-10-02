@@ -33,7 +33,85 @@ enum MuxTarget {
 /// stream index, or the end-of-stream signal for one source.
 enum MuxSignal {
     Packet(usize, RawPacket),
+    /// Packets of these output streams were lost (the receiver lagged).
+    Gap(Vec<usize>),
     Eof,
+}
+
+/// Per-stream resync after data loss. Once a stream has a gap (lost
+/// packets), its packets are dropped until its next keyframe: writing the
+/// frames after a hole would record corrupted video until then anyway.
+#[derive(Default)]
+struct KeyframeGate {
+    waiting: HashSet<usize>,
+    /// All packets not written (no room, or waiting for a keyframe).
+    dropped: u64,
+    /// Packets dropped for lack of room; paces the log lines.
+    overflowed: u64,
+}
+
+impl KeyframeGate {
+    fn mark_gap(&mut self, index: usize) {
+        self.waiting.insert(index);
+    }
+
+    /// Whether to write this packet; reopens a stream on its keyframe.
+    fn admit(&mut self, index: usize, is_key: bool) -> bool {
+        if self.waiting.contains(&index) {
+            if !is_key {
+                self.dropped += 1;
+                return false;
+            }
+            self.waiting.remove(&index);
+        }
+        true
+    }
+
+    /// Count a packet dropped for lack of room; returns true when it is worth
+    /// a log line (first drop, then every 100).
+    fn note_drop(&mut self, index: usize) -> bool {
+        self.mark_gap(index);
+        self.dropped += 1;
+        self.overflowed += 1;
+        self.overflowed % 100 == 1
+    }
+}
+
+/// Whether an input is a live source when the caller does not say: files are
+/// not; network streams and capture devices are.
+fn infer_live(input: &InputConfig) -> bool {
+    !matches!(input, InputConfig::File { .. })
+}
+
+/// RTSP socket I/O timeout (microseconds) used when the caller sets none, so
+/// an unresponsive camera or server fails instead of blocking forever.
+const DEFAULT_RTSP_TIMEOUT_US: &str = "10000000";
+
+/// Packets queued between a File/Net mux's merge task and its writer thread.
+/// Bounded so a slow disk / network backpressures the sources.
+const MUX_WRITE_QUEUE: usize = 64;
+
+fn is_rtsp_url(url: &str) -> bool {
+    let url = url.to_ascii_lowercase();
+    url.starts_with("rtsp://") || url.starts_with("rtsps://")
+}
+
+/// Input options with the default RTSP timeout added for RTSP client inputs
+/// (not listen mode, which waits for a publisher by design).
+fn rtsp_input_options(
+    url: &str,
+    options: Option<HashMap<String, String>>,
+) -> Option<HashMap<String, String>> {
+    if !is_rtsp_url(url) {
+        return options;
+    }
+    let mut opts = options.unwrap_or_default();
+    let listening = opts.get("rtsp_flags").is_some_and(|f| f.contains("listen"));
+    if !listening {
+        opts.entry("timeout".to_string())
+            .or_insert_with(|| DEFAULT_RTSP_TIMEOUT_US.to_string());
+    }
+    Some(opts)
 }
 
 /// One stream's role in a File/Net mux: copy the demuxed input through, or
@@ -66,22 +144,38 @@ pub struct Bus {
 }
 
 impl Bus {
+    /// A bus that starts reading its input as soon as the first output (or
+    /// subscription) needs it.
     pub fn new(id: &str) -> Self {
+        Self::spawn(id, false)
+    }
+
+    /// A bus that only starts reading its input on [`Bus::start`]. Register
+    /// every output first, then start: with a fast source (e.g. a short file)
+    /// an output added after reading began would miss the start, or even the
+    /// end, of the stream.
+    pub fn new_deferred(id: &str) -> Self {
+        Self::spawn(id, true)
+    }
+
+    fn spawn(id: &str, deferred: bool) -> Self {
         let id = id.to_string();
         let cancel = CancellationToken::new();
         let (tx, rx) = tokio::sync::mpsc::channel(1024);
 
         let cancel_clone = cancel.clone();
-        tokio::spawn(async move { Self::inner_loop(cancel_clone, rx).await });
+        tokio::spawn(async move { Self::inner_loop(cancel_clone, rx, deferred).await });
         Self { id: id, cancel, tx }
     }
 
     async fn inner_loop(
         cancel: CancellationToken,
         mut rx: tokio::sync::mpsc::Receiver<BusCommand>,
+        deferred: bool,
     ) {
         let cancel_clone = cancel.clone();
         let mut state = BusState::new();
+        state.deferred = deferred;
         loop {
             tokio::select! {
                 _ = cancel_clone.cancelled() => {
@@ -101,10 +195,11 @@ impl Bus {
             BusCommand::AddInput {
                 input,
                 options,
+                live,
                 result,
             } => {
                 result
-                    .send(Self::add_input_internal(state, input, options).await)
+                    .send(Self::add_input_internal(state, input, options, live).await)
                     .map_err(|e| anyhow::anyhow!("send result error: {:#?}", e))?;
             }
             BusCommand::RemoveInput { result } => {
@@ -122,6 +217,8 @@ impl Bus {
                 state.encoder_output_streams.clear();
                 state.input_streams.clear();
                 state.output_config.clear();
+                // A deferred bus waits for `start()` again on its next input.
+                state.started = false;
                 result
                     .send(Ok(()))
                     .map_err(|e| anyhow::anyhow!("send result error: {:#?}", e))?;
@@ -135,6 +232,10 @@ impl Bus {
                 if let Some(msg) = err {
                     return Err(anyhow::anyhow!(msg));
                 }
+            }
+            BusCommand::Start { result } => {
+                let r = Self::start_internal(state).await;
+                let _ = result.send(r);
             }
             BusCommand::SubscribeAudio { result } => {
                 let r = Self::subscribe_audio_internal(state).await;
@@ -167,7 +268,7 @@ impl Bus {
         match Self::build_output(state, &output).await {
             Ok(built) => {
                 state.output_config.insert(output.id.clone(), output);
-                Self::start_input_task(state).await?;
+                Self::auto_start_input(state).await?;
                 Ok(built)
             }
             Err(e) => {
@@ -544,13 +645,14 @@ impl Bus {
         state: &mut BusState,
         plan: &mut [MuxPlanEntry],
     ) -> anyhow::Result<()> {
-        // File/Net transcode must be lossless (no dropped frames), or audio/video
-        // gaps and A/V drift appear when a fast source (e.g. a file) is decoded
-        // in a burst. Backpressure is a no-op for realtime sources.
+        // Non-live sources transcode losslessly: a file decoded in a burst must
+        // not drop frames (gaps, A/V drift). Live sources must never be slowed
+        // by a slow encoder, so they drop frames instead.
+        let lossless = !state.live;
         for entry in plan.iter_mut().filter(|e| e.transcode) {
             Self::start_decoder_task(state, entry.input_index).await?;
             entry.encoder_key = Some(
-                Self::start_encoder_task(state, entry.input_index, entry.encode.as_ref(), true)
+                Self::start_encoder_task(state, entry.input_index, entry.encode.as_ref(), lossless)
                     .await?,
             );
         }
@@ -566,28 +668,13 @@ impl Bus {
         target: MuxTarget,
         plan: Vec<MuxPlanEntry>,
     ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
-        let (mut output, label) = match &target {
-            MuxTarget::File(path) => (AvOutput::new(path, None, None)?, path.clone()),
-            MuxTarget::Net { url, format } => {
-                // RTSP output often needs rtsp_transport=tcp for avio_open2.
-                let options = match format.as_deref() {
-                    Some("rtsp") => {
-                        let mut opts = Dictionary::new();
-                        opts.set("rtsp_transport", "tcp");
-                        Some(opts)
-                    }
-                    _ => None,
-                };
-                (
-                    AvOutput::new(url, format.as_deref(), options).map_err(|e| {
-                        anyhow::anyhow!("mux AvOutput::new(url={:?}): {:?}", url, e)
-                    })?,
-                    url.clone(),
-                )
-            }
+        let label = match &target {
+            MuxTarget::File(path) => path.clone(),
+            MuxTarget::Net { url, .. } => url.clone(),
         };
 
-        // Add one output stream per planned stream; collect the packet sources.
+        // One output stream per planned stream; collect the packet sources.
+        let mut out_streams: Vec<AvStream> = Vec::new();
         let mut copied_indices: HashSet<usize> = HashSet::new();
         let mut enc_receivers: Vec<(usize, RawPacketReceiver)> = Vec::new();
         let mut primary_av: Option<AvStream> = None;
@@ -615,7 +702,7 @@ impl Bus {
                     })?,
                 None => input_stream,
             };
-            output.add_stream(&out_stream)?;
+            out_streams.push(out_stream.clone());
             if primary_av.is_none() {
                 primary_av = Some(out_stream.clone());
             }
@@ -630,19 +717,25 @@ impl Bus {
             }
         }
         let primary_av = primary_av.ok_or(anyhow::anyhow!("mux plan is empty"))?;
-        // Connect / write the header now so a dead target (e.g. nothing
-        // listening on an RTSP URL) fails this add_output call.
-        output
-            .write_header()
-            .map_err(|e| anyhow::anyhow!("mux write_header({}): {:#}", label, e))?;
+        // Open and write the header now so a dead target (e.g. nothing
+        // listening on an RTSP URL) fails this add_output call. Both can block
+        // (file create, network connect): keep them off the async workers.
+        let output = tokio::task::spawn_blocking(move || Self::open_mux(target, &out_streams))
+            .await
+            .map_err(|e| anyhow::anyhow!("open mux task failed: {e}"))?
+            .map_err(|e| anyhow::anyhow!("mux open({}): {:#}", label, e))?;
 
         let input_task = state
             .input_task
             .as_ref()
             .ok_or(anyhow::anyhow!("input task not found"))?;
-        // File/Net outputs are lossless end to end: the copied packets come
-        // straight from the input, so the reader must not outrun this muxer.
-        input_task.set_lossless();
+        // For a non-live source File/Net outputs are lossless end to end: the
+        // copied packets come straight from the input, so the reader must not
+        // outrun this muxer. A live source is never held back.
+        let live = state.live;
+        if !live {
+            input_task.set_lossless();
+        }
         // Subscribe to the input only when something is copied from it. A
         // fully transcoded mux ends on its encoders' EOFs; waiting on an input
         // EOF too would hang forever when this output joins after a fast
@@ -667,7 +760,8 @@ impl Bus {
                             }
                             Ok(RawPacketCmd::Data(_)) => None, // packet for a transcoded stream
                             Ok(RawPacketCmd::EOF) => Some(MuxSignal::Eof),
-                            Err(_) => None, // Lagged / Closed
+                            // Lagged: copied packets were lost.
+                            Err(_) => Some(MuxSignal::Gap(copied.iter().copied().collect())),
                         }
                     }
                 });
@@ -678,21 +772,65 @@ impl Bus {
                     match r {
                         Ok(RawPacketCmd::Data(p)) => Some(MuxSignal::Packet(idx, p)),
                         Ok(RawPacketCmd::EOF) => Some(MuxSignal::Eof),
-                        Err(_) => None,
+                        // Lagged: encoded packets were lost.
+                        Err(_) => Some(MuxSignal::Gap(vec![idx])),
                     }
                 });
                 sources.push(Box::pin(s));
             }
 
+            // Disk / network writes block: a dedicated thread does them, fed
+            // through a bounded queue so a slow sink backpressures the merge.
+            let (write_tx, mut write_rx) =
+                tokio::sync::mpsc::channel::<(usize, RawPacket)>(MUX_WRITE_QUEUE);
+            let writer = tokio::task::spawn_blocking(move || {
+                let mut output = output;
+                while let Some((idx, packet)) = write_rx.blocking_recv() {
+                    if let Err(e) = output.write_packet(idx, packet) {
+                        log::error!("mux write_packet error: {:#?}", e);
+                    }
+                }
+                if let Err(e) = output.finish() {
+                    log::error!(
+                        "mux finish error: {:#?}\nbacktrace:\n{}",
+                        e,
+                        Backtrace::capture()
+                    );
+                }
+            });
+
             let total_sources = sources.len();
             let mut eofs = 0usize;
+            let mut gate = KeyframeGate::default();
             let mut merged = futures::stream::select_all(sources);
-            let mut output = output;
             while let Some(sig) = merged.next().await {
                 match sig {
                     MuxSignal::Packet(idx, packet) => {
-                        if let Err(e) = output.write_packet(idx, packet) {
-                            log::error!("mux write_packet error: {:#?}", e);
+                        if !gate.admit(idx, packet.is_key()) {
+                            continue;
+                        }
+                        if live {
+                            // Never wait on a slow sink: drop and resync.
+                            match write_tx.try_send((idx, packet)) {
+                                Ok(()) => {}
+                                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                    if gate.note_drop(idx) {
+                                        log::warn!(
+                                            "mux {}: sink too slow, dropped {} packets (live)",
+                                            label,
+                                            gate.dropped
+                                        );
+                                    }
+                                }
+                                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                            }
+                        } else if write_tx.send((idx, packet)).await.is_err() {
+                            break; // writer gone
+                        }
+                    }
+                    MuxSignal::Gap(indices) => {
+                        for idx in indices {
+                            gate.mark_gap(idx);
                         }
                     }
                     MuxSignal::Eof => {
@@ -703,13 +841,9 @@ impl Bus {
                     }
                 }
             }
-            if let Err(e) = output.finish() {
-                log::error!(
-                    "mux finish error: {:#?}\nbacktrace:\n{}",
-                    e,
-                    Backtrace::capture()
-                );
-            }
+            // Closing the queue lets the writer drain, write the trailer, exit.
+            drop(write_tx);
+            let _ = writer.await;
             log::info!("mux finished: {}", label);
         });
 
@@ -717,6 +851,31 @@ impl Bus {
             primary_av,
             Box::pin(futures::stream::empty::<Option<VideoFrame>>()),
         ))
+    }
+
+    /// Create the container for `target`, add `streams`, and write the header
+    /// (which for RTSP is where the connection is made). Blocking: call it
+    /// from a blocking thread.
+    fn open_mux(target: MuxTarget, streams: &[AvStream]) -> anyhow::Result<AvOutput> {
+        let mut output = match target {
+            MuxTarget::File(path) => AvOutput::new(&path, None, None)?,
+            MuxTarget::Net { url, format } => {
+                let options = (format.as_deref() == Some("rtsp")).then(|| {
+                    let mut opts = Dictionary::new();
+                    // TCP interleaving is the reliable choice for publishing;
+                    // the timeout bounds a server that accepts but never answers.
+                    opts.set("rtsp_transport", "tcp");
+                    opts.set("timeout", DEFAULT_RTSP_TIMEOUT_US);
+                    opts
+                });
+                AvOutput::new(&url, format.as_deref(), options)?
+            }
+        };
+        for stream in streams {
+            output.add_stream(stream)?;
+        }
+        output.write_header()?;
+        Ok(output)
     }
 
     async fn create_encoded_output_stream(
@@ -979,7 +1138,7 @@ impl Bus {
             .ok_or_else(|| anyhow::anyhow!("pipe has no audio stream"))?
             .index();
         let receiver = Self::subscribe_decoder(state, audio_index, false).await?;
-        Self::start_input_task(state).await?;
+        Self::auto_start_input(state).await?;
         Ok(receiver)
     }
 
@@ -998,7 +1157,7 @@ impl Bus {
             .ok_or_else(|| anyhow::anyhow!("pipe has no video stream"))?
             .index();
         let receiver = Self::subscribe_decoder(state, video_index, false).await?;
-        Self::start_input_task(state).await?;
+        Self::auto_start_input(state).await?;
         Ok(receiver)
     }
 
@@ -1006,17 +1165,19 @@ impl Bus {
         state: &mut BusState,
         input: InputConfig,
         options: Option<HashMap<String, String>>,
+        live: Option<bool>,
     ) -> anyhow::Result<()> {
         if state.input_config.is_some() {
             return Err(anyhow::anyhow!("input already exists"));
         } else {
+            state.live = live.unwrap_or_else(|| infer_live(&input));
             state.input_config = Some(input);
             state.input_options = options;
         }
 
         if !state.output_config.is_empty() && state.input_task.is_none() {
             Self::prepare_input_task(state).await?;
-            Self::start_input_task(state).await?;
+            Self::auto_start_input(state).await?;
         }
         Ok(())
     }
@@ -1284,19 +1445,25 @@ impl Bus {
         if state.input_task.is_some() {
             return Ok(());
         }
-        let options = state.input_options.as_ref().map(|options| {
-            ffmpeg_next::Dictionary::from_iter(
-                options.iter().map(|(k, v)| (k.as_str(), v.as_str())),
-            )
-        });
-        let input = match state.input_config.as_ref() {
-            Some(InputConfig::Net { url }) => AvInput::new(url, None, options)?,
-            Some(InputConfig::File { path }) => AvInput::new(path, None, options)?,
+        let (url, format) = match state.input_config.as_ref() {
+            Some(InputConfig::Net { url }) => (url.clone(), None),
+            Some(InputConfig::File { path }) => (path.clone(), None),
             Some(InputConfig::Device { display, format }) => {
-                AvInput::new(display, Some(format), options)?
+                (display.clone(), Some(format.clone()))
             }
             None => return Err(anyhow::anyhow!("input config is not set")),
         };
+        let options = rtsp_input_options(&url, state.input_options.clone());
+        // Opening probes the source (an RTSP connect can take seconds): run it
+        // on a blocking thread so the async workers stay free.
+        let input = tokio::task::spawn_blocking(move || {
+            let options = options.map(|o| {
+                ffmpeg_next::Dictionary::from_iter(o.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            });
+            AvInput::new(&url, format.as_deref(), options)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("open input task failed: {e}"))??;
 
         let streams = input.streams();
         log::info!("start add input streams:");
@@ -1315,6 +1482,24 @@ impl Bus {
         Ok(())
     }
 
+    /// Start reading the input, unless this bus defers that to [`Bus::start`]
+    /// and it has not been called yet.
+    async fn auto_start_input(state: &mut BusState) -> anyhow::Result<()> {
+        if state.deferred && !state.started {
+            return Ok(());
+        }
+        Self::start_input_task(state).await
+    }
+
+    async fn start_internal(state: &mut BusState) -> anyhow::Result<()> {
+        if state.input_config.is_none() {
+            anyhow::bail!("start: no input");
+        }
+        state.started = true;
+        Self::prepare_input_task(state).await?;
+        Self::start_input_task(state).await
+    }
+
     async fn start_input_task(state: &mut BusState) -> anyhow::Result<()> {
         let input = match state.pending_input.take() {
             Some(input) => input,
@@ -1328,19 +1513,52 @@ impl Bus {
         Ok(())
     }
 
+    /// Set the input. Whether it is a live source is inferred (files are not,
+    /// network streams and devices are); see [`Bus::add_input_with_live`].
     pub async fn add_input(
         &self,
         input: InputConfig,
         options: Option<HashMap<String, String>>,
+    ) -> anyhow::Result<()> {
+        self.send_add_input(input, options, None).await
+    }
+
+    /// Set the input, saying explicitly whether it is live. A live source is
+    /// never slowed down for a lagging File/Net output: that output drops
+    /// packets (resuming at the next keyframe) instead. A non-live source is
+    /// read only as fast as its slowest File/Net output, losing nothing.
+    pub async fn add_input_with_live(
+        &self,
+        input: InputConfig,
+        options: Option<HashMap<String, String>>,
+        live: bool,
+    ) -> anyhow::Result<()> {
+        self.send_add_input(input, options, Some(live)).await
+    }
+
+    async fn send_add_input(
+        &self,
+        input: InputConfig,
+        options: Option<HashMap<String, String>>,
+        live: Option<bool>,
     ) -> anyhow::Result<()> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(BusCommand::AddInput {
                 input,
                 options,
+                live,
                 result: tx,
             })
             .await?;
+        rx.await?
+    }
+
+    /// Start reading the input (see [`Bus::new_deferred`]). Idempotent; on a
+    /// non-deferred bus it just starts reading early.
+    pub async fn start(&self) -> anyhow::Result<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.tx.send(BusCommand::Start { result: tx }).await?;
         rx.await?
     }
 
@@ -1405,6 +1623,12 @@ struct BusState {
     /// Populated when an encoder task starts; the muxer uses these (not the
     /// input params) for transcoded streams so the header matches the packets.
     encoder_output_streams: HashMap<EncoderKey, AvStream>,
+    /// Input reading waits for an explicit `Start` (see `Bus::new_deferred`).
+    deferred: bool,
+    /// `Start` has been received.
+    started: bool,
+    /// The input is a live source (see `Bus::add_input_with_live`).
+    live: bool,
 }
 
 impl BusState {
@@ -1419,6 +1643,9 @@ impl BusState {
             encoder_tasks: HashMap::new(),
             encoder_output_streams: HashMap::new(),
             input_options: None,
+            deferred: false,
+            started: false,
+            live: false,
         }
     }
 }
@@ -1429,9 +1656,15 @@ pub enum BusCommand {
     AddInput {
         input: InputConfig,
         options: Option<HashMap<String, String>>,
+        /// `None`: infer from the input type.
+        live: Option<bool>,
         result: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
     },
     RemoveInput {
+        result: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
+    },
+    /// Start reading the input (deferred buses wait for this).
+    Start {
         result: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
     },
     AddOutput {

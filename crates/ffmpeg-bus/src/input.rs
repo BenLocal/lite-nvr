@@ -105,6 +105,11 @@ impl AvInputTask {
         self.cancel.cancel();
     }
 
+    /// Whether the reader waits for its slowest subscriber (see `set_lossless`).
+    pub(crate) fn is_lossless(&self) -> bool {
+        self.lossless.load(Ordering::Relaxed)
+    }
+
     /// Still reading (or not yet started). The reader cancels itself at EOF.
     pub(crate) fn is_running(&self) -> bool {
         !self.cancel.is_cancelled()

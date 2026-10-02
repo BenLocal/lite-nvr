@@ -32,7 +32,9 @@ fn rtsp_url() -> anyhow::Result<String> {
 
 /// A bus whose input is an RTSP server listening on `url`. Its first output
 /// blocks until a publisher connects, so start it with [`spawn_first_output`].
-async fn listening_bus(url: &str) -> anyhow::Result<Arc<Bus>> {
+/// `live: false` for publishers that push a file in a burst and tests that
+/// check nothing is lost; `true` for real-time paced sources.
+async fn listening_bus(url: &str, live: bool) -> anyhow::Result<Arc<Bus>> {
     let bus = Arc::new(Bus::new("rtsp-rx"));
     let options = [
         ("rtsp_flags", "listen"),
@@ -42,11 +44,12 @@ async fn listening_bus(url: &str) -> anyhow::Result<Arc<Bus>> {
     .into_iter()
     .map(|(k, v)| (k.to_string(), v.to_string()))
     .collect();
-    bus.add_input(
+    bus.add_input_with_live(
         InputConfig::Net {
             url: url.to_string(),
         },
         Some(options),
+        live,
     )
     .await?;
     Ok(bus)
@@ -243,7 +246,7 @@ async fn test_rtsp_live_transcode_to_file() -> anyhow::Result<()> {
     let path = test_media("rtsp_transcode.mp4");
     std::fs::remove_file(&path).ok();
 
-    let rx = listening_bus(&url).await?;
+    let rx = listening_bus(&url, false).await?;
     let first = spawn_first_output(&rx, file_output("file", &path).with_encode(h264(160, 120)));
     let _tx = publish_file(&url).await?;
     let _ = join_output(first).await?;
@@ -270,7 +273,7 @@ async fn test_rtsp_av_copy_to_mp4() -> anyhow::Result<()> {
     let path = test_media("rtsp_av_copy.mp4");
     std::fs::remove_file(&path).ok();
 
-    let rx = listening_bus(&url).await?;
+    let rx = listening_bus(&url, false).await?;
     let first = spawn_first_output(&rx, file_output("file", &path).with_audio());
     let _tx = publish_file(&url).await?;
     let _ = join_output(first).await?;
@@ -311,7 +314,7 @@ async fn test_rtsp_audio_transcode() -> anyhow::Result<()> {
         audio_bitrate: Some(96_000),
         ..Default::default()
     };
-    let rx = listening_bus(&url).await?;
+    let rx = listening_bus(&url, false).await?;
     let first = spawn_first_output(
         &rx,
         file_output("file", &path)
@@ -341,7 +344,7 @@ async fn test_rtsp_demuxed_passthrough() -> anyhow::Result<()> {
         return Ok(());
     }
     let url = rtsp_url()?;
-    let rx = listening_bus(&url).await?;
+    let rx = listening_bus(&url, false).await?;
     let first = spawn_first_output(
         &rx,
         OutputConfig::new(
@@ -368,7 +371,7 @@ async fn test_rtsp_demuxed_passthrough() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_rtsp_paced_live_multi_output() -> anyhow::Result<()> {
     let url = rtsp_url()?;
-    let rx = listening_bus(&url).await?;
+    let rx = listening_bus(&url, true).await?;
     let first = spawn_first_output(
         &rx,
         OutputConfig::new(
@@ -452,13 +455,13 @@ async fn test_rtsp_relay_transcode() -> anyhow::Result<()> {
     std::fs::remove_file(&path).ok();
 
     // Final hop: records whatever the relay publishes.
-    let sink = listening_bus(&egress).await?;
+    let sink = listening_bus(&egress, false).await?;
     let recording = spawn_first_output(&sink, file_output("file", &path));
     // Give the sink time to start listening before the relay dials it.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Relay: listens on `ingest`, re-encodes, publishes to `egress`.
-    let relay = listening_bus(&ingest).await?;
+    let relay = listening_bus(&ingest, false).await?;
     let relay_out = spawn_first_output(
         &relay,
         OutputConfig::new(
@@ -493,7 +496,7 @@ async fn test_rtsp_publisher_drop_ends_stream() -> anyhow::Result<()> {
     let path = test_media("rtsp_publisher_drop.mp4");
     std::fs::remove_file(&path).ok();
 
-    let rx = listening_bus(&url).await?;
+    let rx = listening_bus(&url, true).await?;
     let first = spawn_first_output(&rx, file_output("file", &path).with_encode(h264(160, 120)));
     let tx = publish_live(&url, 60).await?;
     let _ = join_output(first).await?;
@@ -517,7 +520,7 @@ async fn test_rtsp_publisher_drop_ends_stream() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_rtsp_remove_input_while_live() -> anyhow::Result<()> {
     let url = rtsp_url()?;
-    let rx = listening_bus(&url).await?;
+    let rx = listening_bus(&url, true).await?;
     let first = spawn_first_output(
         &rx,
         OutputConfig::new(
@@ -542,5 +545,63 @@ async fn test_rtsp_remove_input_while_live() -> anyhow::Result<()> {
         .await
         .map_err(|_| anyhow::anyhow!("demuxed output hung after remove_input"))??;
     assert!(frames > 0 && !packets.is_empty());
+    Ok(())
+}
+
+/// Smoke test of the live mux path: a File transcode far slower than real
+/// time next to a demuxed passthrough on a live source. The passthrough keeps
+/// real time and the slow recording is still finalized on teardown. Note: in
+/// 3s the old lossless coupling would not show yet (it needs the 4096-packet
+/// input buffer to fill, minutes of live video); the policy wiring itself is
+/// checked by `bus_test::test_live_input_file_output_is_lossy`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_rtsp_live_slow_output_does_not_stall_others() -> anyhow::Result<()> {
+    let url = rtsp_url()?;
+    let path = test_media("rtsp_live_slow.mp4");
+    std::fs::remove_file(&path).ok();
+
+    let rx = listening_bus(&url, true).await?;
+    let first = spawn_first_output(
+        &rx,
+        OutputConfig::new(
+            "demuxed".to_string(),
+            OutputAvType::Video,
+            OutputDest::Demuxed,
+        ),
+    );
+    let started = Instant::now();
+    let _tx = publish_live(&url, 3).await?;
+    let (_, demuxed) = join_output(first).await?;
+    let demuxed = spawn_drain(demuxed);
+
+    // Upscale to 720p with x264's slowest preset: far below 25fps.
+    let slow = EncodeConfig {
+        width: Some(1280),
+        height: Some(720),
+        preset: Some("placebo".to_string()),
+        ..Default::default()
+    };
+    let _ = rx
+        .add_output(file_output("slow", &path).with_encode(slow))
+        .await?;
+
+    let frames = finish(demuxed, "demuxed passthrough").await?;
+    let elapsed = started.elapsed();
+    assert!(frames.len() >= 70, "passthrough frames: {}", frames.len());
+    assert!(
+        elapsed < Duration::from_secs(8),
+        "passthrough held back by the slow output: {elapsed:?} for 3s of video"
+    );
+
+    // Tear down: the slow encoder is cancelled and the recording finalized.
+    drop(rx);
+    wait_for_file(&path).await?;
+    let v = video_summary(&path)?;
+    assert_eq!((v.width, v.height), (1280, 720));
+    assert!(
+        v.frames > 0 && v.keys >= 1,
+        "recording: {} frames",
+        v.frames
+    );
     Ok(())
 }

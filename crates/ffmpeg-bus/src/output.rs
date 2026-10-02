@@ -26,6 +26,10 @@ pub struct AvOutput {
     have_written_trailer: bool,
     /// output stream index -> last DTS written (enforce monotonically increasing DTS)
     last_dts: HashMap<usize, i64>,
+    /// Muxer private options applied at `write_header` (RTSP: the muxer opens
+    /// the connection there, so `rtsp_transport` / `timeout` only take effect
+    /// if passed to it). Kept as strings: `Dictionary` is not `Send`.
+    header_options: Vec<(String, String)>,
 }
 
 /// Allocate RTSP output context without opening AVIO. The RTSP muxer will open
@@ -57,10 +61,20 @@ impl AvOutput {
         format: Option<&str>,
         options: Option<Dictionary>,
     ) -> anyhow::Result<Self> {
+        let mut header_options = Vec::new();
         let output = match (format, options) {
-            // RTSP: do not call avio_open; muxer opens URL in write_header().
-            (Some("rtsp"), _) => output_rtsp_alloc_only(url)
-                .map_err(|e| anyhow::anyhow!("output_rtsp_alloc_only(url={:?}): {}", url, e))?,
+            // RTSP: do not call avio_open; muxer opens URL in write_header(),
+            // which is where its options must go.
+            (Some("rtsp"), opts) => {
+                if let Some(opts) = opts {
+                    header_options = opts
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect();
+                }
+                output_rtsp_alloc_only(url)
+                    .map_err(|e| anyhow::anyhow!("output_rtsp_alloc_only(url={:?}): {}", url, e))?
+            }
             (Some(fmt), Some(opts)) => ffmpeg_next::format::output_as_with(url, fmt, opts)
                 .map_err(|e| {
                     anyhow::anyhow!("output_as_with(url={:?}, format={:?}): {:?}", url, fmt, e)
@@ -79,6 +93,7 @@ impl AvOutput {
             have_written_header: false,
             have_written_trailer: false,
             last_dts: HashMap::new(),
+            header_options,
         })
     }
 
@@ -103,10 +118,23 @@ impl AvOutput {
     /// calling it up front surfaces connect errors to the caller instead of
     /// failing silently on the first packet. Idempotent.
     pub fn write_header(&mut self) -> anyhow::Result<()> {
-        if !self.have_written_header {
-            self.inner.write_header()?;
-            self.have_written_header = true;
+        if self.have_written_header {
+            return Ok(());
         }
+        if self.header_options.is_empty() {
+            self.inner.write_header()?;
+        } else {
+            let opts = Dictionary::from_iter(
+                self.header_options
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str())),
+            );
+            let unused = self.inner.write_header_with(opts)?;
+            for (k, v) in unused.iter() {
+                log::warn!("muxer ignored option {}={}", k, v);
+            }
+        }
+        self.have_written_header = true;
         Ok(())
     }
 

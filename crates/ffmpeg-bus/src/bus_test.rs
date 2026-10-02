@@ -989,12 +989,15 @@ async fn raw_yuv_bus(path: &str) -> anyhow::Result<Bus> {
     .into_iter()
     .map(|(k, v)| (k.to_string(), v.to_string()))
     .collect();
-    bus.add_input(
+    // A raw file read through the rawvideo demuxer: not live, even though it
+    // is opened as a "device" input.
+    bus.add_input_with_live(
         InputConfig::Device {
             display: path.to_string(),
             format: "rawvideo".to_string(),
         },
         Some(options),
+        false,
     )
     .await?;
     Ok(bus)
@@ -1310,6 +1313,7 @@ async fn test_failed_output_rolls_back_started_tasks() -> anyhow::Result<()> {
             format: "rawvideo".to_string(),
         },
         Some(options),
+        None,
     )
     .await?;
 
@@ -1367,5 +1371,369 @@ async fn test_new_output_after_shared_encoder_stopped() -> anyhow::Result<()> {
     let packets = drain_frames(second).await?;
     assert!(!packets.is_empty(), "restarted encoder produced nothing");
     assert!(packets[0].is_key, "a fresh encoder starts on a keyframe");
+    Ok(())
+}
+
+#[test]
+fn test_rtsp_input_options_default_timeout() {
+    use super::{DEFAULT_RTSP_TIMEOUT_US, rtsp_input_options};
+    // Non-RTSP inputs are left alone.
+    assert!(rtsp_input_options("/tmp/a.mp4", None).is_none());
+    // RTSP client inputs get the default timeout...
+    let opts = rtsp_input_options("RTSP://cam/1", None).unwrap_or_default();
+    assert_eq!(
+        opts.get("timeout").map(String::as_str),
+        Some(DEFAULT_RTSP_TIMEOUT_US)
+    );
+    // ...unless the caller set one,
+    let custom = [("timeout".to_string(), "5".to_string())]
+        .into_iter()
+        .collect();
+    let opts = rtsp_input_options("rtsp://cam/1", Some(custom)).unwrap_or_default();
+    assert_eq!(opts.get("timeout").map(String::as_str), Some("5"));
+    // ...and listen mode (waiting for a publisher) gets none.
+    let listen = [("rtsp_flags".to_string(), "listen".to_string())]
+        .into_iter()
+        .collect();
+    let opts = rtsp_input_options("rtsp://0.0.0.0:8554/l", Some(listen)).unwrap_or_default();
+    assert!(!opts.contains_key("timeout"));
+}
+
+/// A TCP server that accepts connections and never answers: an RTSP peer
+/// that hangs. Returns its port.
+fn silent_tcp_server() -> anyhow::Result<u16> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for conn in listener.incoming().take(8).flatten() {
+            held.push(conn);
+        }
+    });
+    Ok(port)
+}
+
+/// While one bus is stuck opening an unresponsive RTSP input, another bus on
+/// the same single-worker runtime keeps working (the open runs on a blocking
+/// thread), and the stuck open fails once its timeout expires.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_hanging_rtsp_input_does_not_block_runtime() -> anyhow::Result<()> {
+    let port = silent_tcp_server()?;
+    let stuck = Bus::new("stuck-input");
+    stuck
+        .add_input(
+            InputConfig::Net {
+                url: format!("rtsp://127.0.0.1:{port}/cam"),
+            },
+            Some(
+                [("timeout".to_string(), "3000000".to_string())]
+                    .into_iter()
+                    .collect(),
+            ),
+        )
+        .await?;
+    let started = std::time::Instant::now();
+    let stuck_output = tokio::spawn(async move {
+        stuck
+            .add_output(OutputConfig::new(
+                "demuxed".to_string(),
+                OutputAvType::Video,
+                OutputDest::Demuxed,
+            ))
+            .await
+            .map(|_| ())
+    });
+
+    let yuv = write_raw_yuv("input_runtime.yuv", 64, 48, 20);
+    let healthy = raw_yuv_bus(&yuv).await?;
+    let (_, enc) = healthy
+        .add_output(
+            OutputConfig::new("enc".to_string(), OutputAvType::Video, OutputDest::Encoded)
+                .with_encode(EncodeConfig::default()),
+        )
+        .await?;
+    assert!(!drain_frames(enc).await?.is_empty());
+    assert!(
+        !stuck_output.is_finished(),
+        "healthy bus should finish while the other is still connecting"
+    );
+
+    let res = tokio::time::timeout(std::time::Duration::from_secs(10), stuck_output).await??;
+    assert!(res.is_err(), "unresponsive RTSP input must fail");
+    assert!(
+        started.elapsed() >= std::time::Duration::from_secs(2),
+        "timeout honoured"
+    );
+    Ok(())
+}
+
+/// Publishing to an RTSP server that never answers neither blocks the
+/// runtime nor hangs forever: the default timeout fails the output.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_hanging_rtsp_output_does_not_block_runtime() -> anyhow::Result<()> {
+    let port = silent_tcp_server()?;
+    let yuv = write_raw_yuv("input_hang_out.yuv", 64, 48, 20);
+    let publisher = raw_yuv_bus(&yuv).await?;
+    let stuck_output = tokio::spawn(async move {
+        publisher
+            .add_output(
+                OutputConfig::new(
+                    "push".to_string(),
+                    OutputAvType::Video,
+                    OutputDest::Net {
+                        url: format!("rtsp://127.0.0.1:{port}/live"),
+                        format: Some("rtsp".to_string()),
+                    },
+                )
+                .with_encode(EncodeConfig::default()),
+            )
+            .await
+            .map(|_| ())
+    });
+
+    let healthy = raw_yuv_bus(&yuv).await?;
+    let (_, enc) = healthy
+        .add_output(
+            OutputConfig::new("enc".to_string(), OutputAvType::Video, OutputDest::Encoded)
+                .with_encode(EncodeConfig::default()),
+        )
+        .await?;
+    assert!(!drain_frames(enc).await?.is_empty());
+    assert!(
+        !stuck_output.is_finished(),
+        "push should still be connecting"
+    );
+
+    let res = tokio::time::timeout(std::time::Duration::from_secs(20), stuck_output).await??;
+    assert!(
+        res.is_err(),
+        "unresponsive RTSP server must fail the output"
+    );
+    Ok(())
+}
+
+fn count_video_packets(path: &str) -> anyhow::Result<usize> {
+    let mut input = ffmpeg_next::format::input(path)?;
+    let video = input
+        .streams()
+        .best(ffmpeg_next::media::Type::Video)
+        .ok_or_else(|| anyhow::anyhow!("{path}: no video"))?
+        .index();
+    Ok(input.packets().filter(|(s, _)| s.index() == video).count())
+}
+
+/// A deferred bus registers every output before reading: on a short file
+/// (read in a burst) each output, whatever its kind, sees the whole stream.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_deferred_bus_outputs_see_whole_file() -> anyhow::Result<()> {
+    let input_path = test_mp4_path();
+    if !input_path.exists() {
+        return Ok(());
+    }
+    let copy = test_media("deferred_copy.mp4");
+    let transcode = test_media("deferred_transcode.mp4");
+    let mux_out = test_media("deferred_mux.h264");
+    for p in [&copy, &transcode, &mux_out] {
+        std::fs::remove_file(p).ok();
+    }
+
+    let bus = Bus::new_deferred("deferred");
+    bus.add_input(
+        InputConfig::File {
+            path: input_path.to_string_lossy().into_owned(),
+        },
+        None,
+    )
+    .await?;
+    let (_, demuxed) = bus
+        .add_output(OutputConfig::new(
+            "demuxed".to_string(),
+            OutputAvType::Video,
+            OutputDest::Demuxed,
+        ))
+        .await?;
+    let _ = bus
+        .add_output(OutputConfig::new(
+            "copy".to_string(),
+            OutputAvType::Video,
+            OutputDest::File { path: copy.clone() },
+        ))
+        .await?;
+    let _ = bus
+        .add_output(
+            OutputConfig::new(
+                "transcode".to_string(),
+                OutputAvType::Video,
+                OutputDest::File {
+                    path: transcode.clone(),
+                },
+            )
+            .with_encode(EncodeConfig {
+                width: Some(160),
+                height: Some(120),
+                ..Default::default()
+            }),
+        )
+        .await?;
+    let (_, mux) = bus
+        .add_output(OutputConfig::new(
+            "mux".to_string(),
+            OutputAvType::Video,
+            OutputDest::Mux {
+                format: "h264".to_string(),
+            },
+        ))
+        .await?;
+    let demuxed = tokio::spawn(drain_frames(demuxed));
+    let mux = tokio::spawn(drain_frames(mux));
+
+    bus.start().await?;
+
+    assert_eq!(demuxed.await??.len(), 50, "demuxed packets");
+    let bytes: Vec<u8> = mux.await??.iter().flat_map(|c| c.data.to_vec()).collect();
+    std::fs::write(&mux_out, bytes)?;
+    assert_eq!(count_video_packets(&mux_out)?, 50, "mux frames");
+    for path in [&copy, &transcode] {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while probe(path).is_err() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        assert_eq!(count_video_packets(path)?, 50, "{path}");
+    }
+    Ok(())
+}
+
+/// Nothing is read before `start()`; reading begins once it is called.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_deferred_bus_waits_for_start() -> anyhow::Result<()> {
+    let input_path = test_mp4_path();
+    if !input_path.exists() {
+        return Ok(());
+    }
+    let bus = Bus::new_deferred("wait");
+    bus.add_input(
+        InputConfig::File {
+            path: input_path.to_string_lossy().into_owned(),
+        },
+        None,
+    )
+    .await?;
+    let (_, mut demuxed) = bus
+        .add_output(OutputConfig::new(
+            "demuxed".to_string(),
+            OutputAvType::Video,
+            OutputDest::Demuxed,
+        ))
+        .await?;
+    let early = tokio::time::timeout(std::time::Duration::from_millis(500), demuxed.next()).await;
+    assert!(early.is_err(), "no packet may arrive before start()");
+
+    bus.start().await?;
+    bus.start().await?; // idempotent
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), demuxed.next()).await?;
+    assert!(matches!(first, Some(Some(_))), "packets flow after start()");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_start_without_input_fails() -> anyhow::Result<()> {
+    let bus = Bus::new_deferred("empty");
+    assert!(bus.start().await.is_err());
+    Ok(())
+}
+
+#[test]
+fn test_keyframe_gate_resyncs_on_keyframe() {
+    let mut gate = super::KeyframeGate::default();
+    assert!(gate.admit(0, false), "no gap: everything passes");
+    gate.mark_gap(0);
+    assert!(
+        !gate.admit(0, false),
+        "after a gap, non-keyframes are dropped"
+    );
+    assert!(gate.admit(1, false), "other streams are unaffected");
+    assert!(gate.admit(0, true), "a keyframe reopens the stream");
+    assert!(gate.admit(0, false));
+    assert_eq!(gate.dropped, 1);
+    assert!(gate.note_drop(1), "first drop is logged");
+    assert!(
+        !gate.admit(1, false),
+        "a dropped packet also forces a resync"
+    );
+}
+
+#[test]
+fn test_infer_live_from_input_type() {
+    use super::infer_live;
+    assert!(!infer_live(&InputConfig::File {
+        path: "a.mp4".into()
+    }));
+    assert!(infer_live(&InputConfig::Net {
+        url: "rtsp://cam/1".into()
+    }));
+    assert!(infer_live(&InputConfig::Device {
+        display: ":0".into(),
+        format: "x11grab".into(),
+    }));
+}
+
+/// Drive a File transcode output on the bus state directly and report
+/// (input reader lossless?, encoder lossless?) for the given live flag.
+async fn file_transcode_loss_policy(live: bool) -> anyhow::Result<(bool, bool)> {
+    crate::init()?;
+    let yuv = write_raw_yuv(&format!("input_policy_{live}.yuv"), 64, 48, 5);
+    let mp4 = test_media(&format!("policy_{live}.mp4"));
+    let mut state = super::BusState::new();
+    let options = [
+        ("video_size", "64x48"),
+        ("pixel_format", "yuv420p"),
+        ("framerate", "10"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    Bus::add_input_internal(
+        &mut state,
+        InputConfig::Device {
+            display: yuv,
+            format: "rawvideo".to_string(),
+        },
+        Some(options),
+        Some(live),
+    )
+    .await?;
+    let output = OutputConfig::new(
+        "file".to_string(),
+        OutputAvType::Video,
+        OutputDest::File { path: mp4 },
+    )
+    .with_encode(EncodeConfig::default());
+    let _ = Bus::add_output_internal(&mut state, output).await?;
+    let input_lossless = state
+        .input_task
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("no input task"))?
+        .is_lossless();
+    let encoder_lossless = state
+        .encoder_tasks
+        .keys()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("no encoder"))?
+        .lossless;
+    Ok((input_lossless, encoder_lossless))
+}
+
+/// Live source: a File/Net output never holds the input back (reader not
+/// lossless, lossy encoder); it drops and resyncs on keyframes instead.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_live_input_file_output_is_lossy() -> anyhow::Result<()> {
+    assert_eq!(file_transcode_loss_policy(true).await?, (false, false));
+    Ok(())
+}
+
+/// Non-live source: File/Net outputs stay lossless end to end.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_non_live_input_file_output_is_lossless() -> anyhow::Result<()> {
+    assert_eq!(file_transcode_loss_policy(false).await?, (true, true));
     Ok(())
 }

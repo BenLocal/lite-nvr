@@ -93,7 +93,9 @@ impl Pipe {
 
         log::info!("Pipe: starting with input {}", log_input);
 
-        let bus = Arc::new(FbBus::new("pipe"));
+        // Deferred: reading starts only after every output is registered, so a
+        // fast source (e.g. a short file) cannot run ahead of later outputs.
+        let bus = Arc::new(FbBus::new_deferred("pipe"));
         // Publish the handle so consumers (ASR) can subscribe while we run.
         *self.bus.lock().unwrap() = Some(Arc::clone(&bus));
         let cancel = self.cancel.clone();
@@ -168,6 +170,12 @@ impl Pipe {
 
         if outputs.is_empty() && !self.config.outputs.is_empty() {
             log::warn!("Pipe: no output task running");
+        }
+
+        // Every output is registered and its forwarder is consuming: start
+        // reading the input.
+        if let Err(e) = bus.start().await {
+            log::error!("Pipe: start input failed: {:#}", e);
         }
 
         // Wait for cancellation — or for an output task to end. Forwarders only
