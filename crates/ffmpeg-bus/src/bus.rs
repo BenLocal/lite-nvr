@@ -24,6 +24,7 @@ use crate::{
 };
 
 /// Destination for the multi-stream muxer.
+#[derive(Clone)]
 enum MuxTarget {
     File(String),
     Net { url: String, format: Option<String> },
@@ -178,6 +179,104 @@ fn net_output_options(format: Option<&str>) -> Dictionary<'static> {
         opts.set("rw_timeout", DEFAULT_RTSP_TIMEOUT_US);
     }
     opts
+}
+
+/// What a network mux writer needs to reopen its output after a disconnect.
+struct Reconnect {
+    target: MuxTarget,
+    streams: Vec<AvStream>,
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// First and maximum delay between reconnection attempts of a network output.
+const RECONNECT_MIN: std::time::Duration = std::time::Duration::from_secs(1);
+const RECONNECT_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Write a File/Net mux's packets on its blocking thread until the queue
+/// closes. A network output that loses its connection mid-stream is reopened
+/// with backoff (see [`reconnect_mux`]) and resumes on each stream's next
+/// keyframe; it only gives up when the bus stops or the sources end.
+fn run_mux_writer(
+    mut output: AvOutput,
+    mut rx: tokio::sync::mpsc::Receiver<(usize, RawPacket)>,
+    reconnect: Option<Reconnect>,
+    label: &str,
+) {
+    // Streams waiting for a keyframe after a reconnect.
+    let mut resync: HashSet<usize> = HashSet::new();
+    while let Some((idx, packet)) = rx.blocking_recv() {
+        if resync.contains(&idx) {
+            if !packet.is_key() {
+                continue;
+            }
+            resync.remove(&idx);
+        }
+        let Err(e) = output.write_packet(idx, packet) else {
+            continue;
+        };
+        let interrupted = matches!(
+            e.downcast_ref::<ffmpeg_next::Error>(),
+            Some(ffmpeg_next::Error::Exit)
+        );
+        match &reconnect {
+            Some(rc) if is_connection_error(&e) && !interrupted => {
+                log::warn!("mux {label}: connection lost ({e:#}); reconnecting");
+                // Drop the dead connection without a trailer: writing one would
+                // only fail (or wait for the I/O timeout) on the broken socket.
+                drop(output);
+                match reconnect_mux(rc, &rx, label) {
+                    Some(fresh) => {
+                        output = fresh;
+                        resync = rc.streams.iter().map(|s| s.index()).collect();
+                    }
+                    None => return,
+                }
+            }
+            Some(_) if is_connection_error(&e) => {
+                log::info!("mux {label}: stopped ({e:#})");
+                return;
+            }
+            _ => log::error!("mux {label}: write_packet error: {e:#}"),
+        }
+    }
+    if let Err(e) = output.finish() {
+        log::error!(
+            "mux finish error: {:#?}\nbacktrace:\n{}",
+            e,
+            Backtrace::capture()
+        );
+    }
+}
+
+/// Reopen a network output, backing off from [`RECONNECT_MIN`] to
+/// [`RECONNECT_MAX`]. `None` once there is nothing left to push for: the bus
+/// is stopping or the sources have ended.
+fn reconnect_mux(
+    rc: &Reconnect,
+    rx: &tokio::sync::mpsc::Receiver<(usize, RawPacket)>,
+    label: &str,
+) -> Option<AvOutput> {
+    use std::sync::atomic::Ordering;
+    let mut delay = RECONNECT_MIN;
+    loop {
+        let deadline = std::time::Instant::now() + delay;
+        while std::time::Instant::now() < deadline {
+            if rc.shutdown.load(Ordering::Relaxed) || rx.is_closed() {
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        match Bus::open_mux(rc.target.clone(), &rc.streams, rc.shutdown.clone()) {
+            Ok(output) => {
+                log::info!("mux {label}: reconnected");
+                return Some(output);
+            }
+            Err(e) => {
+                log::warn!("mux {label}: reconnect failed ({e:#}); retrying in {delay:?}");
+                delay = (delay * 2).min(RECONNECT_MAX);
+            }
+        }
+    }
 }
 
 /// A write failure that means the network output is gone for good (timeout,
@@ -443,6 +542,18 @@ impl Bus {
         // decoder/encoder tasks inside the muxer builder; every other
         // dest starts the primary stream's tasks here.
         let mut encoder_key = None;
+        // Stream outputs (Mux / Encoded / Demuxed) follow the source: a
+        // non-live source loses nothing (reader and encoder wait for the
+        // consumer), a live one never waits. Raw outputs stay lossy: their
+        // consumers (detection, preview) want the latest frame, not every one.
+        let lossless_stream = !state.live
+            && matches!(
+                &output.dest,
+                OutputDest::Mux { .. } | OutputDest::Encoded | OutputDest::Demuxed
+            );
+        if lossless_stream && let Some(input_task) = state.input_task.as_ref() {
+            input_task.set_lossless();
+        }
         if !is_file_net {
             if need_decoder {
                 Self::start_decoder_task(state, input_stream_index).await?;
@@ -454,10 +565,14 @@ impl Bus {
                     (None, OutputDest::Mux { format }) => mux_format_encode(format),
                     (encode, _) => encode.clone(),
                 };
-                // Live/streaming outputs keep the lossy (low-latency) path.
                 encoder_key = Some(
-                    Self::start_encoder_task(state, input_stream_index, encode.as_ref(), false)
-                        .await?,
+                    Self::start_encoder_task(
+                        state,
+                        input_stream_index,
+                        encode.as_ref(),
+                        lossless_stream,
+                    )
+                    .await?,
                 );
             }
         }
@@ -855,8 +970,13 @@ impl Bus {
         // Open and write the header now so a dead target (e.g. nothing
         // listening on an RTSP URL) fails this add_output call. Both can block
         // (file create, network connect): keep them off the async workers.
-        let is_net = matches!(target, MuxTarget::Net { .. });
         let shutdown = state.shutdown.clone();
+        // A network output that drops mid-stream is reopened in place.
+        let reconnect = matches!(target, MuxTarget::Net { .. }).then(|| Reconnect {
+            target: target.clone(),
+            streams: out_streams.clone(),
+            shutdown: shutdown.clone(),
+        });
         let output =
             tokio::task::spawn_blocking(move || Self::open_mux(target, &out_streams, shutdown))
                 .await
@@ -919,26 +1039,11 @@ impl Bus {
 
             // Disk / network writes block: a dedicated thread does them, fed
             // through a bounded queue so a slow sink backpressures the merge.
-            let (write_tx, mut write_rx) =
+            let (write_tx, write_rx) =
                 tokio::sync::mpsc::channel::<(usize, RawPacket)>(MUX_WRITE_QUEUE);
+            let writer_label = label.clone();
             let writer = tokio::task::spawn_blocking(move || {
-                let mut output = output;
-                while let Some((idx, packet)) = write_rx.blocking_recv() {
-                    if let Err(e) = output.write_packet(idx, packet) {
-                        if is_net && is_connection_error(&e) {
-                            log::error!("mux network output lost: {e:#}; stopping it");
-                            break;
-                        }
-                        log::error!("mux write_packet error: {:#?}", e);
-                    }
-                }
-                if let Err(e) = output.finish() {
-                    log::error!(
-                        "mux finish error: {:#?}\nbacktrace:\n{}",
-                        e,
-                        Backtrace::capture()
-                    );
-                }
+                run_mux_writer(output, write_rx, reconnect, &writer_label)
             });
 
             let total_sources = sources.len();

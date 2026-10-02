@@ -1003,6 +1003,22 @@ async fn raw_yuv_bus(path: &str) -> anyhow::Result<Bus> {
     Ok(bus)
 }
 
+/// Like [`drain_frames`], but pausing after every item: a slow consumer.
+async fn drain_frames_slowly(
+    mut stream: crate::bus::VideoRawFrameStream,
+) -> anyhow::Result<Vec<crate::frame::VideoFrame>> {
+    tokio::time::timeout(std::time::Duration::from_secs(60), async move {
+        let mut out = Vec::new();
+        while let Some(Some(frame)) = stream.next().await {
+            out.push(frame);
+            tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+        }
+        out
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("stream never ended"))
+}
+
 /// Collect a bus output stream until its EOF item (`None`).
 async fn drain_frames(
     mut stream: crate::bus::VideoRawFrameStream,
@@ -1766,7 +1782,8 @@ async fn test_mux_audio_from_encoder_opus() -> anyhow::Result<()> {
         ))
         .await?;
     assert_eq!(av.parameters().id(), ffmpeg_next::codec::Id::OPUS);
-    let bytes: Vec<u8> = drain_frames(stream)
+    // A slow reader: on a file (non-live) source nothing may be dropped.
+    let bytes: Vec<u8> = drain_frames_slowly(stream)
         .await?
         .iter()
         .flat_map(|c| c.data.to_vec())
@@ -1980,4 +1997,105 @@ fn test_is_connection_error() {
     assert!(!is_connection_error(&anyhow::anyhow!(
         "stream not found: 3"
     )));
+}
+
+/// A push target that accepts a first connection, reads a little and then
+/// drops it (a server restart / network blip), then accepts a second one and
+/// collects everything sent on it. Returns the port and the second
+/// connection's bytes (sent once it closes).
+fn flaky_push_server() -> anyhow::Result<(u16, std::sync::mpsc::Receiver<Vec<u8>>)> {
+    use std::io::Read;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        if let Ok((mut first, _)) = listener.accept() {
+            let mut buf = vec![0u8; 64 * 1024];
+            let mut got = 0;
+            while got < 32 * 1024 {
+                match first.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => got += n,
+                }
+            }
+            drop(first); // connection lost mid-stream
+        }
+        if let Ok((mut second, _)) = listener.accept() {
+            let mut all = Vec::new();
+            let _ = second.read_to_end(&mut all);
+            let _ = tx.send(all);
+        }
+    });
+    Ok((port, rx))
+}
+
+/// A network push that loses its connection mid-stream reconnects in place
+/// and resumes on a keyframe; the second connection carries a decodable
+/// stream.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_network_output_reconnects_after_disconnect() -> anyhow::Result<()> {
+    crate::init()?;
+    let (port, second) = flaky_push_server()?;
+    let bus = Bus::new("reconnect");
+    bus.add_input(
+        InputConfig::Device {
+            display: "testsrc=duration=6:size=320x240:rate=25,realtime".to_string(),
+            format: "lavfi".to_string(),
+        },
+        None,
+    )
+    .await?;
+    let _ = bus
+        .add_output(
+            OutputConfig::new(
+                "push".to_string(),
+                OutputAvType::Video,
+                OutputDest::Net {
+                    url: format!("tcp://127.0.0.1:{port}"),
+                    format: Some("mpegts".to_string()),
+                },
+            )
+            .with_encode(EncodeConfig::default()),
+        )
+        .await?;
+
+    let bytes = tokio::task::spawn_blocking(move || {
+        second.recv_timeout(std::time::Duration::from_secs(30))
+    })
+    .await?
+    .map_err(|_| anyhow::anyhow!("push never reconnected"))?;
+    assert!(!bytes.is_empty(), "nothing pushed after reconnecting");
+    let out = test_media("reconnected_push.ts");
+    std::fs::write(&out, &bytes)?;
+    let mut input = ffmpeg_next::format::input(&out)?;
+    let video = input
+        .streams()
+        .best(ffmpeg_next::media::Type::Video)
+        .ok_or_else(|| anyhow::anyhow!("no video after reconnect"))?
+        .index();
+    let keys: Vec<bool> = input
+        .packets()
+        .filter(|(s, _)| s.index() == video)
+        .map(|(_, p)| p.is_key())
+        .collect();
+    assert!(keys.len() > 10, "frames after reconnect: {}", keys.len());
+    assert!(keys[0], "the reconnected stream starts on a keyframe");
+    Ok(())
+}
+
+/// On a non-live source an Encoded output loses nothing, even with a consumer
+/// slower than the encoder: every input frame comes out as a packet.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_encoded_output_lossless_on_file_source() -> anyhow::Result<()> {
+    let yuv = write_raw_yuv("input_encoded_slow.yuv", 64, 48, 100);
+    let bus = raw_yuv_bus(&yuv).await?;
+    let (_, enc) = bus
+        .add_output(
+            OutputConfig::new("enc".to_string(), OutputAvType::Video, OutputDest::Encoded)
+                .with_encode(EncodeConfig::default()),
+        )
+        .await?;
+    let packets = drain_frames_slowly(enc).await?;
+    assert_eq!(packets.len(), 100, "every frame of the file is encoded");
+    Ok(())
 }
