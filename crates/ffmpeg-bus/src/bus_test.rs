@@ -1737,3 +1737,73 @@ async fn test_non_live_input_file_output_is_lossless() -> anyhow::Result<()> {
     assert_eq!(file_transcode_loss_policy(false).await?, (true, true));
     Ok(())
 }
+
+/// Mux from an encoder on a stream that is not index 0 (the audio track):
+/// packets carry the muxed stream's index, the header uses the encoder's
+/// real params, and with no encode config the format picks the encoder
+/// (opus → libopus). The result is a valid Ogg/Opus stream.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_mux_audio_from_encoder_opus() -> anyhow::Result<()> {
+    let input_path = test_mp4_path();
+    if !input_path.exists() {
+        return Ok(());
+    }
+    let bus = Bus::new("opus");
+    bus.add_input(
+        InputConfig::File {
+            path: input_path.to_string_lossy().into_owned(),
+        },
+        None,
+    )
+    .await?;
+    let (av, stream) = bus
+        .add_output(OutputConfig::new(
+            "opus".to_string(),
+            OutputAvType::Audio,
+            OutputDest::Mux {
+                format: "opus".to_string(),
+            },
+        ))
+        .await?;
+    assert_eq!(av.parameters().id(), ffmpeg_next::codec::Id::OPUS);
+    let bytes: Vec<u8> = drain_frames(stream)
+        .await?
+        .iter()
+        .flat_map(|c| c.data.to_vec())
+        .collect();
+    let out = test_media("mux_audio.opus");
+    std::fs::write(&out, &bytes)?;
+
+    let info = probe(&out)?;
+    let audio = info
+        .streams
+        .iter()
+        .find(|s| s.codec_type == "audio")
+        .ok_or_else(|| anyhow::anyhow!("no audio in muxed opus"))?;
+    assert_eq!(audio.codec_name, "opus");
+    let duration = info.format.duration_sec.unwrap_or(0.0);
+    assert!((4.0..=5.5).contains(&duration), "opus duration {duration}s");
+    Ok(())
+}
+
+/// A Mux format the encoder does not produce is rejected up front.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_mux_format_must_match_encoder() -> anyhow::Result<()> {
+    let yuv = write_raw_yuv("input_mux_mismatch.yuv", 64, 48, 5);
+    let bus = raw_yuv_bus(&yuv).await?;
+    let res = bus
+        .add_output(
+            OutputConfig::new(
+                "mismatch".to_string(),
+                OutputAvType::Video,
+                OutputDest::Mux {
+                    format: "hevc".to_string(),
+                },
+            )
+            .with_encode(EncodeConfig::default()), // h264
+        )
+        .await;
+    let err = res.err().map(|e| format!("{e:#}")).unwrap_or_default();
+    assert!(err.contains("needs"), "got: {err}");
+    Ok(())
+}

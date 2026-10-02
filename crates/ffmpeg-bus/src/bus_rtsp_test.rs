@@ -502,7 +502,8 @@ async fn test_rtsp_publisher_drop_ends_stream() -> anyhow::Result<()> {
     let _ = join_output(first).await?;
     let decoded = spawn_count_decoded(rx.subscribe_video().await?);
 
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    // 3s of live video: with the automatic 2s GOP that spans two keyframes.
+    tokio::time::sleep(Duration::from_secs(3)).await;
     drop(tx);
 
     let frames = finish(decoded, "decoded subscriber after publisher drop").await?;
@@ -510,7 +511,6 @@ async fn test_rtsp_publisher_drop_ends_stream() -> anyhow::Result<()> {
     wait_for_file(&path).await?;
     let v = video_summary(&path)?;
     assert!(v.frames > 10, "recorded frames: {}", v.frames);
-    // GOP 25 at 25fps: ~1.5s of live video carries at least two keyframes.
     assert!(v.keys >= 2, "recorded keyframes: {}", v.keys);
     Ok(())
 }

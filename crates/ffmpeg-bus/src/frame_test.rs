@@ -78,3 +78,26 @@ fn test_props_mut_shares_pixel_buffers() {
         "props_mut must reference the same pixel buffer, not copy it"
     );
 }
+
+/// A Raw output frame carries all planes, packed without row padding, so a
+/// consumer can rebuild the picture from width/height/format alone.
+#[test]
+fn test_video_frame_from_raw_packs_all_planes() -> anyhow::Result<()> {
+    use ffmpeg_next::format::Pixel;
+    // 50 is not a multiple of the 32/64-byte row alignment: rows are padded.
+    let mut src = ffmpeg_next::frame::Video::new(Pixel::YUV420P, 50, 30);
+    assert!(src.stride(0) > 50, "test needs a padded source");
+    for plane in 0..3 {
+        let fill = [0x10u8, 0x80, 0xf0][plane];
+        src.data_mut(plane).fill(fill);
+    }
+    let vf = VideoFrame::try_from(RawFrame::Video(RawVideoFrame::from(src)))?;
+
+    let (y, c) = (50 * 30, 25 * 15);
+    assert_eq!(vf.data.len(), y + 2 * c, "Y + U + V, no padding");
+    assert!(vf.data[..y].iter().all(|&b| b == 0x10), "Y plane");
+    assert!(vf.data[y..y + c].iter().all(|&b| b == 0x80), "U plane");
+    assert!(vf.data[y + c..].iter().all(|&b| b == 0xf0), "V plane");
+    assert_eq!((vf.width, vf.height), (50, 30));
+    Ok(())
+}

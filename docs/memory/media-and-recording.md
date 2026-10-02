@@ -20,3 +20,6 @@
 - 2026-10-02：直播源被慢的 File/Net 转码拖住的问题，在几秒的测试里根本复现不出来 → 输入广播能存 4096 个包、编码器队列能存 128 帧，25fps 下要积压大约 2.7 分钟才会卡住输入读取 → 这类策略不要用短的端到端测试来证明，而是直接检查 Bus 内部状态里的策略接线（见 bus_test `file_transcode_loss_policy`）；改完要做变异检查，确认测试在旧行为下会失败
 - 2026-10-02：H.265 摄像头和带 G.711 音频的摄像头接入 ZLM 后播放异常 → `media-pipe-zlm` 注册轨道和送帧时把编码写死成 H264 / AAC → 改为按 `av.parameters().id()` 映射；rszlm 的 `CodecId` 没有 derive 任何 trait，每次使用都要重新映射（证据：crates/media-pipe-zlm/src/lib.rs `zlm_codec_id`）
 - 2026-10-02：直播有损模式下，音频转码在丢帧后会和视频对不上 → 音频重采样器只在第一帧取一次源时间，之后按采样数累加，丢帧不会留下时间空档 → 输入时间戳往后跳超过 50ms 就补静音（不超过 2s；更大的跳变只把时间轴往后挪）（证据：crates/ffmpeg-bus/src/encoder.rs `AudioResampler::bridge_gap`）
+- 2026-10-02：音频 Mux 成 opus 直接报 `Invalid argument` → libopus 只接受 48k/24k/16k/12k/8k 采样率，编码器原来照搬输入的 44100 → `Encoder::new_audio` 按编码器支持的采样率列表选最接近的（`pick_sample_rate`），由重采样器负责转换（证据：crates/ffmpeg-bus/src/encoder.rs）
+- 2026-10-02：内存 Mux 输出（`AvOutputStream`）的写回调在通道满时会丢掉已经封装好的字节，码流随之损坏 → 回调改用 `blocking_send`，写循环（`run_mux_stream_writer`）因此必须跑在阻塞线程上；在异步上下文里直接写 `AvOutputStream` 会 panic
+- 2026-10-02：硬件编解码器运行期失败后会被记进进程级黑名单（`hw::mark_runtime_failure`），之后挑候选时跳过。副作用：同一个测试进程里，只有第一个解码测试会走 QSV 失败、降级的路径

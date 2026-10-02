@@ -77,6 +77,94 @@ impl KeyframeGate {
     }
 }
 
+/// Codec a raw Mux format carries, for formats an encoder can feed.
+fn mux_format_codec(format: &str) -> Option<ffmpeg_next::codec::Id> {
+    use ffmpeg_next::codec::Id;
+    Some(match format {
+        "h264" => Id::H264,
+        "hevc" | "h265" => Id::HEVC,
+        "aac" | "adts" => Id::AAC,
+        "opus" => Id::OPUS,
+        _ => return None,
+    })
+}
+
+/// Default encoder for a Mux format when the output has no encode config.
+fn mux_format_encode(format: &str) -> Option<EncodeConfig> {
+    let codec = match format {
+        "h264" => "h264",
+        "hevc" | "h265" => "hevc",
+        "aac" | "adts" => "aac",
+        // FFmpeg's native opus encoder is experimental; libopus is the norm.
+        "opus" => "libopus",
+        _ => return None,
+    };
+    Some(EncodeConfig {
+        codec: codec.to_string(),
+        ..Default::default()
+    })
+}
+
+/// Pump packets from `rx` into an in-memory muxer until EOF, the source
+/// closing, or the reader going away. Blocking (the muxer's write callback
+/// waits for the reader instead of dropping bytes): run on a blocking thread.
+/// `index` is the muxed stream's index; with `retag` every packet is
+/// re-indexed to it (encoder packets), otherwise packets of other streams
+/// are skipped (demuxed input). After a gap, resumes on a keyframe.
+fn run_mux_stream_writer(
+    mut writer: crate::output::AvOutputStreamWriter,
+    mut rx: RawPacketReceiver,
+    index: usize,
+    retag: bool,
+) {
+    let mut gate = KeyframeGate::default();
+    loop {
+        match rx.blocking_recv() {
+            Ok(RawPacketCmd::Data(mut packet)) => {
+                // Reader dropped: stop, releasing the source.
+                if writer.is_closed() {
+                    break;
+                }
+                if retag {
+                    packet.get_mut().set_stream(index);
+                } else if packet.index() != index {
+                    continue;
+                }
+                if !gate.admit(index, packet.is_key()) {
+                    continue;
+                }
+                if let Err(e) = writer.write_packet(packet) {
+                    log::error!("mux write_packet error: {e:#}");
+                }
+            }
+            Ok(RawPacketCmd::EOF) => break,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                log::warn!("mux source lagged, lost {n} packets; resuming at a keyframe");
+                gate.mark_gap(index);
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+        }
+    }
+    if let Err(e) = writer.finish() {
+        log::error!(
+            "mux finish error: {:#?}\nbacktrace:\n{}",
+            e,
+            Backtrace::capture()
+        );
+    }
+    log::info!("mux stream finished");
+}
+
+/// Run a codec open on a blocking thread so slow hardware probing never
+/// stalls the bus's async command loop.
+async fn open_blocking<T: Send + 'static>(
+    open: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
+) -> anyhow::Result<T> {
+    tokio::task::spawn_blocking(open)
+        .await
+        .map_err(|e| anyhow::anyhow!("codec open task failed: {e}"))?
+}
+
 /// Whether an input is a live source when the caller does not say: files are
 /// not; network streams and capture devices are.
 fn infer_live(input: &InputConfig) -> bool {
@@ -314,15 +402,16 @@ impl Bus {
                 Self::start_decoder_task(state, input_stream_index).await?;
             }
             if need_encoder {
+                // A Mux output without an encode config gets the encoder its
+                // format implies (e.g. "opus" → libopus), not the generic default.
+                let encode = match (&output.encode, &output.dest) {
+                    (None, OutputDest::Mux { format }) => mux_format_encode(format),
+                    (encode, _) => encode.clone(),
+                };
                 // Live/streaming outputs keep the lossy (low-latency) path.
                 encoder_key = Some(
-                    Self::start_encoder_task(
-                        state,
-                        input_stream_index,
-                        output.encode.as_ref(),
-                        false,
-                    )
-                    .await?,
+                    Self::start_encoder_task(state, input_stream_index, encode.as_ref(), false)
+                        .await?,
                 );
             }
         }
@@ -910,67 +999,31 @@ impl Bus {
         format: &str,
         encoder_key: &EncoderKey,
     ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
-        let mut encoder_receiver = Self::subscribe_encoder(state, encoder_key).await?;
-
-        let input_stream = state
-            .input_streams
-            .iter()
-            .find(|s| s.index() == encoder_key.stream_index)
-            .ok_or(anyhow::anyhow!("no matching stream in input"))?;
-
-        let codec_id = match format {
-            "h264" => ffmpeg_next::codec::Id::H264,
-            "hevc" | "h265" => ffmpeg_next::codec::Id::HEVC,
-            "aac" | "adts" => ffmpeg_next::codec::Id::AAC,
-            "opus" => ffmpeg_next::codec::Id::OPUS,
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "unsupported mux format for encoder output: {}",
-                    format
-                ));
-            }
-        };
-        let encoder_output_stream = AvStream::for_encoder_output(input_stream, codec_id);
+        let codec_id = mux_format_codec(format).ok_or_else(|| {
+            anyhow::anyhow!("unsupported mux format for encoder output: {format}")
+        })?;
+        // The encoder's real output params (incl. extradata), not the input's.
+        let encoder_output_stream = state
+            .encoder_output_streams
+            .get(encoder_key)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("no encoder output stream"))?;
+        let encoded = encoder_output_stream.parameters().id();
+        if encoded != codec_id {
+            anyhow::bail!("mux format {format} needs {codec_id:?}, encoder makes {encoded:?}");
+        }
+        let encoder_receiver = Self::subscribe_encoder(state, encoder_key).await?;
 
         let mut stream = AvOutputStream::new(format)?;
         stream.add_stream(&encoder_output_stream)?;
         let (writer, reader) = stream.into_split();
-
-        tokio::spawn(async move {
-            let mut writer = writer;
-            loop {
-                match encoder_receiver.recv().await {
-                    Ok(cmd) => match cmd {
-                        RawPacketCmd::Data(mut packet) => {
-                            // Reader dropped: stop, releasing the encoder.
-                            if writer.is_closed() {
-                                break;
-                            }
-                            packet.get_mut().set_stream(0);
-                            if let Err(e) = writer.write_packet(packet) {
-                                log::error!("mux write_packet error: {}", e.to_string());
-                            }
-                        }
-                        RawPacketCmd::EOF => break,
-                    },
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        log::warn!("mux encoder_receiver lagged, dropped {} messages", n);
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-            if let Err(e) = writer.finish() {
-                log::error!(
-                    "mux finish error: {:#?}\nbacktrace:\n{}",
-                    e,
-                    Backtrace::capture()
-                );
-            }
-            log::info!("mux stream finished");
+        let index = encoder_output_stream.index();
+        tokio::task::spawn_blocking(move || {
+            run_mux_stream_writer(writer, encoder_receiver, index, true)
         });
 
         Ok((
-            encoder_output_stream.clone(),
+            encoder_output_stream,
             Box::pin(reader.map(|pkg| Some(VideoFrame::from(pkg)))),
         ))
     }
@@ -980,7 +1033,7 @@ impl Bus {
         format: &str,
         input_stream_index: usize,
     ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
-        let mut input_receiver = state
+        let input_receiver = state
             .input_task
             .as_ref()
             .ok_or(anyhow::anyhow!("input task not found"))?
@@ -990,47 +1043,18 @@ impl Bus {
             .input_streams
             .iter()
             .find(|s| s.index() == input_stream_index)
-            .ok_or(anyhow::anyhow!("no matching stream in input"))?;
-        let target_stream_index = target_stream.index();
+            .ok_or(anyhow::anyhow!("no matching stream in input"))?
+            .clone();
         let mut stream = AvOutputStream::new(format)?;
         stream.add_stream(&target_stream)?;
         let (writer, reader) = stream.into_split();
-
-        tokio::spawn(async move {
-            let mut writer = writer;
-            loop {
-                match input_receiver.recv().await {
-                    Ok(RawPacketCmd::Data(packet)) => {
-                        // Reader dropped: stop instead of muxing for nobody.
-                        if writer.is_closed() {
-                            break;
-                        }
-                        if packet.index() == target_stream_index {
-                            if let Err(e) = writer.write_packet(packet) {
-                                log::error!("mux write_packet error: {}", e.to_string());
-                            }
-                        }
-                    }
-                    Ok(RawPacketCmd::EOF) => break,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        log::warn!("mux input_receiver lagged, dropped {} messages", n);
-                        continue;
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-            if let Err(e) = writer.finish() {
-                log::error!(
-                    "mux finish error: {:#?}\nbacktrace:\n{}",
-                    e,
-                    Backtrace::capture()
-                );
-            }
-            log::info!("mux stream finished");
+        let index = target_stream.index();
+        tokio::task::spawn_blocking(move || {
+            run_mux_stream_writer(writer, input_receiver, index, false)
         });
 
         Ok((
-            target_stream.clone(),
+            target_stream,
             Box::pin(reader.map(|pkg| Some(VideoFrame::from(pkg)))),
         ))
     }
@@ -1220,6 +1244,22 @@ impl Bus {
         Some(opts)
     }
 
+    /// Open a video encoder on a blocking thread (probing hardware candidates
+    /// can be slow). Options are built inside: `Dictionary` is not `Send`.
+    async fn open_video_encoder(
+        stream: &AvStream,
+        settings: Settings,
+        encode: Option<&EncodeConfig>,
+    ) -> anyhow::Result<Encoder> {
+        let stream = stream.clone();
+        let encode = encode.cloned();
+        open_blocking(move || {
+            let options = Self::encoder_options_from_config(encode.as_ref());
+            Encoder::new(&stream, settings, options)
+        })
+        .await
+    }
+
     fn encoder_codec_from_config(encode: Option<&EncodeConfig>) -> String {
         encode
             .map(|e| e.codec.as_str())
@@ -1277,7 +1317,9 @@ impl Bus {
             let encoder_receiver =
                 Self::subscribe_decoder(state, input_stream_index, lossless).await?;
             let audio_settings = Self::audio_settings_from_config(encode);
-            let encoder = Encoder::new_audio(input_stream, audio_settings, None)?;
+            let stream = input_stream.clone();
+            let encoder =
+                open_blocking(move || Encoder::new_audio(&stream, audio_settings, None)).await?;
             let out_stream = encoder.output_stream(input_stream_index);
             encoder_task
                 .start(encoder, encoder_receiver, lossless)
@@ -1315,8 +1357,7 @@ impl Bus {
             const RAW_FRAME_CHAN_CAP: usize = 16;
             let (frame_tx, frame_rx) =
                 tokio::sync::broadcast::channel::<RawFrameCmd>(RAW_FRAME_CHAN_CAP);
-            let encoder_opts = Self::encoder_options_from_config(encode);
-            let encoder = Encoder::new(input_stream, encoder_settings, encoder_opts)?;
+            let encoder = Self::open_video_encoder(input_stream, encoder_settings, encode).await?;
             // Spawn task: packet -> frame conversion, then forward to encoder
             {
                 let mut packet_rx = packet_receiver;
@@ -1393,8 +1434,7 @@ impl Bus {
                     ..Settings::default()
                 }
             };
-            let encoder_opts = Self::encoder_options_from_config(encode);
-            let encoder = Encoder::new(input_stream, encoder_settings, encoder_opts)?;
+            let encoder = Self::open_video_encoder(input_stream, encoder_settings, encode).await?;
             out_stream = encoder.output_stream(input_stream_index);
             encoder_task
                 .start(encoder, encoder_receiver, lossless)
@@ -1433,7 +1473,9 @@ impl Bus {
             .as_ref()
             .ok_or(anyhow::anyhow!("input task not found"))?
             .subscribe();
-        let decoder = Decoder::new(input_stream)?;
+        let stream = input_stream.clone();
+        // Probing hardware decoder candidates can be slow: off the async workers.
+        let decoder = open_blocking(move || Decoder::new(&stream)).await?;
         let decoder_task = DecoderTask::new_auto_stop();
         decoder_task.start(decoder, decoder_receiver).await;
         state.decoder_tasks.insert(input_stream_index, decoder_task);

@@ -212,3 +212,32 @@ async fn test_subscribe_after_eof_is_closed() -> anyhow::Result<()> {
     assert!(r.is_err(), "late subscriber must see Closed");
     Ok(())
 }
+
+/// A hardware decoder that fails at runtime (as QSV does on this kind of
+/// machine) is downgraded and then skipped for new decoders.
+#[test]
+fn test_runtime_failed_hw_decoder_not_reselected() -> anyhow::Result<()> {
+    let Some((_input, stream, packets)) = video_packets() else {
+        return Ok(());
+    };
+    let mut decoder = Decoder::new(&stream)?;
+    if !decoder.is_hw {
+        return Ok(()); // no hardware decoder here: nothing to check
+    }
+    let name = decoder.codec_name.clone();
+    for p in packets {
+        if let RawPacketCmd::Data(p) = p {
+            decoder.send_packet(p)?;
+            while decoder.receive_frame()?.is_some() {}
+        }
+    }
+    if decoder.is_hw {
+        return Ok(()); // the hardware decoder works here: no downgrade
+    }
+    let again = Decoder::new(&stream)?;
+    assert_ne!(
+        again.codec_name, name,
+        "{name} failed at runtime, must be skipped"
+    );
+    Ok(())
+}

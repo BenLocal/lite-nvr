@@ -207,6 +207,8 @@ pub struct Decoder {
     /// True while decoding on a hardware codec; cleared after a runtime
     /// downgrade to software (see [`Decoder::send_packet`]).
     is_hw: bool,
+    /// Name of the selected codec (to blacklist a failing hardware one).
+    codec_name: String,
 }
 
 impl Decoder {
@@ -302,6 +304,7 @@ impl Decoder {
                 inner: DecoderType::Video(video_decoder),
                 decoder_time_base,
                 is_hw: selected_is_hw,
+                codec_name: selected_name,
             }
         } else if stream.is_audio() {
             let mut decoder_ctx = ffmpeg_next::codec::Context::new();
@@ -316,6 +319,7 @@ impl Decoder {
                 inner: DecoderType::Audio(audio_decoder),
                 decoder_time_base,
                 is_hw: false,
+                codec_name: "default".to_string(),
             }
         } else {
             return Err(anyhow::anyhow!("unsupported stream type"));
@@ -341,6 +345,7 @@ impl Decoder {
                      falling back to software decoder",
                     self.stream.index()
                 );
+                hw::mark_runtime_failure(&self.codec_name);
                 let (video_decoder, time_base) = Self::open_software_video(&self.stream)?;
                 self.inner = DecoderType::Video(video_decoder);
                 self.decoder_time_base = time_base;

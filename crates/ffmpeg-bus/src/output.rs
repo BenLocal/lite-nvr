@@ -622,14 +622,16 @@ extern "C" fn output_raw_buf_start_callback(
             width: packet_context.current_width,
             height: packet_context.current_height,
         };
-        if packet_context.buffer.try_send(msg).is_err() {
-            log::warn!(
-                "mux output channel full, dropping packet ({} bytes)",
-                buffer_size
-            );
-        }
+        // Wait for the reader instead of dropping: a lost chunk corrupts
+        // the muxed byte stream. Runs on the writer's blocking thread. Fails
+        // only once the reader is gone (the writer then stops).
+        let _ = packet_context.buffer.blocking_send(msg);
     }
 
     // Number of bytes written.
     buffer_size
 }
+
+#[cfg(test)]
+#[path = "output_test.rs"]
+mod output_test;

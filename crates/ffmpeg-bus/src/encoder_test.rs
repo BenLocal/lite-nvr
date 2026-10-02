@@ -184,3 +184,34 @@ fn test_audio_jitter_ignored_and_big_jump_moves_timeline() -> anyhow::Result<()>
     );
     Ok(())
 }
+
+#[test]
+fn test_gop_frames_follows_frame_rate() {
+    use ffmpeg_next::Rational;
+
+    use super::{AUTO_GOP_SECS, gop_frames};
+    assert_eq!(gop_frames(0, Rational(25, 1)), 25 * AUTO_GOP_SECS);
+    assert_eq!(gop_frames(0, Rational(60, 1)), 60 * AUTO_GOP_SECS);
+    assert_eq!(gop_frames(0, Rational(30000, 1001)), 60, "29.97fps rounds");
+    assert_eq!(gop_frames(0, Rational(0, 0)), 50, "unknown rate falls back");
+    assert_eq!(
+        gop_frames(12, Rational(25, 1)),
+        12,
+        "explicit interval wins"
+    );
+}
+
+#[test]
+fn test_pick_sample_rate() {
+    use super::pick_sample_rate;
+    let opus = [48_000, 24_000, 16_000, 12_000, 8_000];
+    assert_eq!(pick_sample_rate(44_100, &opus), 48_000);
+    assert_eq!(pick_sample_rate(22_050, &opus), 24_000);
+    assert_eq!(pick_sample_rate(16_000, &opus), 16_000, "supported: kept");
+    assert_eq!(pick_sample_rate(44_100, &[]), 44_100, "no constraint");
+    assert_eq!(
+        pick_sample_rate(20_000, &[16_000, 24_000]),
+        24_000,
+        "tie → higher"
+    );
+}

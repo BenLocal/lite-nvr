@@ -48,10 +48,33 @@ fn hevc_sw_candidates() -> Vec<CodecCandidate> {
     vec![CodecCandidate::sw("libx265"), CodecCandidate::sw("hevc")]
 }
 
+/// Hardware codecs that opened fine but then failed on real data in this
+/// process (e.g. QSV "MFX session" errors). Skipped from then on, so every new
+/// stream does not pay the open-fail-downgrade cycle again.
+static RUNTIME_FAILED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn runtime_failed() -> std::sync::MutexGuard<'static, std::collections::HashSet<String>> {
+    // Only inserts/lookups happen under this lock: a poisoned set is still valid.
+    RUNTIME_FAILED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Record that hardware codec `name` failed at runtime; later candidate lists
+/// leave it out for the rest of the process.
+pub fn mark_runtime_failure(name: &str) {
+    if runtime_failed().insert(name.to_string()) {
+        log::warn!("{name} failed at runtime; skipping it for the rest of this process");
+    }
+}
+
+/// Drop duplicates, and hardware codecs known to fail at runtime.
 fn dedup_by_name(candidates: Vec<CodecCandidate>) -> Vec<CodecCandidate> {
+    let failed = runtime_failed();
     let mut out = Vec::with_capacity(candidates.len());
     for c in candidates {
-        if out.iter().any(|x: &CodecCandidate| x.name == c.name) {
+        if out.iter().any(|x: &CodecCandidate| x.name == c.name)
+            || (c.is_hw && failed.contains(&c.name))
+        {
             continue;
         }
         out.push(c);
@@ -139,3 +162,7 @@ pub fn video_decoder_candidates(codec_id: CodecId) -> Vec<CodecCandidate> {
     }
     dedup_by_name(out)
 }
+
+#[cfg(test)]
+#[path = "hw_test.rs"]
+mod hw_test;

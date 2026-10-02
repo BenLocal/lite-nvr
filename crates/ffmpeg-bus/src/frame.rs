@@ -143,6 +143,42 @@ impl RawVideoFrame {
         Bytes::copy_from_slice(self.frame.data(0))
     }
 
+    /// Every plane, tightly packed (no row padding), in the layout
+    /// `av_image_get_buffer_size(format, width, height, 1)` describes: e.g.
+    /// yuv420p is the full Y plane, then U, then V. [`Self::data`] only has
+    /// plane 0, with its stride padding.
+    pub fn packed_data(&self) -> anyhow::Result<Bytes> {
+        let f = &*self.frame;
+        let fmt: ffmpeg_next::ffi::AVPixelFormat = f.format().into();
+        let (w, h) = (f.width() as i32, f.height() as i32);
+        // SAFETY: plain size computation from format and dimensions.
+        let size = unsafe { ffmpeg_next::ffi::av_image_get_buffer_size(fmt, w, h, 1) };
+        if size < 0 {
+            anyhow::bail!("cannot pack {:?} {}x{} frame", f.format(), w, h);
+        }
+        let mut out = vec![0u8; size as usize];
+        // SAFETY: `out` holds exactly `size` bytes for this format/geometry,
+        // and the source data/linesize arrays come from a valid, allocated
+        // frame of that format and geometry.
+        let ret = unsafe {
+            let src = f.as_ptr();
+            ffmpeg_next::ffi::av_image_copy_to_buffer(
+                out.as_mut_ptr(),
+                size,
+                (*src).data.as_ptr() as *const *const u8,
+                (*src).linesize.as_ptr(),
+                fmt,
+                w,
+                h,
+                1,
+            )
+        };
+        if ret < 0 {
+            anyhow::bail!("av_image_copy_to_buffer failed: {ret}");
+        }
+        Ok(Bytes::from(out))
+    }
+
     /// Borrow the inner decoded frame (all planes) — needed to feed a scaler.
     /// `data()` only exposes plane 0.
     pub fn as_video(&self) -> &ffmpeg_next::frame::Video {
@@ -262,7 +298,7 @@ impl TryFrom<RawFrame> for VideoFrame {
     fn try_from(value: RawFrame) -> Result<Self, Self::Error> {
         if let RawFrame::Video(frame) = value {
             Ok(Self {
-                data: frame.data(),
+                data: frame.packed_data()?,
                 width: frame.width(),
                 height: frame.height(),
                 format: frame.format() as i32,

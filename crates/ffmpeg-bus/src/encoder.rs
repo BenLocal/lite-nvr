@@ -97,6 +97,8 @@ impl EncoderType {
 pub struct Settings {
     pub width: u32,
     pub height: u32,
+    /// Frames between keyframes (GOP). `0` = automatic: about
+    /// [`AUTO_GOP_SECS`] of video at the stream's frame rate.
     pub keyframe_interval: u64,
     pub codec: Option<String>,
     pub pixel_format: ffmpeg_next::format::Pixel,
@@ -107,11 +109,44 @@ impl Default for Settings {
         Self {
             width: 1920,
             height: 1080,
-            keyframe_interval: 25,
+            keyframe_interval: 0,
             codec: Some("h264".to_string()),
             pixel_format: ffmpeg_next::format::Pixel::YUV420P,
         }
     }
+}
+
+/// Keyframe spacing used when [`Settings::keyframe_interval`] is `0`: a new
+/// viewer of a live stream waits at most this long for a decodable picture.
+pub const AUTO_GOP_SECS: u32 = 2;
+/// Automatic GOP when the stream's frame rate is unknown.
+const FALLBACK_GOP: u32 = 50;
+
+/// GOP length in frames: the explicit interval, or [`AUTO_GOP_SECS`] worth of
+/// frames at `rate` (a fixed frame count gives very different keyframe
+/// spacing at 5fps vs 60fps).
+fn gop_frames(keyframe_interval: u64, rate: Rational) -> u32 {
+    if keyframe_interval > 0 {
+        return u32::try_from(keyframe_interval).unwrap_or(u32::MAX);
+    }
+    if rate.numerator() <= 0 || rate.denominator() <= 0 {
+        return FALLBACK_GOP;
+    }
+    let fps = f64::from(rate.numerator()) / f64::from(rate.denominator());
+    ((fps * f64::from(AUTO_GOP_SECS)).round() as u32).max(1)
+}
+
+/// `requested` if the encoder supports it (or lists no constraint), else the
+/// closest supported rate (the higher one on a tie).
+fn pick_sample_rate(requested: u32, supported: &[u32]) -> u32 {
+    if supported.is_empty() || supported.contains(&requested) {
+        return requested;
+    }
+    supported
+        .iter()
+        .copied()
+        .min_by_key(|&r| (r.abs_diff(requested), std::cmp::Reverse(r)))
+        .unwrap_or(requested)
 }
 
 /// Returns a pixel format suitable for libx264. Source formats not supported by libx264 (e.g. rgb24)
@@ -370,6 +405,8 @@ pub struct Encoder {
     /// [`Encoder::downgrade_to_software`]). Options kept as strings:
     /// `Dictionary` is not `Send`.
     reopen: Option<(Settings, Vec<(String, String)>)>,
+    /// Name of the selected codec (to blacklist a failing hardware one).
+    codec_name: String,
     /// Test hook: fail the next frame as a broken hardware encoder would.
     #[cfg(test)]
     inject_hw_failure: bool,
@@ -390,7 +427,7 @@ impl Encoder {
         encoder.set_frame_rate(Some(stream.rate()));
         encoder.set_time_base(ffmpeg_next::util::mathematics::rescale::TIME_BASE);
         // Bounded GOP so live viewers can start decoding within one interval.
-        encoder.set_gop(u32::try_from(settings.keyframe_interval).unwrap_or(u32::MAX));
+        encoder.set_gop(gop_frames(settings.keyframe_interval, stream.rate()));
 
         let need_defaults = options.is_none();
         let mut opts = options.unwrap_or_default();
@@ -485,6 +522,7 @@ impl Encoder {
             scaler: None,
             audio_resampler: None,
             is_hw: selected_is_hw,
+            codec_name: selected_name.clone().unwrap_or_default(),
             reopen: Some((settings, options_kv)),
             #[cfg(test)]
             inject_hw_failure: false,
@@ -509,6 +547,19 @@ impl Encoder {
             (*ptr).sample_rate.max(0) as u32
         });
         let sample_rate = if sample_rate == 0 { 44100 } else { sample_rate };
+        // Some encoders only take specific rates (libopus: 48k/24k/16k/12k/8k);
+        // the resampler converts the input to whatever is picked here.
+        let supported: Vec<u32> = codec
+            .audio()
+            .ok()
+            .and_then(|a| a.rates())
+            .map(|rates| rates.filter_map(|r| u32::try_from(r).ok()).collect())
+            .unwrap_or_default();
+        let picked = pick_sample_rate(sample_rate, &supported);
+        if picked != sample_rate {
+            log::info!("{codec_name}: sample rate {sample_rate} unsupported, using {picked}");
+        }
+        let sample_rate = picked;
         encoder.set_rate(sample_rate as i32);
 
         // Set channel layout
@@ -581,6 +632,7 @@ impl Encoder {
             scaler: None,
             audio_resampler: None,
             is_hw: false,
+            codec_name: codec_name.to_string(),
             reopen: None,
             #[cfg(test)]
             inject_hw_failure: false,
@@ -709,6 +761,7 @@ impl Encoder {
     /// Replace the hardware video codec with the first software candidate for
     /// the same settings. Frames still inside the hardware codec are lost.
     fn downgrade_to_software(&mut self) -> anyhow::Result<()> {
+        hw::mark_runtime_failure(&self.codec_name);
         let (settings, options) = self
             .reopen
             .clone()
@@ -734,6 +787,7 @@ impl Encoder {
                     self.inner = EncoderType::Video(encoder);
                     self.encoder_time_base = time_base;
                     self.is_hw = false;
+                    self.codec_name = candidate.name;
                     return Ok(());
                 }
                 Err(e) => last_err = Some(e),
