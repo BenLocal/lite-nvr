@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 media-pipe-core = { path = "../media-pipe-core" }
 ffmpeg-bus = { path = "../ffmpeg-bus" }
+ffmpeg-next = { workspace = true }
 rszlm = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }

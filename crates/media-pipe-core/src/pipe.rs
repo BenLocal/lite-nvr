@@ -222,6 +222,7 @@ async fn forward_frame_stream_to_sink(
     mut stream: ffmpeg_bus::bus::VideoRawFrameStream,
     sink: Arc<RawSinkSource>,
 ) {
+    let mut dropped: u64 = 0;
     while let Some(opt) = stream.next().await {
         if let Some(frame) = opt {
             let vf = VideoRawFrame::new(
@@ -234,8 +235,18 @@ async fn forward_frame_stream_to_sink(
                 frame.is_key,
                 frame.codec_id,
             );
-            if sink.writer.try_send(vf).is_err() {
-                break;
+            match sink.writer.try_send(vf) {
+                Ok(()) => {}
+                // A momentarily slow consumer loses this frame; ending the
+                // forwarder here would make the Pipe tear the whole session
+                // down (it treats any output ending as the stream dying).
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    dropped += 1;
+                    if dropped % 100 == 1 {
+                        log::debug!("Pipe: raw sink full, dropped {} frames", dropped);
+                    }
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
             }
         }
     }

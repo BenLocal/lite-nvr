@@ -141,6 +141,98 @@ pub fn convert_avcc_to_annexb(avcc: &[u8]) -> Bytes {
     out.freeze()
 }
 
+/// The decoder parameter sets carried in AVCC / HVCC extradata (H.264 SPS +
+/// PPS; HEVC VPS + SPS + PPS), as one Annex B buffer. MP4 sources keep these
+/// only in extradata, not in-band, so a consumer of the converted Annex B
+/// stream (e.g. ZLMediaKit) needs them prepended to keyframes. `None` when
+/// the stream is not H.264/HEVC or the extradata is not AVCC/HVCC.
+pub fn parameter_sets_annexb(codec_params: &Parameters) -> Option<Bytes> {
+    let extradata = get_extradata(codec_params)?;
+    match codec_params.id() {
+        ffmpeg_next::codec::Id::H264 => avcc_parameter_sets(extradata),
+        ffmpeg_next::codec::Id::HEVC => hvcc_parameter_sets(extradata),
+        _ => None,
+    }
+}
+
+/// Bounds-checked big-endian reader over extradata (malformed input yields
+/// `None` instead of panicking).
+struct ByteReader<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> ByteReader<'a> {
+    fn at(data: &'a [u8], pos: usize) -> Self {
+        Self { data, pos }
+    }
+
+    fn u8(&mut self) -> Option<u8> {
+        let v = *self.data.get(self.pos)?;
+        self.pos += 1;
+        Some(v)
+    }
+
+    fn u16(&mut self) -> Option<usize> {
+        Some(usize::from(self.u8()?) << 8 | usize::from(self.u8()?))
+    }
+
+    fn bytes(&mut self, len: usize) -> Option<&'a [u8]> {
+        let end = self.pos.checked_add(len)?;
+        let v = self.data.get(self.pos..end)?;
+        self.pos = end;
+        Some(v)
+    }
+}
+
+/// Append `count` 16-bit-length-prefixed NAL units from `r` as Annex B.
+fn push_nalus(r: &mut ByteReader<'_>, count: usize, out: &mut BytesMut) -> Option<()> {
+    for _ in 0..count {
+        let len = r.u16()?;
+        let nal = r.bytes(len)?;
+        out.extend_from_slice(START_CODE);
+        out.extend_from_slice(nal);
+    }
+    Some(())
+}
+
+/// AVCDecoderConfigurationRecord: version(1) profile compat level
+/// lengthSize(1) | numSPS(1) [len(2) sps]* numPPS(1) [len(2) pps]*.
+fn avcc_parameter_sets(extradata: &[u8]) -> Option<Bytes> {
+    if extradata.first() != Some(&1) {
+        return None;
+    }
+    let mut r = ByteReader::at(extradata, 5);
+    let mut out = BytesMut::new();
+    let sps = usize::from(r.u8()? & 0x1f);
+    push_nalus(&mut r, sps, &mut out)?;
+    let pps = usize::from(r.u8()?);
+    push_nalus(&mut r, pps, &mut out)?;
+    (!out.is_empty()).then(|| out.freeze())
+}
+
+/// HEVCDecoderConfigurationRecord: 22 header bytes, numArrays(1), then per
+/// array: type(1) numNalus(2) [len(2) nalu]*. Keeps VPS/SPS/PPS (32/33/34).
+fn hvcc_parameter_sets(extradata: &[u8]) -> Option<Bytes> {
+    if extradata.first() != Some(&1) {
+        return None;
+    }
+    let mut r = ByteReader::at(extradata, 22);
+    let mut out = BytesMut::new();
+    let arrays = r.u8()?;
+    for _ in 0..arrays {
+        let nal_type = r.u8()? & 0x3f;
+        let count = r.u16()?;
+        if (32..=34).contains(&nal_type) {
+            push_nalus(&mut r, count, &mut out)?;
+        } else {
+            let mut skipped = BytesMut::new();
+            push_nalus(&mut r, count, &mut skipped)?;
+        }
+    }
+    (!out.is_empty()).then(|| out.freeze())
+}
+
 /// A packet in Annex B format.
 #[derive(Debug, Clone)]
 pub struct FilteredPacket {

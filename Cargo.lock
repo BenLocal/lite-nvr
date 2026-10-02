@@ -3099,6 +3099,7 @@ name = "media-pipe-zlm"
 version = "0.1.0"
 dependencies = [
  "ffmpeg-bus",
+ "ffmpeg-next",
  "futures",
  "log",
  "media-pipe-core",

@@ -143,7 +143,16 @@ struct AudioResampler {
     /// sync even when the stream does not start at PTS 0.
     next_pts: i64,
     started: bool,
+    /// Input PTS (1/in_rate) the next frame should carry if nothing was lost.
+    /// A later PTS means a gap (e.g. frames dropped on a live source).
+    expected_in_pts: Option<i64>,
 }
+
+/// An input PTS jump beyond this (seconds) is a gap to bridge, not jitter.
+const AUDIO_GAP_MIN_SECS: f64 = 0.05;
+/// Gaps up to this long are filled with silence; longer jumps are treated as a
+/// timestamp discontinuity and only move the output timeline forward.
+const AUDIO_GAP_MAX_SILENCE_SECS: f64 = 2.0;
 
 // The AVAudioFifo pointer is created, used, and freed only within this struct,
 // which is not shared across threads concurrently.
@@ -188,6 +197,7 @@ impl AudioResampler {
             frame_size,
             next_pts: 0,
             started: false,
+            expected_in_pts: None,
         })
     }
 
@@ -204,6 +214,12 @@ impl AudioResampler {
                 self.next_pts = (p as i128 * self.out_rate as i128 / self.in_rate as i128) as i64;
             }
         }
+        if let Some(p) = input.pts() {
+            if let Some(expected) = self.expected_in_pts {
+                self.bridge_gap(p - expected)?;
+            }
+            self.expected_in_pts = Some(p + input.samples() as i64);
+        }
         let max_out = unsafe {
             ffmpeg_next::ffi::swr_get_out_samples(self.swr.as_mut_ptr(), input.samples() as i32)
         };
@@ -215,6 +231,50 @@ impl AudioResampler {
         self.swr.run(input, &mut converted)?;
         self.fifo_write(&converted)?;
         Ok(())
+    }
+
+    /// Keep the output timeline aligned with the source across lost input
+    /// (`gap` input samples missing). Without this, PTS derived from the
+    /// sample count would run ahead of copied video after every drop.
+    fn bridge_gap(&mut self, gap: i64) -> anyhow::Result<()> {
+        if self.in_rate == 0 {
+            return Ok(());
+        }
+        let secs = gap as f64 / self.in_rate as f64;
+        if secs <= AUDIO_GAP_MIN_SECS {
+            return Ok(());
+        }
+        let out_samples = (gap as i128 * self.out_rate as i128 / self.in_rate as i128) as i64;
+        if secs <= AUDIO_GAP_MAX_SILENCE_SECS {
+            self.fifo_write_silence(out_samples as usize)
+        } else {
+            log::warn!("audio timestamp jump of {secs:.1}s: moving the output timeline");
+            self.next_pts += out_samples;
+            Ok(())
+        }
+    }
+
+    fn fifo_write_silence(&mut self, samples: usize) -> anyhow::Result<()> {
+        if samples == 0 {
+            return Ok(());
+        }
+        let mut silence = ffmpeg_next::frame::Audio::new(self.out_format, samples, self.out_layout);
+        let channels = self.out_layout.channels().max(1);
+        let fmt: ffmpeg_next::ffi::AVSampleFormat = self.out_format.into();
+        // SAFETY: `silence` was just allocated for `samples` samples of
+        // `out_format` x `channels`, and extended_data has one plane per
+        // channel (planar) or one interleaved plane, as av_samples_set_silence
+        // expects.
+        unsafe {
+            ffmpeg_next::ffi::av_samples_set_silence(
+                (*silence.as_mut_ptr()).extended_data,
+                0,
+                samples as i32,
+                channels,
+                fmt,
+            );
+        }
+        self.fifo_write(&silence)
     }
 
     /// Pull every full `frame_size` frame currently buffered.
@@ -304,6 +364,15 @@ pub struct Encoder {
     frame_index: i64,
     scaler: Option<Scaler>,
     audio_resampler: Option<AudioResampler>,
+    /// Encoding on a hardware codec; cleared after a runtime downgrade.
+    is_hw: bool,
+    /// Video settings + options to reopen on a software codec (see
+    /// [`Encoder::downgrade_to_software`]). Options kept as strings:
+    /// `Dictionary` is not `Send`.
+    reopen: Option<(Settings, Vec<(String, String)>)>,
+    /// Test hook: fail the next frame as a broken hardware encoder would.
+    #[cfg(test)]
+    inject_hw_failure: bool,
 }
 
 impl Encoder {
@@ -339,6 +408,14 @@ impl Encoder {
         settings: Settings,
         options: Option<Dictionary>,
     ) -> anyhow::Result<Self> {
+        let options_kv: Vec<(String, String)> = options
+            .as_ref()
+            .map(|o| {
+                o.iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
         let requested = settings.codec.as_deref();
         let candidates = hw::video_encoder_candidates(requested);
         let mut selected_name: Option<String> = None;
@@ -407,6 +484,10 @@ impl Encoder {
             frame_index: 0,
             scaler: None,
             audio_resampler: None,
+            is_hw: selected_is_hw,
+            reopen: Some((settings, options_kv)),
+            #[cfg(test)]
+            inject_hw_failure: false,
         })
     }
 
@@ -499,6 +580,10 @@ impl Encoder {
             frame_index: 0,
             scaler: None,
             audio_resampler: None,
+            is_hw: false,
+            reopen: None,
+            #[cfg(test)]
+            inject_hw_failure: false,
         })
     }
 
@@ -579,18 +664,82 @@ impl Encoder {
         };
 
         match action {
-            Outbound::Original => {
-                self.inner.send_frame(frame, self.frame_index)?;
-                self.frame_index += 1;
-            }
+            Outbound::Original => self.send_to_inner(frame)?,
             Outbound::Frames(frames) => {
                 for f in frames {
-                    self.inner.send_frame(f, self.frame_index)?;
-                    self.frame_index += 1;
+                    self.send_to_inner(f)?;
                 }
             }
         }
         Ok(())
+    }
+
+    /// Hand one frame to the codec. A hardware encoder can open cleanly yet
+    /// fail on real frames (as QSV decoders do here); then downgrade to
+    /// software once and replay the frame, instead of producing nothing.
+    fn send_to_inner(&mut self, frame: RawFrame) -> anyhow::Result<()> {
+        // Arc clone (no pixel copy), only needed while on hardware.
+        let retry = self.is_hw.then(|| frame.clone());
+        #[cfg(test)]
+        let injected = std::mem::take(&mut self.inject_hw_failure);
+        #[cfg(not(test))]
+        let injected = false;
+        let result = if injected {
+            Err(anyhow::anyhow!("injected hardware encoder failure"))
+        } else {
+            self.inner.send_frame(frame, self.frame_index)
+        };
+        match (result, retry) {
+            (Ok(()), _) => {}
+            (Err(e), Some(frame)) => {
+                log::warn!(
+                    "stream {}: hardware encode failed at runtime ({e:#}); \
+                     falling back to software encoder",
+                    self.stream.index()
+                );
+                self.downgrade_to_software()?;
+                self.inner.send_frame(frame, self.frame_index)?;
+            }
+            (Err(e), None) => return Err(e),
+        }
+        self.frame_index += 1;
+        Ok(())
+    }
+
+    /// Replace the hardware video codec with the first software candidate for
+    /// the same settings. Frames still inside the hardware codec are lost.
+    fn downgrade_to_software(&mut self) -> anyhow::Result<()> {
+        let (settings, options) = self
+            .reopen
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("no settings to reopen the encoder with"))?;
+        let mut last_err = None;
+        for candidate in hw::video_encoder_candidates(settings.codec.as_deref())
+            .into_iter()
+            .filter(|c| !c.is_hw)
+        {
+            let Some(codec) = ffmpeg_next::encoder::find_by_name(&candidate.name) else {
+                continue;
+            };
+            let opts = (!options.is_empty()).then(|| {
+                Dictionary::from_iter(options.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            });
+            match Self::open_video_encoder_with_codec(&self.stream, codec, &settings, opts) {
+                Ok((encoder, time_base)) => {
+                    log::info!(
+                        "video encoder selected: {} (software, after hardware failure), stream_index={}",
+                        candidate.name,
+                        self.stream.index()
+                    );
+                    self.inner = EncoderType::Video(encoder);
+                    self.encoder_time_base = time_base;
+                    self.is_hw = false;
+                    return Ok(());
+                }
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no software video encoder available")))
     }
 
     pub fn send_eof(&mut self) -> anyhow::Result<()> {
@@ -624,7 +773,21 @@ impl Encoder {
     }
 
     pub fn encoder_receive_packet(&mut self) -> anyhow::Result<Option<RawPacket>> {
-        let mut pkt = self.inner.encoder_receive_packet(self.encoder_time_base)?;
+        let mut pkt = match self.inner.encoder_receive_packet(self.encoder_time_base) {
+            Ok(pkt) => pkt,
+            // Asynchronous hardware codecs may report failures here instead of
+            // in send_frame: downgrade the same way.
+            Err(e) if self.is_hw => {
+                log::warn!(
+                    "stream {}: hardware encode failed at runtime ({e:#}); \
+                     falling back to software encoder",
+                    self.stream.index()
+                );
+                self.downgrade_to_software()?;
+                None
+            }
+            Err(e) => return Err(e),
+        };
 
         if let Some(ref mut p) = pkt {
             match &self.inner {

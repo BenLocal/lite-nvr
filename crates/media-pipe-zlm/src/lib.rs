@@ -167,10 +167,54 @@ impl ZlmTrackCoordinator {
     }
 }
 
+/// The ZLMediaKit codec for a demuxed stream, or `None` if ZLM cannot carry it.
+fn zlm_codec_id(id: ffmpeg_next::codec::Id) -> Option<CodecId> {
+    use ffmpeg_next::codec::Id;
+    Some(match id {
+        Id::H264 => CodecId::H264,
+        Id::HEVC => CodecId::H265,
+        Id::AAC => CodecId::AAC,
+        Id::PCM_ALAW => CodecId::G711A,
+        Id::PCM_MULAW => CodecId::G711U,
+        Id::OPUS => CodecId::Opus,
+        Id::VP8 => CodecId::VP8,
+        Id::VP9 => CodecId::VP9,
+        Id::AV1 => CodecId::AV1,
+        Id::MJPEG => CodecId::JPEG,
+        _ => return None,
+    })
+}
+
+/// Video payload for ZLM: AVCC (MP4) input is converted to Annex B, and its
+/// keyframes get the extradata parameter sets prepended, since MP4 keeps
+/// SPS/PPS only in extradata and ZLM needs them in-band to make the track
+/// ready. Annex B input (RTSP cameras) passes through unchanged.
+fn video_payload<'a>(
+    data: &'a [u8],
+    is_key: bool,
+    avcc: bool,
+    parameter_sets: Option<&[u8]>,
+) -> std::borrow::Cow<'a, [u8]> {
+    if !avcc {
+        return std::borrow::Cow::Borrowed(data);
+    }
+    let annexb = ffmpeg_bus::bsf::convert_avcc_to_annexb(data);
+    match parameter_sets.filter(|_| is_key) {
+        Some(sets) => {
+            let mut out = Vec::with_capacity(sets.len() + annexb.len());
+            out.extend_from_slice(sets);
+            out.extend_from_slice(&annexb);
+            std::borrow::Cow::Owned(out)
+        }
+        None => std::borrow::Cow::Owned(annexb.to_vec()),
+    }
+}
+
 /// Forward a raw (demuxed) packet stream from ffmpeg-bus to a ZLMediaKit Media.
-/// Each emitted item is one raw codec frame — for audio one AAC frame (no ADTS
-/// header), for video a NALU group in Annex B (or AVCC, converted below). PTS/DTS
-/// are converted to ms. Track init is gated by [`ZlmTrackCoordinator`].
+/// Each emitted item is one raw codec frame — e.g. one AAC frame (no ADTS
+/// header), or a video NALU group in Annex B (or AVCC, converted below). The
+/// track uses the stream's real codec. PTS/DTS are converted to ms. Track init
+/// is gated by [`ZlmTrackCoordinator`].
 async fn forward_raw_packet_stream_to_zlm(
     mut stream: VideoRawFrameStream,
     av: AvStream,
@@ -178,12 +222,31 @@ async fn forward_raw_packet_stream_to_zlm(
     coordinator: Option<Arc<ZlmTrackCoordinator>>,
     av_type: OutputAvType,
 ) {
-    use ffmpeg_bus::bsf::{convert_avcc_to_annexb, is_annexb_packet};
+    use ffmpeg_bus::bsf::{is_annexb_packet, parameter_sets_annexb};
 
-    let make_codec_id = || match av_type {
-        OutputAvType::Video => CodecId::H264,
-        OutputAvType::Audio => CodecId::AAC,
-    };
+    let source_codec = av.parameters().id();
+    if zlm_codec_id(source_codec).is_none() {
+        // Give up on this track only: let the other track(s) finalize, and
+        // keep consuming so the Pipe does not see this output end and tear
+        // the whole session (video included) down.
+        log::error!(
+            "ZLM: {:?} codec {:?} is not supported by ZLMediaKit; track skipped",
+            av_type,
+            source_codec
+        );
+        if let Some(coord) = &coordinator {
+            coord.expect_one_less();
+        }
+        while stream.next().await.is_some() {}
+        return;
+    }
+    // `CodecId` is neither Copy nor Clone: map afresh per use.
+    let make_codec_id = || zlm_codec_id(source_codec).unwrap_or(CodecId::H264);
+    let is_nal_video = matches!(
+        source_codec,
+        ffmpeg_next::codec::Id::H264 | ffmpeg_next::codec::Id::HEVC
+    );
+    let parameter_sets = parameter_sets_annexb(av.parameters());
 
     let default_width = av.width();
     let default_height = av.height();
@@ -213,9 +276,15 @@ async fn forward_raw_packet_stream_to_zlm(
                         } else {
                             default_height as i32
                         };
-                        log::info!("ZLM: video track init ({}x{}, fps={})", w, h, default_fps);
+                        log::info!(
+                            "ZLM: video track init ({:?} {}x{}, fps={})",
+                            source_codec,
+                            w,
+                            h,
+                            default_fps
+                        );
                         Track::new(
-                            CodecId::H264,
+                            make_codec_id(),
                             Some(CodecArgs::Video(VideoCodecArgs {
                                 width: w,
                                 height: h,
@@ -226,9 +295,14 @@ async fn forward_raw_packet_stream_to_zlm(
                     OutputAvType::Audio => {
                         let sr = audio_sample_rate.max(1) as i32;
                         let ch = audio_channels.max(1) as i32;
-                        log::info!("ZLM: audio track init (sr={}, ch={})", sr, ch);
+                        log::info!(
+                            "ZLM: audio track init ({:?} sr={}, ch={})",
+                            source_codec,
+                            sr,
+                            ch
+                        );
                         Track::new(
-                            CodecId::AAC,
+                            make_codec_id(),
                             Some(CodecArgs::Audio(AudioCodecArgs {
                                 sample_rate: sr,
                                 channels: ch,
@@ -250,7 +324,7 @@ async fn forward_raw_packet_stream_to_zlm(
             }
             track_initialized = true;
 
-            if matches!(av_type, OutputAvType::Video) && !conversion_checked {
+            if matches!(av_type, OutputAvType::Video) && is_nal_video && !conversion_checked {
                 needs_conversion = !is_annexb_packet(frame.data.as_ref());
                 conversion_checked = true;
                 log::info!(
@@ -268,12 +342,12 @@ async fn forward_raw_packet_stream_to_zlm(
         let pts_ms = frame.pts_ms(time_base);
         let dts_ms = frame.dts_ms(time_base);
 
-        let data: std::borrow::Cow<'_, [u8]> =
-            if matches!(av_type, OutputAvType::Video) && needs_conversion {
-                std::borrow::Cow::Owned(convert_avcc_to_annexb(frame.data.as_ref()).to_vec())
-            } else {
-                std::borrow::Cow::Borrowed(frame.data.as_ref())
-            };
+        let data = video_payload(
+            frame.data.as_ref(),
+            frame.is_key,
+            matches!(av_type, OutputAvType::Video) && needs_conversion,
+            parameter_sets.as_deref(),
+        );
 
         let zlm_frame = ZlmFrame::new(make_codec_id(), dts_ms as u64, pts_ms as u64, data.as_ref());
         if !media.input_frame(&zlm_frame) {
@@ -289,3 +363,7 @@ async fn forward_raw_packet_stream_to_zlm(
 
     log::info!("ZLM: {:?} stream ended", av_type);
 }
+
+#[cfg(test)]
+#[path = "lib_test.rs"]
+mod lib_test;

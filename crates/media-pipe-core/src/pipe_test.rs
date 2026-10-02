@@ -477,3 +477,37 @@ fn test_audio_encode_params_reach_ffmpeg_bus() {
     assert_eq!(e.audio_bitrate, Some(128_000));
     assert!(fb.include_audio);
 }
+
+/// A full raw sink drops frames instead of ending the forwarder (which would
+/// make the Pipe tear the whole session down).
+#[tokio::test]
+async fn test_full_raw_sink_does_not_end_forwarder() {
+    use ffmpeg_bus::frame::VideoFrame;
+    use futures::StreamExt;
+
+    let sink = Arc::new(RawSinkSource::with_capacity(1));
+    let frames: Vec<Option<VideoFrame>> = (0..5)
+        .map(|_| Some(VideoFrame::new(vec![1, 2, 3], 2, 2, 0, 0, 0, true, 27)))
+        .collect();
+    // Five frames, then a stream that stays open (a live source).
+    let stream: ffmpeg_bus::bus::VideoRawFrameStream =
+        Box::pin(futures::stream::iter(frames).chain(futures::stream::pending()));
+    let forwarder = tokio::spawn(super::forward_frame_stream_to_sink(
+        stream,
+        Arc::clone(&sink),
+    ));
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(
+        !forwarder.is_finished(),
+        "forwarder must keep running while the stream is open"
+    );
+    // The sink got what fit; the rest was dropped, not fatal.
+    let first = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        RawSinkSource::as_stream(Arc::clone(&sink)).next(),
+    )
+    .await;
+    assert!(matches!(first, Ok(Some(_))));
+    forwarder.abort();
+}

@@ -25,6 +25,7 @@
 - **coordinator 只能用一次**：`completed` 置位后不会复位。每个新的 `Media` / 每次重建管线都要新建 coordinator 和输出，不要复用旧的 `OutputConfig`。
 - **Pipe 的启动顺序**：Pipe 用 `Bus::new_deferred` 创建 bus，先 `add_output` 注册全部输出、启动各自的转发任务，最后才调用 `bus.start()` 开始读输入。这样文件这类读得很快的源也不会跑在后加的输出前面。之后通过 `subscribe_audio` / `subscribe_video` 加入的消费方（ASR、检测）属于中途加入：直播源从当前位置开始，文件源会错过开头。
 - **直播源与非直播源的丢帧策略**：Pipe 调用的是 `add_input`，直播与否按输入类型推断：`File` 不是直播，`Network` / `Device` 是直播；需要显式指定时用 `Bus::add_input_with_live`。非直播源上的 File/Net 输出全程无损，输入按最慢的输出的速度读取。直播源从不为 File/Net 输出放慢：慢的输出自己丢包，断档后一直丢到下一个关键帧再继续写，不会把坏的片段写进录像。
+- **ZLM 轨道按源流的实际编码注册**：`ZlmSink` 把 `av.parameters().id()` 映射成 rszlm 的 `CodecId`（H264 / H265 / AAC / G711A / G711U / Opus / VP8 / VP9 / AV1 / JPEG）。遇到不支持的编码，只放弃这一条轨：先调 `expect_one_less()`，让其余的轨能完成初始化，然后继续把流读完、丢弃。不能直接退出转发任务，否则 Pipe 会把整个会话拆掉。AVCC（mp4）源转 Annex B 时，会在关键帧前补上 extradata 里的参数集（SPS/PPS，H.265 还有 VPS）。
 - **Pipe 的结束语义**：只要有任意一个 sink / raw 转发任务结束（输入 EOF、读错误、sink 消失），`Pipe::start` 就会认为整个会话已失效，随即拆掉 bus 并返回，以便上层 supervisor 感知到流断开后重启（例如重新解析过期的直播地址）。只有 `Network` 输出（完全在 bus 内部处理）的 Pipe 只在被 cancel 时才返回。
 
 ## 四、测试分布
