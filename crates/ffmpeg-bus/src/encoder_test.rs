@@ -175,10 +175,13 @@ fn resampler() -> anyhow::Result<super::AudioResampler> {
 #[test]
 fn test_audio_gap_is_bridged_with_silence() -> anyhow::Result<()> {
     let mut r = resampler()?;
-    r.push(&audio_frame(0, 1024))?;
-    r.push(&audio_frame(1024, 1024))?;
+    r.push(&audio_frame(0, 1024), ffmpeg_next::Rational(1, 48_000))?;
+    r.push(&audio_frame(1024, 1024), ffmpeg_next::Rational(1, 48_000))?;
     // 8 frames (~170ms) lost, then the stream resumes.
-    r.push(&audio_frame(1024 * 10, 1024))?;
+    r.push(
+        &audio_frame(1024 * 10, 1024),
+        ffmpeg_next::Rational(1, 48_000),
+    )?;
     let mut out = r.drain()?;
     out.extend(r.flush()?);
     let last = out.last().ok_or_else(|| anyhow::anyhow!("no output"))?;
@@ -192,9 +195,15 @@ fn test_audio_gap_is_bridged_with_silence() -> anyhow::Result<()> {
 #[test]
 fn test_audio_jitter_ignored_and_big_jump_moves_timeline() -> anyhow::Result<()> {
     let mut r = resampler()?;
-    r.push(&audio_frame(0, 1024))?;
-    r.push(&audio_frame(1024 + 100, 1024))?; // ~2ms jitter
-    r.push(&audio_frame(48_000 * 60, 1024))?; // 60s jump
+    r.push(&audio_frame(0, 1024), ffmpeg_next::Rational(1, 48_000))?;
+    r.push(
+        &audio_frame(1024 + 100, 1024),
+        ffmpeg_next::Rational(1, 48_000),
+    )?; // ~2ms jitter
+    r.push(
+        &audio_frame(48_000 * 60, 1024),
+        ffmpeg_next::Rational(1, 48_000),
+    )?; // 60s jump
     let mut out = r.drain()?;
     out.extend(r.flush()?);
     let total: usize = out.iter().map(|f| f.samples()).sum();
@@ -327,5 +336,92 @@ fn test_encoder_survives_audio_format_change() -> anyhow::Result<()> {
         packets > 30,
         "audio kept encoding across the change: {packets} packets"
     );
+    Ok(())
+}
+
+#[test]
+fn test_audio_format_change_preserves_gap() -> anyhow::Result<()> {
+    use ffmpeg_next::{
+        ChannelLayout,
+        format::{Sample, sample::Type},
+    };
+    for (format, layout) in [
+        (Sample::F32(Type::Planar), ChannelLayout::MONO),
+        (Sample::F32(Type::Packed), ChannelLayout::STEREO),
+    ] {
+        let mut r = resampler()?;
+        r.push(&audio_frame(0, 1024), ffmpeg_next::Rational(1, 48_000))?;
+        r.push(&audio_frame(1024, 1024), ffmpeg_next::Rational(1, 48_000))?;
+        let mut changed = ffmpeg_next::frame::Audio::new(format, 1024, layout);
+        fill_silence(&mut changed);
+        changed.set_rate(48_000);
+        changed.set_pts(Some(10240));
+        r.push(&changed, ffmpeg_next::Rational(1, 48_000))?;
+        let mut out = r.drain()?;
+        out.extend(r.flush()?);
+        let last = out.last().unwrap();
+        assert_eq!(last.pts().unwrap() + last.samples() as i64, 11264);
+    }
+    Ok(())
+}
+
+fn audio_stream(
+    rate: u32,
+    time_base: ffmpeg_next::Rational,
+) -> anyhow::Result<crate::stream::AvStream> {
+    crate::init()?;
+    let input = AvInput::new(&format!("sine=sample_rate={rate}"), Some("lavfi"), None)?;
+    let stream = input.streams().values().find(|s| s.is_audio()).unwrap();
+    Ok(crate::stream::AvStream::new(
+        stream.index(),
+        stream.parameters().clone(),
+        time_base,
+        stream.rate(),
+    ))
+}
+
+#[test]
+fn test_audio_stream_time_base_is_converted_to_samples() -> anyhow::Result<()> {
+    let stream = audio_stream(16_000, ffmpeg_next::Rational(1, 90_000))?;
+    let mut encoder = Encoder::new_audio(&stream, super::AudioSettings::default(), None)?;
+    for i in 0..17 {
+        let mut frame = audio_frame(126_000 + i * 5760, 1024);
+        frame.set_rate(16_000);
+        encoder.send_frame(crate::frame::RawFrame::Audio(frame.into()))?;
+        while encoder.encoder_receive_packet()?.is_some() {}
+    }
+    let r = encoder.audio_resampler.as_ref().unwrap();
+    assert_eq!(
+        r.next_pts,
+        22_400 + 17 * 1024,
+        "no false gaps; anchor at 1.4s"
+    );
+    encoder.send_eof()?;
+    while encoder.encoder_receive_packet()?.is_some() {}
+    Ok(())
+}
+
+#[test]
+fn test_audio_gap_encodes_every_silence_and_source_frame() -> anyhow::Result<()> {
+    let stream = audio_stream(48_000, ffmpeg_next::Rational(1, 48_000))?;
+    let mut encoder = Encoder::new_audio(&stream, super::AudioSettings::default(), None)?;
+    let mut pts = Vec::new();
+    for p in [0, 1024, 10240] {
+        encoder.send_frame(crate::frame::RawFrame::Audio(audio_frame(p, 1024).into()))?;
+        while let Some(packet) = encoder.encoder_receive_packet()? {
+            pts.push(packet.pts().unwrap());
+        }
+    }
+    encoder.send_eof()?;
+    while let Some(packet) = encoder.encoder_receive_packet()? {
+        pts.push(packet.pts().unwrap());
+    }
+    // AAC emits one priming packet in addition to the eleven input chunks.
+    assert_eq!(pts.len(), 12);
+    assert!(
+        pts.windows(2).all(|p| p[1] - p[0] == 1024),
+        "missing packets: {pts:?}"
+    );
+    assert_eq!(pts.last(), Some(&10240));
     Ok(())
 }

@@ -112,7 +112,18 @@ impl RawVideoFrame {
     }
 
     pub fn get_mut(&mut self) -> &mut ffmpeg_next::frame::Video {
-        Arc::make_mut(&mut self.frame)
+        let frame = Arc::make_mut(&mut self.frame);
+        // SAFETY: `frame` owns a live AVFrame. This only checks whether its
+        // FFmpeg buffers (possibly shared by a property copy) are exclusive.
+        if unsafe { ffmpeg_next::ffi::av_frame_is_writable(frame.as_mut_ptr()) } == 0 {
+            *frame = frame.clone();
+        }
+        frame
+    }
+
+    /// Change PTS without exposing mutable access to shared pixel buffers.
+    pub fn set_pts(&mut self, pts: Option<i64>) {
+        self.props_mut().set_pts(pts);
     }
 
     /// Mutable access for frame *properties* (pts, picture type, ...) only.
@@ -120,7 +131,7 @@ impl RawVideoFrame {
     /// subscribers), this makes a new `AVFrame` referencing the same
     /// ref-counted pixel buffers instead of copying them like [`Self::get_mut`].
     /// Never write pixel data through it: the buffers are still shared.
-    pub fn props_mut(&mut self) -> &mut ffmpeg_next::frame::Video {
+    fn props_mut(&mut self) -> &mut ffmpeg_next::frame::Video {
         if Arc::get_mut(&mut self.frame).is_none() {
             let mut shallow = ffmpeg_next::frame::Video::empty();
             // SAFETY: both pointers are valid AVFrames owned by live wrappers;

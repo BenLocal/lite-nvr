@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -45,13 +46,12 @@ impl EncoderType {
         match (self, frame) {
             (EncoderType::Video(encoder), RawFrame::Video(mut frame)) => {
                 // Only the PTS may change: never copy the (shared) pixels.
-                let frame = frame.props_mut();
                 // Keyframe cadence comes from the encoder GOP (`Settings::keyframe_interval`).
                 // Set PTS if not already set
                 if frame.pts().is_none() {
                     frame.set_pts(Some(frame_index));
                 }
-                encoder.send_frame(frame)?;
+                encoder.send_frame(frame.as_video())?;
             }
             (EncoderType::Audio(encoder), RawFrame::Audio(frame)) => {
                 encoder.send_frame(frame.as_audio())?;
@@ -272,17 +272,22 @@ impl AudioResampler {
             self.out_layout,
             self.out_rate,
         )?;
+        if self.in_rate != input.rate() {
+            // Sample counts use different units after a rate change.
+            self.expected_in_pts = None;
+        }
         self.in_rate = input.rate();
         self.in_format = input.format();
         self.in_layout = input.channel_layout();
-        // Input PTS may now count in different units: no gap detection across
-        // the switch.
-        self.expected_in_pts = None;
         Ok(())
     }
 
     /// Resample `input` and buffer the converted samples in the FIFO.
-    fn push(&mut self, input: &ffmpeg_next::frame::Audio) -> anyhow::Result<()> {
+    fn push(
+        &mut self,
+        input: &ffmpeg_next::frame::Audio,
+        time_base: Rational,
+    ) -> anyhow::Result<()> {
         if self.started
             && (input.rate() != self.in_rate
                 || input.format() != self.in_format
@@ -290,18 +295,22 @@ impl AudioResampler {
         {
             self.reconfigure(input)?;
         }
+        // Decoded PTS use the source stream's time base, not necessarily
+        // 1/sample_rate (MPEG-TS uses 1/90000). Work in input sample units.
+        let sample_time_base = Rational(1, i32::try_from(self.in_rate)?);
+        let pts = input.pts().map(|p| p.rescale(time_base, sample_time_base));
         if !self.started {
             self.started = true;
             // Anchor the output PTS to the first frame's presentation time so
             // audio stays aligned with copied video when the source starts off
-            // zero. Decoded audio frame PTS are in 1/in_rate; rescale to out_rate.
-            if let Some(p) = input.pts()
+            // zero. Rescale the input sample count to the output rate.
+            if let Some(p) = pts
                 && self.in_rate > 0
             {
                 self.next_pts = (p as i128 * self.out_rate as i128 / self.in_rate as i128) as i64;
             }
         }
-        if let Some(p) = input.pts() {
+        if let Some(p) = pts {
             if let Some(expected) = self.expected_in_pts {
                 self.bridge_gap(p - expected)?;
             }
@@ -453,6 +462,9 @@ pub struct Encoder {
     /// Input (format, width, height) the current `scaler` was built for.
     scaler_input: Option<(ffmpeg_next::format::Pixel, u32, u32)>,
     audio_resampler: Option<AudioResampler>,
+    /// Packets drained while sending multiple audio chunks, returned to callers
+    /// in order by `encoder_receive_packet`.
+    pending_packets: VecDeque<RawPacket>,
     /// Encoding on a hardware codec; cleared after a runtime downgrade.
     is_hw: bool,
     /// Video settings + options to reopen on a software codec (see
@@ -576,6 +588,7 @@ impl Encoder {
             scaler: None,
             scaler_input: None,
             audio_resampler: None,
+            pending_packets: VecDeque::new(),
             is_hw: selected_is_hw,
             codec_name: selected_name.clone().unwrap_or_default(),
             reopen: Some((settings, options_kv)),
@@ -687,6 +700,7 @@ impl Encoder {
             scaler: None,
             scaler_input: None,
             audio_resampler: None,
+            pending_packets: VecDeque::new(),
             is_hw: false,
             codec_name: codec_name.to_string(),
             reopen: None,
@@ -712,11 +726,11 @@ impl Encoder {
                 // packets are tagged with that, so convert before encoding or
                 // the output plays back at the wrong speed.
                 let src_tb = self.stream.time_base();
-                if src_tb.numerator() > 0 && src_tb != self.encoder_time_base {
-                    let f = vf.props_mut();
-                    if let Some(pts) = f.pts() {
-                        f.set_pts(Some(pts.rescale(src_tb, self.encoder_time_base)));
-                    }
+                if src_tb.numerator() > 0
+                    && src_tb != self.encoder_time_base
+                    && let Some(pts) = vf.pts()
+                {
+                    vf.set_pts(Some(pts.rescale(src_tb, self.encoder_time_base)));
                 }
                 let (ef, ew, eh) = match &self.inner {
                     EncoderType::Video(e) => (e.format(), e.width(), e.height()),
@@ -768,7 +782,7 @@ impl Encoder {
                         Some(AudioResampler::new(in_af, rate, fmt, layout, frame_size)?);
                 }
                 let resampler = self.audio_resampler.as_mut().unwrap();
-                resampler.push(in_af)?;
+                resampler.push(in_af, self.stream.time_base())?;
                 let chunks = resampler.drain()?;
                 Outbound::Frames(
                     chunks
@@ -784,6 +798,7 @@ impl Encoder {
             Outbound::Frames(frames) => {
                 for f in frames {
                     self.send_to_inner(f)?;
+                    self.buffer_audio_packets()?;
                 }
             }
         }
@@ -860,6 +875,17 @@ impl Encoder {
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no software video encoder available")))
     }
 
+    /// Drain between audio chunks so the codec never rejects a later chunk
+    /// with EAGAIN. Keep the packets for the caller's normal receive loop.
+    fn buffer_audio_packets(&mut self) -> anyhow::Result<()> {
+        if matches!(self.inner, EncoderType::Audio(_)) {
+            while let Some(packet) = self.receive_packet_from_inner()? {
+                self.pending_packets.push_back(packet);
+            }
+        }
+        Ok(())
+    }
+
     pub fn send_eof(&mut self) -> anyhow::Result<()> {
         // Flush the audio resampler's buffered/tail samples before EOF so no
         // audio is dropped at end of stream.
@@ -869,9 +895,8 @@ impl Encoder {
             Vec::new()
         };
         for chunk in chunks {
-            self.inner
-                .send_frame(RawFrame::Audio(chunk.into()), self.frame_index)?;
-            self.frame_index += 1;
+            self.send_to_inner(RawFrame::Audio(chunk.into()))?;
+            self.buffer_audio_packets()?;
         }
         self.inner.send_eof()
     }
@@ -891,6 +916,13 @@ impl Encoder {
     }
 
     pub fn encoder_receive_packet(&mut self) -> anyhow::Result<Option<RawPacket>> {
+        if let Some(packet) = self.pending_packets.pop_front() {
+            return Ok(Some(packet));
+        }
+        self.receive_packet_from_inner()
+    }
+
+    fn receive_packet_from_inner(&mut self) -> anyhow::Result<Option<RawPacket>> {
         let mut pkt = match self.inner.encoder_receive_packet(self.encoder_time_base) {
             Ok(pkt) => pkt,
             // Asynchronous hardware codecs may report failures here instead of

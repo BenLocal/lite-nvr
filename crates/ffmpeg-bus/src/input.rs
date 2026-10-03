@@ -54,16 +54,12 @@ impl AvInputTask {
                     }
                     match input.read() {
                         ReadOutcome::Packet(packet) => {
-                            if lossless.load(Ordering::Relaxed) {
-                                while sender_clone.len() >= Self::PACKET_CHAN_CAP
-                                    && sender_clone.receiver_count() > 0
-                                    && !cancel_inner.is_cancelled()
-                                {
-                                    std::thread::sleep(Duration::from_millis(2));
-                                }
-                            }
-                            // Attempt to send, ignore send error (receiver dropped)
-                            let _ = sender_clone.send(RawPacketCmd::Data(packet));
+                            Self::send_packet(
+                                &sender_clone,
+                                &lossless,
+                                &cancel_inner,
+                                RawPacketCmd::Data(packet),
+                            );
                         }
                         // Nothing ready yet (some devices): retry, staying
                         // responsive to cancellation.
@@ -85,7 +81,12 @@ impl AvInputTask {
                                     stream.time_base()
                                 );
                             }
-                            let _ = sender_clone.send(RawPacketCmd::EOF);
+                            Self::send_packet(
+                                &sender_clone,
+                                &lossless,
+                                &cancel_inner,
+                                RawPacketCmd::EOF,
+                            );
                             break;
                         }
                     }
@@ -107,6 +108,27 @@ impl AvInputTask {
                 }
             }
         });
+    }
+
+    /// EOF occupies a slot too: apply the same lossless backpressure as data
+    /// so it cannot evict an unread packet from a full queue.
+    fn send_packet(
+        sender: &RawPacketSender,
+        lossless: &AtomicBool,
+        cancel: &CancellationToken,
+        packet: RawPacketCmd,
+    ) {
+        if lossless.load(Ordering::Relaxed) {
+            while sender.len() >= Self::PACKET_CHAN_CAP
+                && sender.receiver_count() > 0
+                && !cancel.is_cancelled()
+            {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+        if !cancel.is_cancelled() {
+            let _ = sender.send(packet);
+        }
     }
 
     pub fn subscribe(&self) -> RawPacketReceiver {

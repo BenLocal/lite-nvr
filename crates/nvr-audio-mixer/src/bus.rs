@@ -49,13 +49,7 @@ impl MixBus {
         mixer.start();
         let mixed_rx = mixer.subscribe();
 
-        let settings = AudioSettings {
-            sample_rate: Some(SAMPLE_RATE),
-            channels: Some(CHANNELS),
-            bitrate: Some(OUTPUT_BITRATE),
-            ..Default::default()
-        };
-        let encoder = Encoder::new_audio(&template, settings, None)?;
+        let encoder = Self::new_encoder(&template)?;
         // Grab the muxer stream description before the encoder is moved into the task.
         let out_stream = encoder.output_stream(0);
         let enc_task = EncoderTask::new();
@@ -79,6 +73,24 @@ impl MixBus {
             enc_task,
             publish_cancel,
         })
+    }
+
+    fn new_encoder(template: &AvStream) -> anyhow::Result<Encoder> {
+        // The mixer generates PTS in output samples, independently of the
+        // original source's clock (e.g. G.711 at 8kHz or MPEG-TS at 90kHz).
+        let mixed_stream = AvStream::new(
+            template.index(),
+            template.parameters().clone(),
+            ffmpeg_next::Rational(1, i32::try_from(SAMPLE_RATE)?),
+            template.rate(),
+        );
+        let settings = AudioSettings {
+            sample_rate: Some(SAMPLE_RATE),
+            channels: Some(CHANNELS),
+            bitrate: Some(OUTPUT_BITRATE),
+            ..Default::default()
+        };
+        Encoder::new_audio(&mixed_stream, settings, None)
     }
 
     pub fn id(&self) -> &str {
@@ -170,3 +182,7 @@ fn spawn_publish(
         log::info!("audio bus '{id}' publish stopped");
     });
 }
+
+#[cfg(test)]
+#[path = "bus_test.rs"]
+mod bus_test;

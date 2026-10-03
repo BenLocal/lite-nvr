@@ -95,3 +95,37 @@ async fn test_live_reader_does_not_wait_for_stalled_subscriber() -> anyhow::Resu
     assert!(!task.is_lossless());
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_lossless_eof_does_not_evict_last_full_queue() -> anyhow::Result<()> {
+    crate::init()?;
+    let input = AvInput::new(
+        "testsrc=duration=4096:size=16x16:rate=1",
+        Some("lavfi"),
+        None,
+    )?;
+    let task = AvInputTask::new();
+    task.set_lossless();
+    let mut rx = task.subscribe();
+    task.start(input).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while task.raw_chan.len() < AvInputTask::PACKET_CHAN_CAP {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await?;
+    // Give the producer time to encounter EOF while every slot is occupied.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let count = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut count = 0;
+        loop {
+            match rx.recv().await? {
+                RawPacketCmd::Data(_) => count += 1,
+                RawPacketCmd::EOF => return anyhow::Ok(count),
+            }
+        }
+    })
+    .await??;
+    assert_eq!(count, 4096);
+    Ok(())
+}
