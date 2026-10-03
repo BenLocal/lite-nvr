@@ -15,6 +15,9 @@ use crate::{
     manager,
 };
 
+static DEVICE_OPERATIONS: std::sync::LazyLock<crate::lifecycle::KeyedLocks> =
+    std::sync::LazyLock::new(Default::default);
+
 fn device_id_from_name(name: &str) -> String {
     let digest = md5::compute(name.trim().as_bytes());
     let source = u64::from_be_bytes([
@@ -109,8 +112,11 @@ async fn add_device(
         updated_at: now,
     };
     validate_device(&device)?;
-    nvr_db::device::upsert(&device, &conn).await?;
-    ensure_device_pipe(detect_hub, &device).await?;
+    let _operation = DEVICE_OPERATIONS.lock(&device.id).await;
+    if nvr_db::device::get(&device.id, &conn).await?.is_some() {
+        return Err(anyhow::anyhow!("device already exists").into());
+    }
+    save_and_apply_device(detect_hub, &device, None, &conn).await?;
     Ok(ok_json(device))
 }
 
@@ -119,6 +125,7 @@ async fn update_device(
     Path(id): Path<String>,
     Json(payload): Json<DevicePayload>,
 ) -> ApiJsonResult<DeviceInfo> {
+    let _operation = DEVICE_OPERATIONS.lock(&id).await;
     let conn = app_db_conn()?;
     let existing = nvr_db::device::get(&id, &conn)
         .await?
@@ -137,29 +144,7 @@ async fn update_device(
         updated_at: Utc::now(),
     };
     validate_device(&device)?;
-    nvr_db::device::upsert(&device, &conn).await?;
-    // On an input_type change involving gb28181, clean up the old kind's
-    // resources first: leaving gb28181 must drop the stale pull mapping (+ any
-    // active pull), and entering gb28181 must remove the old pipe (the gb arm
-    // builds none, so `ensure_device_pipe` won't replace it). Both are
-    // idempotent no-ops otherwise; non-gb↔non-gb keeps its upsert-in-place path.
-    if existing.input_type != device.input_type {
-        if existing.input_type == "gb28181" {
-            if let Some(bridge) = crate::gb::bridge() {
-                bridge.unregister_mapping(&device.id).await;
-            }
-        }
-        // Leaving onvif must drop the registry entry (PTZ / stream re-resolve
-        // read from it), mirroring the gb28181 mapping cleanup above. The
-        // supervisor task itself is stopped by the upsert that replaces it.
-        if existing.input_type == "onvif" {
-            crate::onvif::remove(&device.id);
-        }
-        if device.input_type == "gb28181" {
-            manager::remove_pipe(&device.id).await?;
-        }
-    }
-    ensure_device_pipe(detect_hub, &device).await?;
+    save_and_apply_device(detect_hub, &device, Some(&existing), &conn).await?;
     Ok(ok_json(device))
 }
 
@@ -167,6 +152,7 @@ async fn remove_device(
     State(detect_hub): State<&'static crate::detect::hub::DetectHub>,
     Path(id): Path<String>,
 ) -> ApiJsonResult<String> {
+    let _operation = DEVICE_OPERATIONS.lock(&id).await;
     let conn = app_db_conn()?;
     nvr_db::device::delete(&id, &conn).await?;
     manager::remove_pipe(&id).await?;
@@ -182,7 +168,67 @@ async fn remove_device(
     Ok(ok_json("success".to_string()))
 }
 
+async fn save_and_apply_device(
+    detect_hub: &'static crate::detect::hub::DetectHub,
+    device: &DeviceInfo,
+    existing: Option<&DeviceInfo>,
+    conn: &turso::Connection,
+) -> anyhow::Result<()> {
+    // Validation has already completed. Persist before reconciliation so an
+    // auto-start retry can read the new detection settings.
+    nvr_db::device::upsert(device, conn).await?;
+    let applied: anyhow::Result<()> = async {
+        // On an input_type change involving gb28181, clean up the old kind's
+        // resources first: leaving gb28181 must drop the stale pull mapping (+ any
+        // active pull), and entering gb28181 must remove the old pipe (the gb arm
+        // builds none, so `ensure_device_pipe` won't replace it). Both are
+        // idempotent no-ops otherwise; non-gb↔non-gb keeps its upsert-in-place path.
+        if let Some(existing) = existing.filter(|old| old.input_type != device.input_type) {
+            if existing.input_type == "gb28181" {
+                if let Some(bridge) = crate::gb::bridge() {
+                    bridge.unregister_mapping(&device.id).await;
+                }
+            }
+            // Leaving onvif must drop the registry entry (PTZ / stream re-resolve
+            // read from it), mirroring the gb28181 mapping cleanup above. The
+            // supervisor task itself is stopped by the upsert that replaces it.
+            if existing.input_type == "onvif" {
+                crate::onvif::remove(&device.id);
+            }
+            if device.input_type == "gb28181" {
+                manager::remove_pipe(&device.id).await?;
+            }
+        }
+        ensure_device_pipe(detect_hub, device).await?;
+        Ok(())
+    }
+    .await;
+    if let Err(error) = applied {
+        let restored: anyhow::Result<()> = async {
+            match existing {
+                Some(old) => {
+                    nvr_db::device::upsert(old, conn).await?;
+                    ensure_device_pipe(detect_hub, old).await?;
+                }
+                None => {
+                    nvr_db::device::delete(&device.id, conn).await?;
+                }
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(restore_error) = restored {
+            return Err(error.context(format!("device rollback also failed: {restore_error:#}")));
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
 fn validate_device(device: &DeviceInfo) -> anyhow::Result<()> {
+    if device.id.trim().is_empty() {
+        anyhow::bail!("device id is required");
+    }
     if device.name.is_empty() {
         return Err(anyhow::anyhow!("device name is required"));
     }
@@ -193,7 +239,7 @@ fn validate_device(device: &DeviceInfo) -> anyhow::Result<()> {
         return Err(anyhow::anyhow!("input value is required"));
     }
     crate::detect::control::validate_detect_config(device.config.detect.as_ref())?;
-    Ok(())
+    crate::init::device::validate_device_input(device)
 }
 
 fn normalize_device_config(config: &DeviceConfig) -> anyhow::Result<DeviceConfig> {

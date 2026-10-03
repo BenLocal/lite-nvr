@@ -284,27 +284,13 @@ struct DeleteSegmentsRequest {
     ids: Vec<String>,
 }
 
-/// Best-effort removal of a segment's file; a missing file is not an error.
-async fn remove_segment_file(path: &str) {
-    if path.is_empty() {
-        return;
-    }
-    match tokio::fs::remove_file(path).await {
-        Ok(()) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => log::warn!("Failed to delete segment file {}: {:#}", path, err),
-    }
-}
-
 async fn delete_segment(Path(id): Path<String>) -> ApiJsonResult<DeleteSegmentsResult> {
     let conn = app_db_conn()?;
-    let deleted = if let Some(segment) = nvr_db::record_segment::get(&id, &conn).await? {
-        remove_segment_file(&segment.file_path).await;
-        nvr_db::record_segment::delete(&id, &conn).await?;
-        1
-    } else {
-        0
-    };
+    let records = nvr_db::record_segment::get(&id, &conn)
+        .await?
+        .into_iter()
+        .collect::<Vec<_>>();
+    let deleted = delete_record_files(&records, &conn).await?;
     Ok(ok_json(DeleteSegmentsResult { deleted }))
 }
 
@@ -312,14 +298,8 @@ async fn delete_segments(
     Json(req): Json<DeleteSegmentsRequest>,
 ) -> ApiJsonResult<DeleteSegmentsResult> {
     let conn = app_db_conn()?;
-    let mut deleted = 0;
-    for id in req.ids {
-        if let Some(segment) = nvr_db::record_segment::get(&id, &conn).await? {
-            remove_segment_file(&segment.file_path).await;
-            nvr_db::record_segment::delete(&id, &conn).await?;
-            deleted += 1;
-        }
-    }
+    let records = nvr_db::record_segment::list_by_ids(&req.ids, &conn).await?;
+    let deleted = delete_record_files(&records, &conn).await?;
     Ok(ok_json(DeleteSegmentsResult { deleted }))
 }
 
@@ -328,12 +308,23 @@ async fn delete_device_segments(
 ) -> ApiJsonResult<DeleteSegmentsResult> {
     let conn = app_db_conn()?;
     let records = nvr_db::record_segment::list_by_stream(&device_id, &conn).await?;
-    let deleted = records.len();
-    for record in &records {
-        remove_segment_file(&record.file_path).await;
-    }
-    nvr_db::record_segment::delete_by_stream(&device_id, &conn).await?;
+    let deleted = delete_record_files(&records, &conn).await?;
     Ok(ok_json(DeleteSegmentsResult { deleted }))
+}
+
+async fn delete_record_files(
+    records: &[nvr_db::record_segment::RecordSegment],
+    conn: &turso::Connection,
+) -> anyhow::Result<usize> {
+    let result = crate::cleanup::remove_segments(records, conn, None).await?;
+    if result.failed > 0 {
+        anyhow::bail!(
+            "Failed to delete {} recording file(s); {} deleted",
+            result.failed,
+            result.removed
+        );
+    }
+    Ok(result.removed)
 }
 
 /// Read `len` bytes starting at `start` from `path` without loading the rest of
@@ -557,3 +548,7 @@ fn playback_segment_item_from_record(
         update_time: record.update_time.to_rfc3339(),
     }
 }
+
+#[cfg(test)]
+#[path = "playback_test.rs"]
+mod playback_test;

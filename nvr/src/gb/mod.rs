@@ -60,16 +60,7 @@ pub async fn shutdown() {
     let Some(bridge) = bridge() else {
         return;
     };
-    // Release any live pulls. `handle_media_no_reader` runs the same teardown as
-    // ZLM's `on_media_no_reader` hook: it BYEs the media dialog and drops the
-    // receiver handle, which fires CloseRtp to release the RtpServer port. Safe
-    // (a no-op) for a stream that isn't currently pulling.
-    for s in bridge.stream_status().await {
-        bridge.handle_media_no_reader(&s.stream_id).await;
-    }
-    // Stop the GbServer SIP pump tasks (main/state/sweep loops); idempotent, so
-    // a later `GbServer::drop` stays safe.
-    bridge.server().shutdown();
+    bridge.shutdown().await;
 }
 
 /// Drain GbServer events for observability (device online/offline, session end).

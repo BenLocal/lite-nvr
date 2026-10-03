@@ -3,7 +3,9 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
+use crate::detect::hub::DetectHub;
 use media_pipe_core::{InputConfig, Pipe, PipeConfig};
+use nvr_db::device::DeviceInfo;
 use tokio::{sync::RwLock, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
@@ -14,6 +16,12 @@ use tokio_util::sync::CancellationToken;
 enum Entry {
     Pipe {
         pipe: Arc<Pipe>,
+        handle: JoinHandle<()>,
+    },
+    // This lock only swaps/clones Arc values; no user code runs under it.
+    ReconnectingPipe {
+        pipe: Arc<std::sync::RwLock<Option<Arc<Pipe>>>>,
+        cancel: CancellationToken,
         handle: JoinHandle<()>,
     },
     Worker {
@@ -33,6 +41,12 @@ impl Entry {
     fn stop(&self) {
         match self {
             Entry::Pipe { pipe, .. } => pipe.cancel(),
+            Entry::ReconnectingPipe { pipe, cancel, .. } => {
+                cancel.cancel();
+                if let Some(pipe) = pipe.read().expect("network pipe lock poisoned").as_ref() {
+                    pipe.cancel();
+                }
+            }
             Entry::Worker { cancel, .. } => cancel.cancel(),
             Entry::Task { cancel, .. } => cancel.cancel(),
         }
@@ -42,7 +56,7 @@ impl Entry {
     /// Media) are released before a replacement with the same id starts.
     async fn join(self) {
         match self {
-            Entry::Pipe { handle, .. } => {
+            Entry::Pipe { handle, .. } | Entry::ReconnectingPipe { handle, .. } => {
                 if let Err(e) = handle.await {
                     if !e.is_cancelled() {
                         log::warn!("pipe task ended with error: {}", e);
@@ -77,6 +91,11 @@ impl Entry {
     fn is_started(&self) -> bool {
         match self {
             Entry::Pipe { pipe, .. } => pipe.is_started(),
+            Entry::ReconnectingPipe { pipe, .. } => pipe
+                .read()
+                .expect("network pipe lock poisoned")
+                .as_ref()
+                .is_some_and(|pipe| pipe.is_started()),
             Entry::Worker { .. } | Entry::Task { .. } => true,
         }
     }
@@ -84,6 +103,11 @@ impl Entry {
 
 static PIPE_MANAGER: LazyLock<RwLock<HashMap<String, Entry>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
+
+static MUTATIONS: LazyLock<crate::lifecycle::KeyedLocks> = LazyLock::new(Default::default);
+// Operations take a read lease; shutdown takes the write lease and closes the
+// manager, so an operation cannot insert a source after the shutdown drain.
+static SHUTTING_DOWN: RwLock<bool> = RwLock::const_new(false);
 
 /// Replace any existing entry for `id` with a freshly built one. The old entry
 /// is cancelled and fully joined (outside the manager lock) BEFORE the new one
@@ -93,6 +117,11 @@ async fn upsert_entry(
     build: impl FnOnce() -> Entry,
     update_if_exists: bool,
 ) -> anyhow::Result<()> {
+    let lifecycle = SHUTTING_DOWN.read().await;
+    if *lifecycle {
+        anyhow::bail!("media manager is shutting down");
+    }
+    let _operation = MUTATIONS.lock(id).await;
     // Phase 1: take ownership of any existing entry under the write lock.
     let existing = {
         let mut pipes = PIPE_MANAGER.write().await;
@@ -153,6 +182,94 @@ pub(crate) async fn add_pipe(id: &str, config: PipeConfig) -> anyhow::Result<()>
 
 pub(crate) async fn update_pipe(id: &str, config: PipeConfig) -> anyhow::Result<()> {
     upsert_pipe(id, config, true).await
+}
+
+/// Keep an ordinary network camera alive across EOF/read/open failures. Each
+/// session builds fresh ZLM tracks/coordinators, and exposes its current pipe
+/// for ASR/detection subscriptions just like a non-supervised pipe.
+pub(crate) async fn upsert_network_device(
+    device: &DeviceInfo,
+    detect_hub: &'static DetectHub,
+) -> anyhow::Result<()> {
+    let device = device.clone();
+    let id = device.id.clone();
+    upsert_entry(
+        &id,
+        move || {
+            let cancel = CancellationToken::new();
+            let current = Arc::new(std::sync::RwLock::new(None));
+            let handle = spawn_network_device(device, detect_hub, current.clone(), cancel.clone());
+            Entry::ReconnectingPipe {
+                pipe: current,
+                cancel,
+                handle,
+            }
+        },
+        true,
+    )
+    .await
+}
+
+fn spawn_network_device(
+    device: DeviceInfo,
+    detect_hub: &'static DetectHub,
+    current: Arc<std::sync::RwLock<Option<Arc<Pipe>>>>,
+    cancel: CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut backoff = std::time::Duration::from_secs(2);
+        while !cancel.is_cancelled() {
+            let started = std::time::Instant::now();
+            let media = Arc::new(rszlm::media::Media::new_with_default_vhost(
+                crate::init::device::DEVICE_APP,
+                &device.id,
+                0.0,
+                device.record,
+                false,
+            ));
+            let config = PipeConfig {
+                input: InputConfig::Network {
+                    url: device.input_value.clone(),
+                },
+                outputs: media_pipe_zlm::zlm_outputs(media, device.include_audio),
+            };
+            let options = input_options(&config.input);
+            let pipe = Arc::new(Pipe::new(config));
+            *current.write().expect("network pipe lock poisoned") = Some(pipe.clone());
+            let running = pipe.clone();
+            let mut session = tokio::spawn(async move {
+                running.start(options).await;
+            });
+            crate::detect::control::reconcile_detection(detect_hub, &device).await;
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    pipe.cancel();
+                    let _ = (&mut session).await;
+                }
+                result = &mut session => {
+                    if let Err(e) = result { log::warn!("network device {} task failed: {e}", device.id); }
+                }
+            }
+            *current.write().expect("network pipe lock poisoned") = None;
+            detect_hub.stop(&device.id);
+            drop(pipe);
+            if cancel.is_cancelled() {
+                break;
+            }
+            if started.elapsed() >= std::time::Duration::from_secs(30) {
+                backoff = std::time::Duration::from_secs(2);
+            }
+            log::warn!(
+                "network device {}: session ended, retry in {backoff:?}",
+                device.id
+            );
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                _ = tokio::time::sleep(backoff) => {}
+            }
+            backoff = (backoff * 2).min(std::time::Duration::from_secs(60));
+        }
+    })
 }
 
 /// Start (or replace) a native Xiaomi worker that pushes the camera stream into
@@ -236,6 +353,8 @@ pub(crate) async fn upsert_onvif(
 }
 
 pub(crate) async fn remove_pipe(id: &str) -> anyhow::Result<()> {
+    let _lifecycle = SHUTTING_DOWN.read().await;
+    let _operation = MUTATIONS.lock(id).await;
     let entry = {
         let mut pipes = PIPE_MANAGER.write().await;
         pipes.remove(id)
@@ -251,6 +370,8 @@ pub(crate) async fn remove_pipe(id: &str) -> anyhow::Result<()> {
 /// pipe thread is still pushing into a ZLM `Media` when the process tears down
 /// its C runtime.
 pub(crate) async fn shutdown() {
+    let mut lifecycle = SHUTTING_DOWN.write().await;
+    *lifecycle = true;
     let entries: Vec<Entry> = { PIPE_MANAGER.write().await.drain().map(|(_, e)| e).collect() };
     for e in &entries {
         e.stop();
@@ -275,6 +396,13 @@ pub(crate) async fn list_pipe_ids() -> Vec<String> {
 pub(crate) async fn get_pipe(id: &str) -> Option<Arc<Pipe>> {
     PIPE_MANAGER.read().await.get(id).and_then(|e| match e {
         Entry::Pipe { pipe, .. } => Some(pipe.clone()),
+        Entry::ReconnectingPipe { pipe, .. } => {
+            pipe.read().expect("network pipe lock poisoned").clone()
+        }
         Entry::Worker { .. } | Entry::Task { .. } => None,
     })
 }
+
+#[cfg(test)]
+#[path = "manager_test.rs"]
+mod manager_test;

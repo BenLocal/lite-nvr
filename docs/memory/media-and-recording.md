@@ -2,6 +2,11 @@
 
 > media-pipe / ZLM sink、ffmpeg-bus 输出、nvr-recorder 重连，以及默认账号相关的非显然问题；设计见 `design-media-pipe.md`、`design-recorder.md`、`design-auth.md`。
 
+- 2026-10-03：同设备并发更新遗留源任务 → 等待旧 Entry join 时释放 map 锁，另一更新可先插入再被覆盖，丢弃 JoinHandle 不会停止任务 → 用按 id 的异步操作门串行化替换与删除，关停等待操作完成并阻止新插入；同步注册表锁不跨 await（回归：`manager_test.rs`、`lifecycle_test.rs`）。
+- 2026-10-03：同名新增覆盖原设备、无效协议更新返回错误但已写库 → 名称生成固定 id，add 直接 upsert，协议解析发生在保存之后 → add 在设备操作门内拒绝已有 id，保存前校验协议形状，应用失败回滚；离线摄像头仍允许保存（回归：`handler/device_test.rs`）。
+- 2026-10-03：录像保留遗漏截止日当天已过期分片 → RFC3339 的 T 分隔符与 SQLite datetime 的空格不能直接按字符串比较 → 使用 julianday 归一化两侧；文件删除失败保留行、跳过释放空间计数，手动删除与自动清理共用逻辑（回归：`record_segment_test.rs`、`cleanup_test.rs`、`handler/playback_test.rs`）。
+- 2026-10-03：普通网络设备 EOF 后不重连，首次开流失败还可能一直等待取消 → 普通设备缺 supervisor，Pipe 没有接受输出时仍进入等待 → net/rtsp/rtmp 使用可取消且可 join 的 supervisor，每次重建 ZLM 会话；Pipe 打开失败或所有输出被拒绝时清理并返回。原始 `/api/pipe` 的单次 Pipe 行为保留（回归：`manager_test.rs` 本地 TCP/ZLM 断流与首次打开失败）。
+
 - 2026-06-30：设备开了音频但源无音轨，ZLM 上流始终不上线 → `ZlmTrackCoordinator` 期望 2 条轨只注册了 1 条，`init_complete` 不触发 → 输出被拒时 Pipe 必须调 `sink.on_rejected()`，自定义协调型 sink 也要实现；尽量用 `zlm_outputs` 构造输出（证据：crates/media-pipe-core/src/pipe.rs:141-143、crates/media-pipe-zlm/src/lib.rs:52-59）
 - 2026-07-15：stream-copy 只转封装，开段却报 "encoder not found for codec_id" → `AvOutput::add_stream` 用 `encoder::find(codec_id)` 建输出流，FFmpeg 构建无对应编码器就失败 → 冷门编码先确认 FFmpeg 构建注册了编码器，否则开录前当配置错误处理（证据：crates/ffmpeg-bus/src/output.rs:88-89）
 - 2026-07-15：`nvr-recorder` 设了有限 `max_retries`，长跑后不再重连、退避停在最大值 → `attempt` 整个生命周期只增不减，成功录段不归零 → 视为「累计失败上限」；要按连续失败计数需改代码在会话成功后归零（证据：crates/nvr-recorder/src/recorder.rs:100,119）

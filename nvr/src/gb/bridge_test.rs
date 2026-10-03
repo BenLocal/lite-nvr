@@ -178,3 +178,59 @@ async fn pull_active_does_two_phase_connect() {
     client.shutdown();
     answerer.abort();
 }
+
+#[tokio::test]
+async fn concurrent_not_found_starts_only_one_pull() {
+    let scfg = GbServerConfig::new(PLATFORM, DOMAIN, "127.0.0.1:0".parse().unwrap());
+    let (server, mut events) = GbServer::bind(scfg).await.unwrap();
+    let addr = server.local_addr();
+    let fake = FakeReceiver::default();
+    let probe = fake.clone();
+    let bridge = GbBridge::new(
+        server,
+        "127.0.0.1".into(),
+        Box::new(fake),
+        crate::zlm::cmd::ZlmControl::spawn(),
+    );
+    let (client, answerer) = spawn_answering_client(addr).await;
+    wait_registered(&mut events).await;
+    bridge.register_mapping("review-cam", DEVICE, CHANNEL, Transport::Udp);
+    let (a, b) = tokio::join!(
+        bridge.handle_media_not_found("review-cam"),
+        bridge.handle_media_not_found("review-cam")
+    );
+    assert!(a && b);
+    assert_eq!(probe.opened.lock().unwrap().len(), 1);
+    bridge.handle_media_no_reader("review-cam").await;
+    client.shutdown();
+    answerer.abort();
+}
+
+#[tokio::test]
+async fn unregister_waits_for_pending_pull() {
+    let scfg = GbServerConfig::new(PLATFORM, DOMAIN, "127.0.0.1:0".parse().unwrap());
+    let (server, mut events) = GbServer::bind(scfg).await.unwrap();
+    let addr = server.local_addr();
+    let fake = FakeReceiver::default();
+    let probe = fake.clone();
+    let bridge = GbBridge::new(
+        server,
+        "127.0.0.1".into(),
+        Box::new(fake),
+        crate::zlm::cmd::ZlmControl::spawn(),
+    );
+    let (client, answerer) = spawn_answering_client(addr).await;
+    wait_registered(&mut events).await;
+    bridge.register_mapping("review-cam", DEVICE, CHANNEL, Transport::Udp);
+    let (handled, ()) = tokio::join!(
+        bridge.handle_media_not_found("review-cam"),
+        bridge.unregister_mapping("review-cam")
+    );
+    assert!(handled);
+    assert!(!bridge.is_active("review-cam"));
+    assert!(!bridge.handle_media_not_found("review-cam").await);
+    assert_eq!(probe.opened.lock().unwrap().len(), 1);
+    bridge.handle_media_no_reader("review-cam").await;
+    client.shutdown();
+    answerer.abort();
+}

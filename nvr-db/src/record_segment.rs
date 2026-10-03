@@ -345,7 +345,7 @@ pub async fn list_older_than_days(
                 audio_codec, audio_sample_rate, audio_channels, audio_bit_rate,
                 reserve_text1, reserve_text2, reserve_text3, reserve_int1, reserve_int2, create_time, update_time
             FROM record_segments
-            WHERE create_time < datetime('now', ?1)
+            WHERE julianday(create_time) < julianday('now', ?1)
             ORDER BY start_time ASC
             "#,
             [modifier.as_str()],
@@ -356,6 +356,45 @@ pub async fn list_older_than_days(
         records.push(record_from_row(&row)?);
     }
     Ok(records)
+}
+
+/// Fetch a requested set in one query (e.g. batch playback deletion).
+pub async fn list_by_ids(ids: &[String], conn: &Connection) -> anyhow::Result<Vec<RecordSegment>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let in_clause = ids
+        .iter()
+        .map(|id| format!("'{}'", sql_text(id)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut rows = conn.query(format!("SELECT id, record_type, start_time, duration, file_size, file_name, file_path, folder, app, stream, vhost,
+                video_codec, video_width, video_height, video_fps, video_bit_rate,
+                audio_codec, audio_sample_rate, audio_channels, audio_bit_rate,
+                reserve_text1, reserve_text2, reserve_text3, reserve_int1, reserve_int2, create_time, update_time FROM record_segments WHERE id IN ({in_clause})"), ()).await?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next().await? {
+        records.push(record_from_row(&row)?);
+    }
+    Ok(records)
+}
+
+/// Delete only successfully removed files' rows, in a single statement.
+pub async fn delete_ids(ids: &[String], conn: &Connection) -> anyhow::Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let in_clause = ids
+        .iter()
+        .map(|id| format!("'{}'", sql_text(id)))
+        .collect::<Vec<_>>()
+        .join(",");
+    conn.execute(
+        format!("DELETE FROM record_segments WHERE id IN ({in_clause})"),
+        (),
+    )
+    .await?;
+    Ok(())
 }
 
 pub async fn delete(id: &str, conn: &Connection) -> anyhow::Result<()> {
@@ -407,3 +446,7 @@ fn record_from_row(row: &turso::Row) -> anyhow::Result<RecordSegment> {
         update_time,
     })
 }
+
+#[cfg(test)]
+#[path = "record_segment_test.rs"]
+mod record_segment_test;

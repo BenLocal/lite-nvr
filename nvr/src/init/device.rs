@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use anyhow::Context;
+
 use nvr_db::device::DeviceInfo;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -60,16 +62,60 @@ async fn init_device_pipes_inner(
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+struct GbInput {
+    device_id: String,
+    channel_id: String,
+}
+
+/// Validate source configuration before any persistence or runtime mutation.
+/// Offline cameras remain valid; this checks shape, not network reachability.
+pub(crate) fn validate_device_input(device: &DeviceInfo) -> anyhow::Result<()> {
+    match device.input_type.as_str() {
+        "gb28181" => {
+            let cfg: GbInput = serde_json::from_str(&device.input_value)
+                .context("invalid gb28181 device config")?;
+            if cfg.device_id.trim().is_empty() || cfg.channel_id.trim().is_empty() {
+                anyhow::bail!("gb28181 device_id and channel_id are required");
+            }
+        }
+        "onvif" => {
+            let cfg: nvr_onvif::OnvifConfig =
+                serde_json::from_str(&device.input_value).context("invalid onvif device config")?;
+            if cfg.host.trim().is_empty() || cfg.port == 0 {
+                anyhow::bail!("onvif host and a nonzero port are required");
+            }
+        }
+        "xiaomi" => {
+            let cfg: crate::xiaomi::XiaomiConfig = serde_json::from_str(&device.input_value)
+                .context("invalid xiaomi device config")?;
+            if [&cfg.user_id, &cfg.token, &cfg.did, &cfg.model, &cfg.ip]
+                .iter()
+                .any(|value| value.trim().is_empty())
+            {
+                anyhow::bail!("xiaomi account and device fields are required");
+            }
+        }
+        "net" | "rtsp" | "rtmp" | "stream" => {
+            reqwest::Url::parse(&device.input_value).context("invalid input URL")?;
+        }
+        "file" | "v4l2" | "x11grab" | "lavfi" => {}
+        _ => anyhow::bail!("unsupported input type: {}", device.input_type),
+    }
+    Ok(())
+}
+
 pub(crate) async fn ensure_device_pipe(
     detect_hub: &'static crate::detect::hub::DetectHub,
     device: &DeviceInfo,
 ) -> anyhow::Result<()> {
+    validate_device_input(device)?;
     // Xiaomi cameras bypass ffmpeg entirely: a native worker pushes the
     // decoded H264 straight into a ZLM Media. `input_value` carries the
     // XiaomiConfig as JSON.
     if device.input_type == "xiaomi" {
-        let cfg: crate::xiaomi::XiaomiConfig = serde_json::from_str(&device.input_value)
-            .map_err(|e| anyhow::anyhow!("invalid xiaomi device config: {e}"))?;
+        let cfg: crate::xiaomi::XiaomiConfig =
+            serde_json::from_str(&device.input_value).context("invalid xiaomi device config")?;
         let media = Arc::new(rszlm::media::Media::new_with_default_vhost(
             DEVICE_APP,
             device.id.as_str(),
@@ -86,13 +132,8 @@ pub(crate) async fn ensure_device_pipe(
     // the on-demand bridge can INVITE-pull when a viewer opens the stream. The
     // `input_value` carries `{ "device_id": "...", "channel_id": "..." }`.
     if device.input_type == "gb28181" {
-        #[derive(serde::Deserialize)]
-        struct GbInput {
-            device_id: String,
-            channel_id: String,
-        }
-        let gb: GbInput = serde_json::from_str(&device.input_value)
-            .map_err(|e| anyhow::anyhow!("invalid gb28181 device config: {e}"))?;
+        let gb: GbInput =
+            serde_json::from_str(&device.input_value).context("invalid gb28181 device config")?;
         match crate::gb::bridge() {
             Some(bridge) => {
                 // stream id == nvr device id (the ZLM stream name we pull into).
@@ -127,8 +168,8 @@ pub(crate) async fn ensure_device_pipe(
     // surface) and spawn a supervisor that resolves the RTSP URI just-in-time
     // and re-resolves on every reconnect, feeding the shared RTSP -> ZLM pipe.
     if device.input_type == "onvif" {
-        let cfg: nvr_onvif::OnvifConfig = serde_json::from_str(&device.input_value)
-            .map_err(|e| anyhow::anyhow!("invalid onvif device config: {e}"))?;
+        let cfg: nvr_onvif::OnvifConfig =
+            serde_json::from_str(&device.input_value).context("invalid onvif device config")?;
         crate::onvif::register(&device.id, cfg.clone());
         let media = Arc::new(rszlm::media::Media::new_with_default_vhost(
             DEVICE_APP,
@@ -166,10 +207,11 @@ pub(crate) async fn ensure_device_pipe(
         return Ok(());
     }
 
+    if matches!(device.input_type.as_str(), "net" | "rtsp" | "rtmp") {
+        return manager::upsert_network_device(device, detect_hub).await;
+    }
+
     let input = match device.input_type.as_str() {
-        "net" | "rtsp" | "rtmp" => InputConfig::Network {
-            url: device.input_value.clone(),
-        },
         "file" => InputConfig::File {
             path: device.input_value.clone(),
         },

@@ -108,6 +108,8 @@ impl Pipe {
                 e,
                 Backtrace::capture()
             );
+            *self.bus.lock().unwrap() = None;
+            bus.stop();
             self.started.store(false, Ordering::Relaxed);
             return;
         }
@@ -147,6 +149,7 @@ impl Pipe {
             }
         }
 
+        let has_outputs = !accepted.is_empty();
         // Second pass: spawn forwarder tasks into a JoinSet so the wait below
         // can observe the first one ending, then drain the rest on shutdown.
         let mut outputs = tokio::task::JoinSet::new();
@@ -168,15 +171,20 @@ impl Pipe {
             }
         }
 
-        if outputs.is_empty() && !self.config.outputs.is_empty() {
-            log::warn!("Pipe: no output task running");
-        }
-
-        // Every output is registered and its forwarder is consuming: start
-        // reading the input.
-        if let Err(e) = bus.start().await {
-            log::error!("Pipe: start input failed: {:#}", e);
-        }
+        // A failed open/output registration is a failed session. Return after
+        // teardown so a supervisor can retry instead of waiting forever.
+        let input_started = if has_outputs {
+            match bus.start().await {
+                Ok(()) => true,
+                Err(e) => {
+                    log::error!("Pipe: start input failed: {e:#}");
+                    false
+                }
+            }
+        } else {
+            log::warn!("Pipe: no output accepted");
+            false
+        };
 
         // Wait for cancellation — or for an output task to end. Forwarders only
         // end when the input side is done (EOF, read error, sink gone), so the
@@ -184,7 +192,9 @@ impl Pipe {
         // instead of idling forever; that lets a supervisor observe stream
         // death and restart (e.g. re-resolving an expired live-stream URL).
         // Pipes whose outputs are all in-bus (Network) keep the cancel-only wait.
-        if outputs.is_empty() {
+        if !input_started {
+            // All remaining resources are drained by the common teardown below.
+        } else if outputs.is_empty() {
             cancel.cancelled().await;
             log::info!("Pipe: cancelled");
         } else {

@@ -61,9 +61,11 @@ impl CleanupConfig {
 
 pub async fn load_config() -> Result<CleanupConfig> {
     let conn = app_db_conn()?;
-    Ok(nvr_db::config::get_json::<CleanupConfig>(CLEANUP_KEY, &conn)
-        .await?
-        .unwrap_or_default())
+    Ok(
+        nvr_db::config::get_json::<CleanupConfig>(CLEANUP_KEY, &conn)
+            .await?
+            .unwrap_or_default(),
+    )
 }
 
 pub async fn save_config(cfg: &CleanupConfig) -> Result<()> {
@@ -112,31 +114,22 @@ async fn run_once() -> Result<()> {
     // 1) Age rule: drop everything older than the cutoff.
     if cfg.max_age_days > 0 {
         let expired = record_segment::list_older_than_days(cfg.max_age_days, &conn).await?;
-        for seg in expired {
-            freed += seg.file_size as u64;
-            remove_segment(&seg, &conn).await;
-            removed += 1;
-        }
+        let result = remove_segments(&expired, &conn, None).await?;
+        freed = freed.saturating_add(result.freed);
+        removed += result.removed;
     }
 
     // 2) Size rule: prune the oldest until the total is under the cap.
     if cfg.max_total_gb > 0 {
         let cap = cfg.max_total_gb as u64 * 1024 * 1024 * 1024;
-        let mut total = record_segment::total_size(&conn).await?;
+        let total = record_segment::total_size(&conn).await?;
         if total > cap {
             // list() is newest-first; reverse to delete the oldest first.
             let mut segs = record_segment::list(&conn).await?;
             segs.reverse();
-            for seg in segs {
-                if total <= cap {
-                    break;
-                }
-                let size = seg.file_size as u64;
-                remove_segment(&seg, &conn).await;
-                total = total.saturating_sub(size);
-                freed += size;
-                removed += 1;
-            }
+            let result = remove_segments(&segs, &conn, Some(total - cap)).await?;
+            freed = freed.saturating_add(result.freed);
+            removed += result.removed;
         }
     }
 
@@ -149,22 +142,57 @@ async fn run_once() -> Result<()> {
     Ok(())
 }
 
-/// Remove one segment's file (best-effort) and its DB row.
-async fn remove_segment(seg: &RecordSegment, conn: &turso::Connection) {
-    remove_file(&seg.file_path).await;
-    if let Err(e) = record_segment::delete(&seg.id, conn).await {
-        log::warn!("record cleanup: db delete '{}' failed: {e:#}", seg.id);
+pub(crate) struct RemovalSummary {
+    pub removed: usize,
+    pub freed: u64,
+    pub failed: usize,
+}
+
+/// Remove files first, then batch-delete only successful rows. An absent file
+/// is already removed; other errors retain its row so the next pass can retry.
+pub(crate) async fn remove_segments(
+    segments: &[RecordSegment],
+    conn: &turso::Connection,
+    bytes_to_free: Option<u64>,
+) -> Result<RemovalSummary> {
+    let mut ids = Vec::new();
+    let mut freed: u64 = 0;
+    let mut failed = 0;
+    for seg in segments {
+        if bytes_to_free.is_some_and(|limit| freed >= limit) {
+            break;
+        }
+        match remove_file(&seg.file_path).await {
+            Ok(()) => {
+                ids.push(seg.id.clone());
+                freed = freed.saturating_add(seg.file_size as u64);
+            }
+            Err(error) => {
+                failed += 1;
+                log::warn!("record delete '{}' failed: {error:#}", seg.id);
+            }
+        }
+    }
+    record_segment::delete_ids(&ids, conn).await?;
+    Ok(RemovalSummary {
+        removed: ids.len(),
+        freed,
+        failed,
+    })
+}
+
+async fn remove_file(path: &str) -> Result<()> {
+    use anyhow::Context;
+    if path.is_empty() {
+        anyhow::bail!("record segment has no file path");
+    }
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("delete recording file '{path}'")),
     }
 }
 
-/// Best-effort file removal; a missing file is not an error.
-async fn remove_file(path: &str) {
-    if path.is_empty() {
-        return;
-    }
-    match tokio::fs::remove_file(path).await {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => log::warn!("record cleanup: delete file '{path}' failed: {e:#}"),
-    }
-}
+#[cfg(test)]
+#[path = "cleanup_test.rs"]
+mod cleanup_test;

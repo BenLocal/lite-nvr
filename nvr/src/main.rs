@@ -15,6 +15,7 @@ mod detect;
 mod gb;
 mod handler;
 mod init;
+mod lifecycle;
 mod livestream;
 mod manager;
 mod metrics;

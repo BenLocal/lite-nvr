@@ -511,3 +511,29 @@ async fn test_full_raw_sink_does_not_end_forwarder() {
     assert!(matches!(first, Ok(Some(_))));
     forwarder.abort();
 }
+
+#[tokio::test]
+async fn test_failed_input_open_ends_pipe_without_cancel() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    let pipe = Pipe::new(PipeConfig {
+        input: InputConfig::Network {
+            url: format!("tcp://{addr}"),
+        },
+        outputs: vec![OutputConfig::new(
+            OutputDest::RawFrame {
+                sink: Arc::new(RawSinkSource::new()),
+            },
+            None,
+        )],
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), pipe.start(None))
+            .await
+            .is_ok(),
+        "failed input was left waiting for cancellation"
+    );
+    assert!(!pipe.is_started());
+    assert!(pipe.subscribe_video().await.is_err());
+}

@@ -31,7 +31,7 @@
 - **坐标**：bbox 是原始帧像素坐标，附带 `frame_w/frame_h`，由消费方自己缩放。叠框按预览 `<video>` 的 `object-fit: contain` 做 letterbox 映射（`utils/detectOverlay.ts` 的 `frameToScreen`：scale 取宽高比例的较小值，居中加偏移）。overlay 测量的是 `.preview-media` 容器的尺寸，不依赖 video 元素本身。模型颜色按它在 `listDetectModels()` 里的序号从固定调色板取，所以某帧报错没出结果，颜色也不会变。
 - **按设备配置的形态**：`DeviceInfo.config: DeviceConfig { detect: Option<DetectConfig> }`，存在 KV JSON 里，带 `#[serde(default)]`，**不需要 migration**，旧数据行解出来就是 `detect: None`（关闭）。`DetectConfig { enabled, models(空=全部), sample_every_ms(0=hub 默认), min_confidence(0=保留模型自带阈值) }`。
 - **`min_confidence` 是推理后过滤**（已批准的决策 a）：不按设备重建模型，否则每个设备都要重新实例化一个 ONNX session。实际生效的阈值是 `max(manifest conf, min_confidence)`。
-- **支持检测的输入类型**：只有 manager 里登记为 `Entry::Pipe` 的才支持：`net/rtsp/rtmp/file/v4l2/x11grab/lavfi`。onvif/stream 登记的是 `Entry::Task`（它们复用的是管线*驱动*，不是*登记方式*），xiaomi 是 `Entry::Worker`，gb28181 没有常驻管线，`get_pipe` 对这几类都返回 `None`。原设计稿说「onvif 算 pipe-backed」，是错的。这份名单由后端通过 capabilities 接口下发，前端不另外写死。
+- **支持检测的输入类型**：manager 里的 `Entry::Pipe` 与暴露当前会话的 `Entry::ReconnectingPipe` 支持：`net/rtsp/rtmp/file/v4l2/x11grab/lavfi`。onvif/stream 登记的是 `Entry::Task`（它们复用的是管线*驱动*，不是*登记方式*），xiaomi 是 `Entry::Worker`，gb28181 没有常驻管线，`get_pipe` 对这几类都返回 `None`。原设计稿说「onvif 算 pipe-backed」，是错的。这份名单由后端通过 capabilities 接口下发，前端不另外写死。
 - **保留手动开关**（已批准的决策 b）：设备配置是 auto-start 的唯一依据；overlay 是可视化 + 手动开关，两者走同一个幂等的 hub。
 - **模型名校验**：先 trim、去重，最多 32 个名字，每个最多 128 字符；`sample_every_ms` 只能是 0 或 `1..=3_600_000`，`min_confidence` 在 `[0,1]`。新增/修改设备时不合法直接拒绝；库里已有的不合法配置在 reconcile 时按关闭处理并告警。名字未知时忽略并告警，只跑合法子集；全部未知、解析后为空时退回跑全部模型，兼容历史配置。
 
@@ -51,7 +51,7 @@
 - `POST /{pipe}/stop`，body 可选 `{lease}`。带 lease 时是条件停止：只有 lease 仍是当前那一代 tap 才停，不会误停替换后的新 tap，也不会取消待执行的 auto-start。不带 lease 时无条件停止，同时取消待执行的 auto-start。返回 `stopped` / `not running`，lease 不是数字返回 400。
 - `GET /{pipe}/latest` → `FrameResult {ts, frame_w, frame_h, models:[{name, infer_ms, detections:[{class_id,label,bbox:{x1,y1,x2,y2},confidence}], error}]}`；还没有结果时返回 404。
 - `GET /models` → `string[]`；`GET /capabilities` → `{models, supported_input_types, max_sample_interval_ms, max_model_count, max_model_name_chars}`。清单缺失时返回成功，`models` 为空。
-- 删除设备时调用 `hub.stop`；新增/修改设备走 `ensure_device_pipe` → `reconcile_detection`（先清掉旧 tap，因为它绑在已拆掉的旧 bus 上）。
+- 删除设备时调用 `hub.stop`；新增/修改设备走 `ensure_device_pipe` → `reconcile_detection`（先清掉旧 tap，因为它绑在已拆掉的旧 bus 上）。普通网络设备重连时重新 reconcile；会话结束时停止旧 tap。
 
 前端（`DeviceListView` + `DetectionConfigFields` + `DetectionOverlay`）：
 - 「检测」tab 只对 capabilities 返回的输入类型显示。capabilities 请求失败有单独的错误/重试状态（不能当成「未配置检测模型」）；能力没就绪时禁止保存已启用的检测。换成不支持检测的类型时，payload 的 `config` 整体置为 `undefined`。表单默认抽帧间隔是 1000ms，填 0 表示用服务端默认值（500）。

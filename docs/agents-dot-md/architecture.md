@@ -18,7 +18,7 @@
 
 ## 三、关键设计决策
 
-- **一个 registry 管三种设备源**：ffmpeg Pipe、原生线程（小米，绕开 ffmpeg）、异步 supervisor（直播平台每次重连重新解析拉流地址）共用 `manager` 的同一个 map，增删改与状态查询统一处理；替换同 id 源前必须先 `stop` 再 `join`，确保旧 ZLM `Media` 已释放。
+- **一个 registry 统一管理设备源**：ffmpeg Pipe、网络 Pipe supervisor（net/rtsp/rtmp 断流后重建媒体会话）、原生线程（小米，绕开 ffmpeg）、异步 supervisor（直播平台每次重连重新解析拉流地址）共用 `manager` 的同一个 map，增删改与状态查询统一处理；替换同 id 源前必须先 `stop` 再 `join`，确保旧 ZLM `Media` 已释放。同 id 的替换和删除通过异步操作门串行化；关停等待操作结束并禁止后续插入。普通网络设备从 2 秒退避重试到最多 60 秒，连续运行 30 秒后重置退避；删除打断当前会话或重试等待。
 - **检测 auto-start 要等 bus 就绪**：`Pipe::start` 是 spawn 出去的，RTSP 源要等 demuxer 读到流头后才能订阅；auto-start 有限时重试，过期重试会被取消。
 - **ONNX 推理放独立大栈线程**：ONNX Runtime 构建 session / 推理递归很深，会爆 tokio `spawn_blocking` 默认约 2 MiB 栈。
 - **检测模型清单缺失不阻塞启动**：`DETECT_MODELS_DIR/models.json` 不存在时正常启动，检测接口报未配置。

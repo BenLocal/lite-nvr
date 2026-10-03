@@ -23,6 +23,8 @@ pub struct GbBridge {
     receiver: Box<dyn MediaReceiver>,
     streams: StreamMap,
     active: Mutex<HashMap<String, ActiveSession>>,
+    operations: crate::lifecycle::KeyedLocks,
+    shutting_down: std::sync::atomic::AtomicBool,
     media_cache: MediaCache,
     control: ZlmControl,
 }
@@ -51,6 +53,8 @@ impl GbBridge {
             receiver,
             streams: StreamMap::new(),
             active: Mutex::new(HashMap::new()),
+            operations: Default::default(),
+            shutting_down: std::sync::atomic::AtomicBool::new(false),
             media_cache: MediaCache,
             control,
         }
@@ -102,20 +106,21 @@ impl GbBridge {
 
     /// Remove the mapping and tear down any live session for it.
     pub async fn unregister_mapping(&self, stream_id: &str) {
+        let _operation = self.operations.lock(stream_id).await;
         self.streams.unregister(stream_id);
         self.teardown(stream_id).await;
     }
 
-    /// ZLM `on_media_not_found`: pull the stream if it's a known gb mapping and
-    /// not already active. Idempotent for *sequential* re-fires (ZLM may fire
-    /// this repeatedly); *concurrent* duplicate fires can transiently double-pull
-    /// (a second INVITE + RtpServer port), but that self-heals — the losing
-    /// `ActiveSession` is dropped by the `insert` in `start_pull`, releasing its
-    /// port and sending a janitor-backed BYE via `MediaSession::drop`. Returns
-    /// true iff this bridge recognizes and is handling the stream.
-    // TODO(P1-3+): close the concurrent double-pull window by reserving the slot
-    // under the lock (e.g. `enum Slot { Pulling, Active(ActiveSession) }`).
+    /// Serialize pull and teardown for this stream, including the pending
+    /// INVITE. Duplicate hooks wait for the first pull and reuse its session.
     pub async fn handle_media_not_found(&self, stream_id: &str) -> bool {
+        let _operation = self.operations.lock(stream_id).await;
+        if self
+            .shutting_down
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return false;
+        }
         let Some(mapping) = self.streams.get(stream_id) else {
             return false;
         };
@@ -189,7 +194,18 @@ impl GbBridge {
 
     /// ZLM `on_media_no_reader`: last viewer left — BYE and release.
     pub async fn handle_media_no_reader(&self, stream_id: &str) {
+        let _operation = self.operations.lock(stream_id).await;
         self.teardown(stream_id).await;
+    }
+
+    pub async fn shutdown(&self) {
+        self.shutting_down
+            .store(true, std::sync::atomic::Ordering::Release);
+        // A pending pull also holds its key gate, so teardown waits for it.
+        for (stream_id, _) in self.streams.list() {
+            self.handle_media_no_reader(&stream_id).await;
+        }
+        self.server.shutdown();
     }
 
     async fn teardown(&self, stream_id: &str) {

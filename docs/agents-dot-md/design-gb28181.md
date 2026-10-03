@@ -66,13 +66,9 @@
   - `MediaCache::is_live` 实时调 `MediaSource::for_each` 查询，不在本地缓存。
   - P4b 原设计是用 `on_media_changed` 维护本地集合，后来改掉了，因为事件丢失、迟到或强制关闭都会让缓存漂移。
   - 只有 live 的流才额外调 `rtp_info` 补充 peer / ssrc / port。
-- **已知并发窗口（TODO）**
-  - `handle_media_not_found` 对顺序重复触发是幂等的。
-  - 并发重复触发会双拉（两次 INVITE）。`bridge.rs` 的注释说这种情况能自愈，但 P4a 之后已经不成立了：
-    - `zlm-rtp` worker 的 `RtpServer` 表以 `stream_id` 为 key，第二次 `OpenRtp` 会把第一个 server 顶掉。
-    - 落败的 `ActiveSession` 被 drop 时会发 `CloseRtp(stream_id)`，把胜出方的 server 也一起关掉。
-    - 结果是活跃表认为流还在拉，实际上没有接收端。
-  - 根治办法是在锁内预占 slot（`Slot::Pulling`）。
+- **同流拉取与拆除串行化**
+  - `handle_media_not_found`、无读者拆流和注销映射共用按 `stream_id` 的异步操作门；重复 hook 等待正在进行的 INVITE，随后复用活跃会话。
+  - 不同流独立；同步映射锁不跨 await。关停先禁止新拉取，再等待进行中的拉取完成并拆流。
 - **`MediaSession` 用 RAII 管理**：`stop().await` 发 BYE；直接 Drop 会把 dialog 交给 janitor 补发 BYE；设备主动 BYE 时产生 `SessionClosed` 事件。
 - **PTZ 重试策略**
   - Stop 和预置位命令在传输失败时重试一次。
