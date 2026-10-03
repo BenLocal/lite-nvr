@@ -128,10 +128,32 @@ fn test_hardware_encoder_runtime_failure_falls_back_to_software() -> anyhow::Res
     Ok(())
 }
 
+/// Fill an audio frame with silence. `Audio::new` leaves samples
+/// uninitialized (garbage floats make AAC fail with EINVAL or crawl), and
+/// ffmpeg-next's `data_mut(i)` is empty for planar planes i > 0 (FFmpeg only
+/// sets `linesize[0]` for audio), so zeroing via `data_mut` misses channels.
+fn fill_silence(frame: &mut ffmpeg_next::frame::Audio) {
+    let fmt: ffmpeg_next::ffi::AVSampleFormat = frame.format().into();
+    let (samples, channels) = (frame.samples() as i32, i32::from(frame.channels()));
+    // SAFETY: the frame was allocated by `Audio::new` for exactly this
+    // format, sample count and channel count; extended_data has one plane per
+    // channel (planar) or one interleaved plane.
+    unsafe {
+        ffmpeg_next::ffi::av_samples_set_silence(
+            (*frame.as_mut_ptr()).extended_data,
+            0,
+            samples,
+            channels,
+            fmt,
+        );
+    }
+}
+
 fn audio_frame(pts: i64, samples: usize) -> ffmpeg_next::frame::Audio {
     let fmt = ffmpeg_next::format::Sample::F32(ffmpeg_next::format::sample::Type::Planar);
     let mut frame =
         ffmpeg_next::frame::Audio::new(fmt, samples, ffmpeg_next::ChannelLayout::STEREO);
+    fill_silence(&mut frame);
     frame.set_rate(48_000);
     frame.set_pts(Some(pts));
     frame
@@ -214,4 +236,96 @@ fn test_pick_sample_rate() {
         24_000,
         "tie → higher"
     );
+}
+
+fn test_mp4_streams() -> Option<(AvInput, crate::stream::AvStream, crate::stream::AvStream)> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test.mp4");
+    if !path.exists() {
+        return None;
+    }
+    let input = AvInput::new(path.to_str()?, None, None).ok()?;
+    let video = input.streams().values().find(|s| s.is_video())?.clone();
+    let audio = input.streams().values().find(|s| s.is_audio())?.clone();
+    Some((input, video, audio))
+}
+
+/// The source changing resolution mid-stream (camera profile switch) keeps
+/// the transcode running: the scaler is rebuilt instead of rejecting every
+/// later frame.
+#[test]
+fn test_encoder_survives_resolution_change() -> anyhow::Result<()> {
+    use crate::frame::{RawFrame, RawVideoFrame};
+    use ffmpeg_next::format::Pixel;
+    let Some((_input, video, _)) = test_mp4_streams() else {
+        return Ok(());
+    };
+    let settings = Settings {
+        width: 160,
+        height: 120,
+        ..Settings::default()
+    };
+    let mut encoder = Encoder::new(&video, settings, None)?;
+    let mut packets = 0;
+    for (i, (w, h)) in [(320, 240), (320, 240), (640, 480), (640, 480)]
+        .into_iter()
+        .enumerate()
+    {
+        let mut f = ffmpeg_next::frame::Video::new(Pixel::YUV420P, w, h);
+        f.set_pts(Some(i as i64 * 1024));
+        encoder.send_frame(RawFrame::Video(RawVideoFrame::from(f)))?;
+        while encoder.encoder_receive_packet()?.is_some() {
+            packets += 1;
+        }
+    }
+    encoder.send_eof()?;
+    while encoder.encoder_receive_packet()?.is_some() {
+        packets += 1;
+    }
+    assert_eq!(
+        packets, 4,
+        "every frame encoded across the resolution change"
+    );
+    Ok(())
+}
+
+/// The source changing sample rate / layout mid-stream keeps the audio
+/// transcode running (the resampler is rebuilt).
+#[test]
+fn test_encoder_survives_audio_format_change() -> anyhow::Result<()> {
+    use crate::encoder::AudioSettings;
+    use crate::frame::{RawAudioFrame, RawFrame};
+    use ffmpeg_next::{ChannelLayout, format::Sample, format::sample::Type};
+    let Some((_input, _, audio)) = test_mp4_streams() else {
+        return Ok(());
+    };
+    let mut encoder = Encoder::new_audio(&audio, AudioSettings::default(), None)?;
+    let mut packets = 0;
+    let mut pts = 0i64;
+    for (rate, layout) in [
+        (48_000, ChannelLayout::STEREO),
+        (48_000, ChannelLayout::STEREO),
+        (44_100, ChannelLayout::MONO),
+        (44_100, ChannelLayout::MONO),
+    ] {
+        for _ in 0..10 {
+            let mut f = ffmpeg_next::frame::Audio::new(Sample::F32(Type::Planar), 1024, layout);
+            fill_silence(&mut f);
+            f.set_rate(rate);
+            f.set_pts(Some(pts));
+            pts += 1024;
+            encoder.send_frame(RawFrame::Audio(RawAudioFrame::from(f)))?;
+            while encoder.encoder_receive_packet()?.is_some() {
+                packets += 1;
+            }
+        }
+    }
+    encoder.send_eof()?;
+    while encoder.encoder_receive_packet()?.is_some() {
+        packets += 1;
+    }
+    assert!(
+        packets > 30,
+        "audio kept encoding across the change: {packets} packets"
+    );
+    Ok(())
 }

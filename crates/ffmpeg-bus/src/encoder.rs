@@ -170,7 +170,10 @@ struct AudioResampler {
     out_format: ffmpeg_next::format::Sample,
     out_layout: ffmpeg_next::ChannelLayout,
     out_rate: u32,
+    /// Input parameters the current `swr` was built for.
     in_rate: u32,
+    in_format: ffmpeg_next::format::Sample,
+    in_layout: ffmpeg_next::ChannelLayout,
     frame_size: usize,
     /// Running output sample count, used as each emitted frame's PTS (in the
     /// encoder's `1/sample_rate` time base). Anchored on the first frame to the
@@ -229,6 +232,8 @@ impl AudioResampler {
             out_layout,
             out_rate,
             in_rate: input.rate(),
+            in_format: input.format(),
+            in_layout: input.channel_layout(),
             frame_size,
             next_pts: 0,
             started: false,
@@ -236,8 +241,55 @@ impl AudioResampler {
         })
     }
 
+    /// The source changed sample rate / format / layout mid-stream (swr would
+    /// reject every frame from then on): flush what the old converter holds
+    /// into the FIFO and rebuild it for the new input. The output timeline
+    /// (FIFO + PTS) carries on unchanged.
+    fn reconfigure(&mut self, input: &ffmpeg_next::frame::Audio) -> anyhow::Result<()> {
+        log::info!(
+            "audio input changed ({:?} {}Hz -> {:?} {}Hz): rebuilding resampler",
+            self.in_format,
+            self.in_rate,
+            input.format(),
+            input.rate()
+        );
+        loop {
+            let mut tail =
+                ffmpeg_next::frame::Audio::new(self.out_format, self.frame_size, self.out_layout);
+            let more = self.swr.flush(&mut tail)?.is_some();
+            if tail.samples() > 0 {
+                self.fifo_write(&tail)?;
+            }
+            if !more || tail.samples() == 0 {
+                break;
+            }
+        }
+        self.swr = ffmpeg_next::software::resampling::Context::get(
+            input.format(),
+            input.channel_layout(),
+            input.rate(),
+            self.out_format,
+            self.out_layout,
+            self.out_rate,
+        )?;
+        self.in_rate = input.rate();
+        self.in_format = input.format();
+        self.in_layout = input.channel_layout();
+        // Input PTS may now count in different units: no gap detection across
+        // the switch.
+        self.expected_in_pts = None;
+        Ok(())
+    }
+
     /// Resample `input` and buffer the converted samples in the FIFO.
     fn push(&mut self, input: &ffmpeg_next::frame::Audio) -> anyhow::Result<()> {
+        if self.started
+            && (input.rate() != self.in_rate
+                || input.format() != self.in_format
+                || input.channel_layout() != self.in_layout)
+        {
+            self.reconfigure(input)?;
+        }
         if !self.started {
             self.started = true;
             // Anchor the output PTS to the first frame's presentation time so
@@ -398,6 +450,8 @@ pub struct Encoder {
     interleaved: bool,
     frame_index: i64,
     scaler: Option<Scaler>,
+    /// Input (format, width, height) the current `scaler` was built for.
+    scaler_input: Option<(ffmpeg_next::format::Pixel, u32, u32)>,
     audio_resampler: Option<AudioResampler>,
     /// Encoding on a hardware codec; cleared after a runtime downgrade.
     is_hw: bool,
@@ -520,6 +574,7 @@ impl Encoder {
             interleaved: false,
             frame_index: 0,
             scaler: None,
+            scaler_input: None,
             audio_resampler: None,
             is_hw: selected_is_hw,
             codec_name: selected_name.clone().unwrap_or_default(),
@@ -630,6 +685,7 @@ impl Encoder {
             interleaved: false,
             frame_index: 0,
             scaler: None,
+            scaler_input: None,
             audio_resampler: None,
             is_hw: false,
             codec_name: codec_name.to_string(),
@@ -669,6 +725,14 @@ impl Encoder {
                 // Read-only: the scaler writes into a new frame.
                 let f = vf.as_video();
                 if f.format() != ef || f.width() != ew || f.height() != eh {
+                    // (Re)build on first use and whenever the source changes
+                    // resolution / format mid-stream: a stale scaler rejects
+                    // every frame (InputChanged) and the output goes dark.
+                    let input_key = (f.format(), f.width(), f.height());
+                    if self.scaler_input != Some(input_key) {
+                        self.scaler = None;
+                        self.scaler_input = Some(input_key);
+                    }
                     if self.scaler.is_none() {
                         self.scaler =
                             Some(Scaler::new(ffmpeg_next::software::scaling::Context::get(
