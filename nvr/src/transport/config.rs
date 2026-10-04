@@ -43,6 +43,40 @@ fn default_workgroup() -> String {
     "WORKGROUP".to_string()
 }
 
+/// Missing selection preserves legacy all-stream routing; an empty list sends none.
+#[derive(Debug, Deserialize)]
+pub struct TransportRouting {
+    #[serde(default)]
+    pub stream_ids: Option<Vec<String>>,
+}
+
+pub fn validate_config(kind: &str, config: &serde_json::Value) -> anyhow::Result<()> {
+    let routing: TransportRouting = serde_json::from_value(config.clone())?;
+    if routing
+        .stream_ids
+        .as_ref()
+        .is_some_and(|ids| ids.iter().any(|id| id.trim().is_empty()))
+    {
+        anyhow::bail!("device IDs must not be blank");
+    }
+    match kind {
+        "ftp" => {
+            let cfg: FtpConfig = serde_json::from_value(config.clone())?;
+            if cfg.host.trim().is_empty() || cfg.port == 0 {
+                anyhow::bail!("FTP host and a nonzero port are required");
+            }
+        }
+        "smb" => {
+            let cfg: SmbConfig = serde_json::from_value(config.clone())?;
+            if cfg.host.trim().is_empty() || cfg.share.trim_matches('/').trim().is_empty() {
+                anyhow::bail!("SMB host and share are required");
+            }
+        }
+        other => anyhow::bail!("unsupported transport kind: {other}"),
+    }
+    Ok(())
+}
+
 /// Build the remote key `[base_path/]<stream>/<file_name>` with clean slashes.
 pub fn remote_key(base_path: &str, stream: &str, file_name: &str) -> String {
     let mut parts: Vec<&str> = Vec::new();

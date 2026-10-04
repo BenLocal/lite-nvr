@@ -282,8 +282,22 @@ pub async fn list_needing_transport(
     target_id: &str,
     max_attempts: i64,
     limit: usize,
+    stream_ids: Option<&[String]>,
     conn: &Connection,
 ) -> anyhow::Result<Vec<RecordSegment>> {
+    let mut parameters = vec![target_id];
+    let stream_filter = match stream_ids {
+        None => String::new(),
+        Some([]) => return Ok(Vec::new()),
+        Some(ids) => {
+            parameters.extend(ids.iter().map(String::as_str));
+            let placeholders = (2..=parameters.len())
+                .map(|index| format!("?{index}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("AND rs.stream IN ({placeholders})")
+        }
+    };
     let sql = format!(
         r#"
         SELECT
@@ -293,12 +307,13 @@ pub async fn list_needing_transport(
             rs.reserve_text1, rs.reserve_text2, rs.reserve_text3, rs.reserve_int1, rs.reserve_int2, rs.create_time, rs.update_time
         FROM record_segments rs
         LEFT JOIN transport_jobs tj ON tj.segment_id = rs.id AND tj.target_id = ?1
-        WHERE tj.id IS NULL OR (tj.status = 2 AND tj.attempts < {max_attempts})
+        WHERE (tj.id IS NULL OR (tj.status = 2 AND tj.attempts < {max_attempts}))
+        {stream_filter}
         ORDER BY rs.start_time ASC
         LIMIT {limit}
         "#,
     );
-    let mut rows = conn.query(&sql, [target_id]).await?;
+    let mut rows = conn.query(&sql, parameters).await?;
     let mut records = Vec::new();
     while let Some(row) = rows.next().await? {
         records.push(record_from_row(&row)?);

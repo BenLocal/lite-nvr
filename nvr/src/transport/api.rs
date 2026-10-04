@@ -15,16 +15,23 @@ use nvr_db::transport_target::{self, TransportTarget};
 use crate::db::app_db_conn;
 use crate::handler::{ApiJsonResult, ok_empty, ok_json};
 use crate::transport::backend::build_backend;
-use crate::transport::config::redact_config;
+use crate::transport::config::{redact_config, validate_config};
 
 pub fn transport_router() -> Router {
     Router::new()
+        .route("/capabilities", get(capabilities))
         .route("/targets", get(list_targets))
         .route("/target/add", post(add_target))
         .route("/target/update/{id}", post(update_target))
         .route("/target/remove/{id}", post(remove_target))
         .route("/target/test/{id}", post(test_target))
         .route("/jobs/{target_id}", get(list_jobs))
+}
+
+async fn capabilities() -> ApiJsonResult<serde_json::Value> {
+    Ok(ok_json(
+        serde_json::json!({ "smb_enabled": cfg!(feature = "smb") }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -96,6 +103,7 @@ async fn list_targets() -> ApiJsonResult<Vec<TargetDto>> {
 
 async fn add_target(Json(payload): Json<TargetPayload>) -> ApiJsonResult<TargetDto> {
     validate_kind(payload.kind.trim())?;
+    validate_payload(&payload)?;
     let conn = app_db_conn()?;
     let now = chrono::Utc::now().to_rfc3339();
     let target = TransportTarget {
@@ -117,6 +125,7 @@ async fn update_target(
     Json(payload): Json<TargetPayload>,
 ) -> ApiJsonResult<TargetDto> {
     validate_kind(payload.kind.trim())?;
+    validate_payload(&payload)?;
     let conn = app_db_conn()?;
     let existing = transport_target::get(&id, &conn)
         .await?
@@ -136,6 +145,17 @@ async fn update_target(
     transport_target::upsert(&target, &conn).await?;
     let (done, failed, pending) = transport_job::counts_by_status(&target.id, &conn).await?;
     Ok(ok_json(to_dto(target, done, failed, pending)))
+}
+
+fn validate_payload(payload: &TargetPayload) -> anyhow::Result<()> {
+    if payload.name.trim().is_empty() {
+        anyhow::bail!("transport target name is required");
+    }
+    validate_config(payload.kind.trim(), &payload.config)?;
+    if payload.enabled && payload.kind.trim() == "smb" && !cfg!(feature = "smb") {
+        anyhow::bail!("SMB transport support is not enabled in this server");
+    }
+    Ok(())
 }
 
 /// Keep the stored password when the client sends a blank one (the redacted
@@ -180,3 +200,7 @@ async fn list_jobs(Path(target_id): Path<String>) -> ApiJsonResult<Vec<Transport
     let jobs = transport_job::list_recent(&target_id, 50, &conn).await?;
     Ok(ok_json(jobs))
 }
+
+#[cfg(test)]
+#[path = "api_test.rs"]
+mod api_test;

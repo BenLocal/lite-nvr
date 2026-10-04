@@ -16,7 +16,7 @@
 - 每个模型多种输入尺寸、训练/导出；GPU：`device` 字段会透传给 usls，但 crate 没开任何 CUDA/TensorRT feature，只验证过 CPU。
 - device-config 后续阶段（复用 Phase 1 的 Tabs 外壳和 `DeviceConfig` JSON 存储）：
   - Phase 2：ONVIF/GB 码流参数（profile/子码流选择；ONVIF `profile_token` 已接进 `stream_uri()`）。另一项待办：暴露 onvif/stream supervisor 里的内部 pipe，让检测也能挂上去。
-  - Phase 3：转发路由，需要 targets CRUD（Settings）、设备到 target 的映射、worker 过滤（worker 目前完全是全局的）。
+  - Phase 3：录像转存目标 CRUD（Settings）及目标按设备选择、worker 过滤已实现，见 `design-recorder.md`；设备表单中的目标选择入口尚未接入。
   - Phase 4：录像，按设备覆盖保留期，和/或录像计划（后端还没有，工作量最大）。
 
 ## 二、关键决策与原因

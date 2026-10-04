@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import Card from 'primevue/card'
+import TransportSettings from '../components/TransportSettings.vue'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
 import Dialog from 'primevue/dialog'
@@ -222,9 +223,11 @@ onMounted(async () => {
     <div class="page-header">
       <div class="header-content">
         <h1 class="page-title">设置</h1>
-        <p class="page-subtitle">配置控制台的播放与显示行为</p>
+        <p class="page-subtitle">配置播放器、录像转存和账户安全</p>
       </div>
     </div>
+
+    <TransportSettings />
 
     <Card class="data-card settings-card">
       <template #header>

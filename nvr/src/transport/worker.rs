@@ -45,6 +45,17 @@ async fn sweep() -> Result<()> {
     let conn = crate::db::app_db_conn()?;
     let targets = transport_target::list_enabled(&conn).await?;
     for target in targets {
+        let routing = match serde_json::from_str::<super::config::TransportRouting>(&target.config)
+        {
+            Ok(routing) => routing,
+            Err(e) => {
+                log::warn!(
+                    "transport: target '{}' has invalid device selection: {e}",
+                    target.name
+                );
+                continue;
+            }
+        };
         let backend = match build_backend(&target) {
             Ok(backend) => backend,
             Err(e) => {
@@ -59,6 +70,7 @@ async fn sweep() -> Result<()> {
             &target.id,
             MAX_ATTEMPTS,
             BATCH_PER_TARGET,
+            routing.stream_ids.as_deref(),
             &conn,
         )
         .await?;

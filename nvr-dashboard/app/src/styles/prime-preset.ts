@@ -255,6 +255,28 @@ const NvrPrimePreset = definePreset(Aura, {
         }
       `,
     },
+    multiselect: {
+      root: controlRoot,
+      dropdown: {
+        color: '#cbd5e1',
+      },
+      overlay: {
+        background: 'rgb(15 23 42 / 98%)',
+        borderColor: 'rgb(148 163 184 / 16%)',
+        borderRadius: '0.75rem',
+        color: '#e2e8f0',
+        shadow: '0 18px 54px rgb(2 6 23 / 62%)',
+      },
+      option: {
+        color: '#cbd5e1',
+        focusColor: '#e2e8f0',
+        focusBackground: 'rgb(148 163 184 / 10%)',
+        selectedColor: '#bfdbfe',
+        selectedBackground: 'rgb(59 130 246 / 18%)',
+        selectedFocusColor: '#bfdbfe',
+        selectedFocusBackground: 'rgb(59 130 246 / 22%)',
+      },
+    },
     tabs: {
       tablist: {
         background: 'rgb(30 41 59 / 40%)',
