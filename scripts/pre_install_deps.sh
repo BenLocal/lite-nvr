@@ -222,7 +222,7 @@ main() {
     # Allow custom URL override
     if [[ -n "${FFMPEG_URL:-}" ]]; then
         ffmpeg_url="${FFMPEG_URL}"
-        platform="custom"
+        platform="$(detect_platform)"
     else
         platform="$(detect_platform)"
         ffmpeg_url="$(get_ffmpeg_url "${platform}")"

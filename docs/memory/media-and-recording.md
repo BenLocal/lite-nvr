@@ -40,3 +40,6 @@
 - 2026-10-03：无损输入恰好填满 4096 包队列时仍收到 Lagged(1)，最后只剩 4095 包 → EOF 也占队列槽位，原先只有 Data 等空位 → Data 和 EOF 统一走背压发送（证据：input_test `test_lossless_eof_does_not_evict_last_full_queue`）。
 - 2026-10-03：浅拷贝帧属性后通过 get_mut 修改像素会影响原帧 → 外层 Arc 独占不代表 FFmpeg AVBuffer 独占 → 不公开返回共享缓冲的可变 Video，只公开 set_pts；get_mut 额外检查 av_frame_is_writable，共享时深拷贝（证据：frame_test `test_pixel_write_after_property_copy_keeps_original_unchanged`；替代此前公开 props_mut 的做法）。
 - 2026-10-03：混音总线用 8kHz 源作 template 时，三个正常混音帧却生成 14 个 AAC 包 → DynamicMixerTask 输出 PTS 始终按混音采样率（48kHz）计数，源流时间基只适用于源帧 → MixBus 创建编码器时必须提供 1/48000 时间基，不得直接传原始 template；测试同时覆盖 8kHz、44.1kHz 和 90kHz 源时钟（证据：nvr-audio-mixer `bus_test::test_mixed_audio_timing_is_independent_of_template`，修复后均为三个帧加一个 priming 包）。
+
+- 2026-10-09：cross GNU 构建报 `libavutil/avutil.h: No such file or directory`，库实际已下载 → 本工程含工作区外的 git 依赖，cross 0.2.5 将源码挂到宿主机原路径而非 `/project` → 打包脚本显式将 `target/cross-deps`、`third_party` 挂到固定容器路径，避免 FFmpeg / ZLM / sherpa 路径随挂载模式改变；修复后 `ffmpeg-sys-next` 已编译通过（证据：`scripts/package-linux.sh` 的 `CROSS_CONTAINER_OPTS`）。
+- 2026-10-09：设置 `FFMPEG_URL` 在新环境安装 RK FFmpeg 后，ZLM 报平台不支持 → 原脚本把平台写成 `custom`，丢掉了操作系统和架构 → 自定义 FFmpeg URL 仍保留 `detect_platform` 的结果，ZLM 按真实平台下载；已用 Linux arm64 的隔离模拟验证两个下载 URL（证据：`scripts/pre_install_deps.sh`）。

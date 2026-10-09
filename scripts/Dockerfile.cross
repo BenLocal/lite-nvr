@@ -1,0 +1,5 @@
+ARG CROSS_BASE_IMAGE
+FROM ${CROSS_BASE_IMAGE}
+ARG APT_MIRROR
+COPY cross-pre-build.sh /cross-pre-build.sh
+RUN bash /cross-pre-build.sh

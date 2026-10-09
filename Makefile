@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help install-deps download-asr-libs download-asr-models asr-demo xvfb install-watch build run watch dummy check test test-nvr test-nvr-asr test-ffmpeg-bus \
         fmt fmt-check frontend-install frontend-build frontend-dev frontend-lint \
-        frontend-typecheck clean clean-frontend
+        frontend-typecheck package clean clean-frontend
 
 PROJECT_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
@@ -55,6 +55,15 @@ NPROC      := $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
 BUILD_JOBS ?= $(shell n=$$(( $(NPROC) / 2 )); [ $$n -lt 1 ] && n=1; echo $$n)
 BUILD_NICE ?= 10
 
+# GNU Linux packages via official cross images, written to dist/.
+# Optional: make package PACKAGE_ARCHS=arm64 APT_MIRROR=https://mirrors.example/ubuntu
+PACKAGE_ARCHS ?= amd64 arm64
+PACKAGE_JOBS ?= 1
+PACKAGE_CONTAINER_OPTS ?= --cpus=2 --memory=4g --memory-swap=4g
+export APT_MIRROR
+export CROSS_TARGET_X86_64_UNKNOWN_LINUX_GNU_IMAGE
+export CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE
+
 help:
 	@echo "Usage: make <target>"
 	@echo ""
@@ -67,6 +76,7 @@ help:
 	@echo ""
 	@echo "Build / Run:"
 	@echo "  build              cargo build --workspace (BUILD_JOBS=$(BUILD_JOBS), BUILD_NICE=$(BUILD_NICE))"
+	@echo "  package            cross GNU Linux amd64/arm64 packages into dist/ (PACKAGE_JOBS=$(PACKAGE_JOBS))"
 	@echo "  run                cargo run --package nvr"
 	@echo "  asr-demo           Run nvr-asr streaming demo on a WAV (see ASR_* vars)"
 	@echo "  dummy              Run GB28181 dummy-camera (emulated IPC) vs local NVR"
@@ -118,6 +128,12 @@ install-watch:
 build:
 	CMAKE_BUILD_PARALLEL_LEVEL=$(BUILD_JOBS) \
 		nice -n $(BUILD_NICE) cargo build --workspace -j $(BUILD_JOBS) -vv
+
+package:
+	CARGO_BUILD_JOBS=$(PACKAGE_JOBS) \
+		CMAKE_BUILD_PARALLEL_LEVEL=$(PACKAGE_JOBS) \
+		CROSS_CONTAINER_OPTS="$(PACKAGE_CONTAINER_OPTS)" \
+		nice -n $(BUILD_NICE) bash scripts/package-linux.sh $(PACKAGE_ARCHS)
 
 run:
 	cargo run --package nvr

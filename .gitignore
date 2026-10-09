@@ -19,3 +19,8 @@ zlmediakit*
 .env
 
 docs/superpowers
+# GNU Linux release packages
+/dist/
+
+# Local test host credentials
+/dev-env.local.md
