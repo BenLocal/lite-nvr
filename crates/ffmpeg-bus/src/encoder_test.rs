@@ -6,6 +6,62 @@ use crate::encoder::{Encoder, EncoderTask, Settings};
 use crate::input::AvInput;
 use crate::packet::RawPacketCmd;
 
+#[cfg(feature = "rockchip")]
+#[test]
+fn test_rockchip_hardware_encode() -> anyhow::Result<()> {
+    if std::env::var_os("FFMPEG_BUS_RK_TEST_VIDEO").is_none() {
+        return Ok(());
+    }
+    crate::init()?;
+    let input = AvInput::new("testsrc2=size=320x240:rate=25", Some("lavfi"), None)?;
+    let stream = input
+        .streams()
+        .values()
+        .find(|s| s.is_video())
+        .ok_or_else(|| anyhow::anyhow!("no test video stream"))?;
+    let name =
+        std::env::var("FFMPEG_BUS_RK_TEST_ENCODER").unwrap_or_else(|_| "h264_rkmpp".to_string());
+    for name in [name.as_str()] {
+        let mut encoder = Encoder::new(
+            stream,
+            Settings {
+                width: 320,
+                height: 240,
+                codec: Some(name.to_string()),
+                pixel_format: ffmpeg_next::format::Pixel::YUV420P,
+                ..Settings::default()
+            },
+            None,
+        )?;
+        assert_eq!(
+            encoder.codec_name, name,
+            "software fallback is not a hardware test"
+        );
+        let mut packets = 0;
+        for index in 0..25 {
+            let mut frame =
+                ffmpeg_next::frame::Video::new(ffmpeg_next::format::Pixel::YUV420P, 320, 240);
+            for plane in 0..3 {
+                frame.data_mut(plane).fill(128);
+            }
+            frame.set_pts(Some(index));
+            encoder.send_frame(crate::frame::RawFrame::Video(frame.into()))?;
+            while encoder.encoder_receive_packet()?.is_some() {
+                packets += 1;
+            }
+        }
+        encoder.send_eof()?;
+        while encoder.encoder_receive_packet()?.is_some() {
+            packets += 1;
+        }
+        assert!(
+            encoder.is_hw && packets > 0,
+            "RKMPP must produce encoded packets"
+        );
+    }
+    Ok(())
+}
+
 /// A bus-managed (auto-stop) encoder stops as soon as its last output
 /// subscriber leaves, while frames are still arriving.
 #[tokio::test(flavor = "multi_thread")]

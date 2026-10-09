@@ -93,6 +93,26 @@ case "${1:-}" in
         ;;
 esac
 
+rockchip_build=0
+for arg in "$@"; do
+    features="${arg#--features=}"
+    for feature in ${features//,/ }; do
+        case "$feature" in
+            rockchip | ffmpeg-bus/rockchip | nvr/rockchip | --all-features) rockchip_build=1 ;;
+        esac
+    done
+done
+cargo_runner=(exec cargo)
+if [[ "$rockchip_build" == 1 ]]; then
+    if [[ "$(uname -s)" != Linux || "$(uname -m)" != aarch64 ]]; then
+        echo 'error: native rockchip build requires Linux aarch64; use make package PACKAGE_ARCHS=rockchip for cross compilation' >&2
+        exit 1
+    fi
+    export FFMPEG_DIR="$(bash "$_nvr_root/scripts/download-rockchip-ffmpeg.sh")"
+    export LD_LIBRARY_PATH="$FFMPEG_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    cargo_runner=(bash "$_nvr_root/scripts/with-rockchip-patch.sh" cargo)
+fi
+
 _nvr_check_prereqs || exit 1
 
 cd "$_nvr_root"
@@ -106,7 +126,7 @@ for arg in "$@"; do
 done
 
 case "$mode" in
-    check) set -x; exec cargo check "${scope[@]}" "$@" ;;
-    build) set -x; exec cargo build "${scope[@]}" "$@" ;;
-    release) set -x; exec cargo build "${scope[@]}" --release "$@" ;;
+    check) set -x; "${cargo_runner[@]}" check "${scope[@]}" "$@" ;;
+    build) set -x; "${cargo_runner[@]}" build "${scope[@]}" "$@" ;;
+    release) set -x; "${cargo_runner[@]}" build "${scope[@]}" --release "$@" ;;
 esac

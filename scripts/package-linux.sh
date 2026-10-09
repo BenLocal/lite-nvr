@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build GNU Linux release packages with cross; keep native dependencies per target.
-# Usage: [APT_MIRROR=https://mirrors.example/ubuntu] bash scripts/package-linux.sh [amd64|arm64 ...]
+# Usage: [APT_MIRROR=https://mirrors.example/ubuntu] bash scripts/package-linux.sh [amd64|arm64|rockchip ...]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p target/cross-deps dist
@@ -20,9 +20,15 @@ docker info >/dev/null
 version=$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' nvr/Cargo.toml)
 sherpa_version=$(awk '/^name = "sherpa-onnx-sys"/ {found=1; next} found && /^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.lock)
 architectures=("$@")
-if [[ ${#architectures[@]} -eq 0 ]]; then architectures=(amd64 arm64); fi
+if [[ ${#architectures[@]} -eq 0 ]]; then architectures=(amd64 arm64 rockchip); fi
 for arch in "${architectures[@]}"; do
-    case "$arch" in amd64|arm64) ;; *) echo "Unsupported architecture: $arch" >&2; exit 1 ;; esac
+    case "$arch" in amd64|arm64|rockchip) ;; *) echo "Unsupported architecture: $arch" >&2; exit 1 ;; esac
+    cargo_features=()
+    dependency_arch="$arch"
+    if [[ "$arch" == rockchip ]]; then
+        dependency_arch=arm64
+        cargo_features=(--features rockchip)
+    fi
     if [[ "$arch" == amd64 ]]; then
         rust_arch=x86_64
         ffmpeg_arch=64
@@ -37,12 +43,15 @@ for arch in "${architectures[@]}"; do
     export "$image_var=$base_image"
     deps="target/cross-deps/$arch"
     mkdir -p "$deps/ffmpeg" "$deps/zlm"
+    if [[ "$arch" == rockchip ]]; then
+        bash scripts/download-rockchip-ffmpeg.sh >/dev/null
+    fi
     if [[ ! -f "$deps/ffmpeg/include/libavcodec/avcodec.h" ]]; then
         curl -fL --retry 3 -o "$deps/ffmpeg.archive" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux${ffmpeg_arch}-gpl-shared-8.1.tar.xz"
         tar -xJf "$deps/ffmpeg.archive" -C "$deps/ffmpeg" --strip-components=1
     fi
     if [[ ! -f "$deps/zlm/lib/libmk_api.so" ]]; then
-        curl -fL --retry 3 -o "$deps/zlm.archive" "https://github.com/BenLocal/ZLMediaKit-Build/releases/download/autobuild-2026-06-24/zlmediakit_master_linux_${arch}_latest.tar.gz"
+        curl -fL --retry 3 -o "$deps/zlm.archive" "https://github.com/BenLocal/ZLMediaKit-Build/releases/download/autobuild-2026-06-24/zlmediakit_master_linux_${dependency_arch}_latest.tar.gz"
         tar -xzf "$deps/zlm.archive" -C "$deps/zlm" --strip-components=1
     fi
     if [[ ! -f "$deps/onnxruntime/lib/libonnxruntime.so" ]]; then
@@ -59,10 +68,10 @@ for arch in "${architectures[@]}"; do
     export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
     export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
     export BINDGEN_EXTRA_CLANG_ARGS="--target=$target"
-    if [[ "$arch" == arm64 ]]; then
+    if [[ "$dependency_arch" == arm64 ]]; then
         export BINDGEN_EXTRA_CLANG_ARGS="--target=aarch64-linux-gnu --sysroot=/usr/aarch64-linux-gnu"
     fi
-    flags="-C link-arg=-Wl,-rpath-link,$FFMPEG_DIR/lib -C link-arg=-Wl,-rpath,\$ORIGIN/../ffmpeg/lib -C link-arg=-Wl,-rpath,\$ORIGIN/../lib"
+    flags="-C link-arg=-Wl,-rpath-link,/project/target/cross-deps/$dependency_arch/ffmpeg/lib -C link-arg=-Wl,-rpath,\$ORIGIN/../ffmpeg/lib -C link-arg=-Wl,-rpath,\$ORIGIN/../lib"
     export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="$flags"
     export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="$flags"
     if [[ -n "${APT_MIRROR:-}" ]]; then
@@ -73,11 +82,16 @@ for arch in "${architectures[@]}"; do
         if [[ "$arch" == amd64 ]]; then
             export CROSS_TARGET_X86_64_UNKNOWN_LINUX_GNU_IMAGE=lite-nvr-cross:amd64
         else
-            export CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE=lite-nvr-cross:arm64
+            export CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE="lite-nvr-cross:$arch"
         fi
     fi
-    cross build --release --locked -p nvr --target "$target"
+    if [[ "$arch" == rockchip ]]; then
+        bash scripts/with-rockchip-patch.sh cross build --release --locked -p nvr --target "$target" "${cargo_features[@]}"
+    else
+        cross build --release --locked -p nvr --target "$target"
+    fi
     package="lite-nvr-${version}-linux-${arch}-gnu"
+    if [[ "$arch" == rockchip ]]; then package="lite-nvr-${version}-linux-arm64-rockchip"; fi
     staging="target/cross-deps/$package"
     mkdir -p "$staging/bin" "$staging/lib"
     cp "target/$target/release/nvr" "$staging/bin/nvr"
@@ -111,7 +125,10 @@ FFmpeg, ZLMediaKit and ONNX Runtime CPU libraries are included.
 ASR/detection model files are configured separately and are not included.
 SMB transport is disabled (the default Cargo feature set).
 README
+    if [[ "$arch" == rockchip ]]; then
+        printf '\nRockchip feature enabled; RK FFmpeg and MPP/RGA libraries included.\nRKMPP hardware requires matching Rockchip kernel drivers and device access.\n' >> "$staging/README.txt"
+    fi
     chmod +x "$staging/start.sh"
     tar -czf "dist/$package.tar.gz" -C target/cross-deps "$package"
 done
-(cd dist && shasum -a 256 lite-nvr-*-linux-*-gnu.tar.gz > SHA256SUMS)
+(cd dist && shasum -a 256 lite-nvr-*-linux-*.tar.gz > SHA256SUMS)

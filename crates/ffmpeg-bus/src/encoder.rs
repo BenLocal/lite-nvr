@@ -497,7 +497,7 @@ impl Encoder {
 
         let need_defaults = options.is_none();
         let mut opts = options.unwrap_or_default();
-        if need_defaults {
+        if need_defaults && !codec.name().ends_with("_rkmpp") {
             opts.set("preset", "ultrafast");
             opts.set("tune", "zerolatency");
         }

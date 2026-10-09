@@ -7,6 +7,58 @@ use crate::input::AvInput;
 use crate::packet::RawPacketCmd;
 use crate::stream::AvStream;
 
+#[cfg(feature = "rockchip")]
+#[test]
+fn test_rockchip_hardware_decode() -> anyhow::Result<()> {
+    let Some(path) = std::env::var_os("FFMPEG_BUS_RK_TEST_VIDEO") else {
+        return Ok(());
+    };
+    crate::init()?;
+    let mut input = AvInput::new(
+        path.to_str()
+            .ok_or_else(|| anyhow::anyhow!("invalid video path"))?,
+        None,
+        None,
+    )?;
+    let stream = input
+        .streams()
+        .values()
+        .find(|s| s.is_video())
+        .ok_or_else(|| anyhow::anyhow!("no video stream"))?
+        .clone();
+    let mut decoder = Decoder::new(&stream)?;
+    assert!(
+        decoder.is_hw && decoder.codec_name.ends_with("_rkmpp"),
+        "RKMPP must open on the test board"
+    );
+    let mut frames = 0;
+    while let Some(packet) = input.read_packet() {
+        if packet.index() != stream.index() {
+            continue;
+        }
+        decoder.send_packet(packet)?;
+        while let Some(frame) = decoder.receive_frame()? {
+            if let crate::frame::RawFrame::Video(video) = frame {
+                assert_ne!(
+                    video.as_video().format(),
+                    ffmpeg_next::format::Pixel::DRM_PRIME
+                );
+                frames += 1;
+            }
+        }
+    }
+    decoder.send_eof()?;
+    while decoder.receive_frame()?.is_some() {
+        frames += 1;
+    }
+    assert!(frames > 0, "hardware decode must produce frames");
+    assert!(
+        decoder.is_hw,
+        "software fallback does not count as hardware validation"
+    );
+    Ok(())
+}
+
 /// scripts/test.mp4 at the workspace root (~5s, 10fps, 50 video frames).
 fn test_mp4_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -240,4 +292,19 @@ fn test_runtime_failed_hw_decoder_not_reselected() -> anyhow::Result<()> {
         "{name} failed at runtime, must be skipped"
     );
     Ok(())
+}
+#[cfg(feature = "rockchip")]
+#[test]
+fn test_rockchip_format_negotiation_avoids_hardware_frames() {
+    use ffmpeg_next::ffi::AVPixelFormat::*;
+    let formats = [AV_PIX_FMT_DRM_PRIME, AV_PIX_FMT_NV12, AV_PIX_FMT_NONE];
+    // SAFETY: the test provides a valid NONE-terminated array; context is unused.
+    let selected =
+        unsafe { super::rockchip_software_format(std::ptr::null_mut(), formats.as_ptr()) };
+    assert_eq!(selected, AV_PIX_FMT_NV12);
+    let formats = [AV_PIX_FMT_DRM_PRIME, AV_PIX_FMT_NONE];
+    // SAFETY: as above, the format array is valid for the entire callback.
+    let selected =
+        unsafe { super::rockchip_software_format(std::ptr::null_mut(), formats.as_ptr()) };
+    assert_eq!(selected, AV_PIX_FMT_NONE);
 }

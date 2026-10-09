@@ -43,3 +43,8 @@
 
 - 2026-10-09：cross GNU 构建报 `libavutil/avutil.h: No such file or directory`，库实际已下载 → 本工程含工作区外的 git 依赖，cross 0.2.5 将源码挂到宿主机原路径而非 `/project` → 打包脚本显式将 `target/cross-deps`、`third_party` 挂到固定容器路径，避免 FFmpeg / ZLM / sherpa 路径随挂载模式改变；修复后 `ffmpeg-sys-next` 已编译通过（证据：`scripts/package-linux.sh` 的 `CROSS_CONTAINER_OPTS`）。
 - 2026-10-09：设置 `FFMPEG_URL` 在新环境安装 RK FFmpeg 后，ZLM 报平台不支持 → 原脚本把平台写成 `custom`，丢掉了操作系统和架构 → 自定义 FFmpeg URL 仍保留 `detect_platform` 的结果，ZLM 按真实平台下载；已用 Linux arm64 的隔离模拟验证两个下载 URL（证据：`scripts/pre_install_deps.sh`）。
+
+- 2026-10-09：同一 Cargo target 目录从通用 FFmpeg 切换到 RK SDK 时仍链接旧库、旧绑定掩盖 RK NV15/NV20 不兼容 → ffmpeg-sys-next 8.1.0 未跟踪 FFMPEG_DIR 变化 → 本地补丁跟踪该变量；ffmpeg-next 补丁按 SDK 头文件启用 NV15/NV20RK 双向映射，保留通用 NV20 别名（证据：`patches/ffmpeg-rockchip-8.1.0.patch`）。
+- 2026-10-09：RK3588 Docker 中 H.264 可编码但 HEVC 报 `Failed to init MPP context: -1` → Docker 默认 maskedPaths 含 `/sys/firmware`，MPP 读不到 `/proc/device-tree` 的真实目标 → 只读挂载设备树并用 `--security-opt systempaths=unconfined` 解除系统路径屏蔽后，HEVC 命令和 Rust 硬编码测试均通过；此参数会解除其他默认路径屏蔽，部署权限见 `docs/rockchip.md`。
+
+- 2026-10-10：Cargo 无法按 feature 条件选择 crates.io patch → Rockchip 构建入口通过 `scripts/with-rockchip-patch.sh` 临时传入路径覆盖，自动准备 `.cache/rockchip-rust/` 并恢复 Cargo.lock；普通构建使用原始 crates.io 依赖，无需 vendor。

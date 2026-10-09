@@ -221,6 +221,20 @@ impl Decoder {
             (*decoder_ctx.as_mut_ptr()).time_base = stream.time_base().into();
         }
         decoder_ctx.set_parameters(stream.parameters().clone())?;
+        #[cfg(feature = "rockchip")]
+        if codec.name().ends_with("_rkmpp") {
+            // SAFETY: this context is exclusively owned until open. FFmpeg calls
+            // the callback with a valid NONE-terminated pixel-format array.
+            unsafe {
+                (*decoder_ctx.as_mut_ptr()).get_format = Some(rockchip_software_format);
+                if (*decoder_ctx.as_mut_ptr()).pix_fmt
+                    == ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_NONE
+                {
+                    (*decoder_ctx.as_mut_ptr()).pix_fmt =
+                        ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_YUV420P;
+                }
+            }
+        }
         let video_decoder = decoder_ctx.decoder().video()?;
         let decoder_time_base = video_decoder.time_base();
         Ok((video_decoder, decoder_time_base))
@@ -370,6 +384,29 @@ impl Decoder {
     pub fn stream_index(&self) -> usize {
         self.stream.index()
     }
+}
+
+/// Ask RKMPP to copy decoded pixels back to CPU memory for the bus's software
+/// filters and subscribers. AFBC/DRM frames cannot be passed to swscale.
+#[cfg(feature = "rockchip")]
+unsafe extern "C" fn rockchip_software_format(
+    _context: *mut ffmpeg_next::ffi::AVCodecContext,
+    mut formats: *const ffmpeg_next::ffi::AVPixelFormat,
+) -> ffmpeg_next::ffi::AVPixelFormat {
+    use ffmpeg_next::ffi::{AV_PIX_FMT_FLAG_HWACCEL, AVPixelFormat, av_pix_fmt_desc_get};
+    // SAFETY: FFmpeg guarantees a valid NONE-terminated array for get_format;
+    // descriptors returned by av_pix_fmt_desc_get live for the entire process.
+    unsafe {
+        while *formats != AVPixelFormat::AV_PIX_FMT_NONE {
+            let descriptor = av_pix_fmt_desc_get(*formats);
+            if !descriptor.is_null() && (*descriptor).flags & (AV_PIX_FMT_FLAG_HWACCEL as u64) == 0
+            {
+                return *formats;
+            }
+            formats = formats.add(1);
+        }
+    }
+    AVPixelFormat::AV_PIX_FMT_NONE
 }
 
 pub struct DecoderTask {

@@ -57,7 +57,7 @@ BUILD_NICE ?= 10
 
 # GNU Linux packages via official cross images, written to dist/.
 # Optional: make package PACKAGE_ARCHS=arm64 APT_MIRROR=https://mirrors.example/ubuntu
-PACKAGE_ARCHS ?= amd64 arm64
+PACKAGE_ARCHS ?= amd64 arm64 rockchip
 PACKAGE_JOBS ?= 1
 PACKAGE_CONTAINER_OPTS ?= --cpus=2 --memory=4g --memory-swap=4g
 export APT_MIRROR
@@ -76,7 +76,7 @@ help:
 	@echo ""
 	@echo "Build / Run:"
 	@echo "  build              cargo build --workspace (BUILD_JOBS=$(BUILD_JOBS), BUILD_NICE=$(BUILD_NICE))"
-	@echo "  package            cross GNU Linux amd64/arm64 packages into dist/ (PACKAGE_JOBS=$(PACKAGE_JOBS))"
+	@echo "  package            cross Linux amd64/arm64 GNU + arm64 Rockchip packages into dist/ (PACKAGE_JOBS=$(PACKAGE_JOBS))"
 	@echo "  run                cargo run --package nvr"
 	@echo "  asr-demo           Run nvr-asr streaming demo on a WAV (see ASR_* vars)"
 	@echo "  dummy              Run GB28181 dummy-camera (emulated IPC) vs local NVR"

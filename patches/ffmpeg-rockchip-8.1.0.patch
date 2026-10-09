@@ -1,0 +1,79 @@
+diff --git a/ffmpeg-next/build.rs b/ffmpeg-next/build.rs
+--- a/ffmpeg-next/build.rs
++++ b/ffmpeg-next/build.rs
+@@ -1,6 +1,18 @@
+ use std::env;
+ 
+ fn main() {
++    println!("cargo:rustc-check-cfg=cfg(ffmpeg_rockchip)");
++    println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
++    if let Some(root) = env::var_os("FFMPEG_DIR") {
++        let header = std::path::PathBuf::from(root).join("include/libavutil/pixfmt.h");
++        println!("cargo:rerun-if-changed={}", header.display());
++        if let Ok(source) = std::fs::read_to_string(header) {
++            if source.contains("AV_PIX_FMT_NV15") && source.contains("AV_PIX_FMT_NV20") {
++                println!("cargo:rustc-cfg=ffmpeg_rockchip");
++            }
++        }
++    }
++
+     for (name, value) in env::vars() {
+         if name.starts_with("DEP_FFMPEG_") {
+             if value == "true" {
+diff --git a/ffmpeg-next/src/util/format/pixel.rs b/ffmpeg-next/src/util/format/pixel.rs
+--- a/ffmpeg-next/src/util/format/pixel.rs
++++ b/ffmpeg-next/src/util/format/pixel.rs
+@@ -37,6 +37,10 @@
+     RGB8,
+     RGB4,
+     RGB4_BYTE,
++    #[cfg(ffmpeg_rockchip)]
++    NV15,
++    #[cfg(ffmpeg_rockchip)]
++    NV20RK,
+     NV12,
+     NV21,
+ 
+@@ -609,6 +613,10 @@
+             AV_PIX_FMT_RGB8 => Pixel::RGB8,
+             AV_PIX_FMT_RGB4 => Pixel::RGB4,
+             AV_PIX_FMT_RGB4_BYTE => Pixel::RGB4_BYTE,
++            #[cfg(ffmpeg_rockchip)]
++            AV_PIX_FMT_NV15 => Pixel::NV15,
++            #[cfg(ffmpeg_rockchip)]
++            crate::ffi::AVPixelFormat::AV_PIX_FMT_NV20 => Pixel::NV20RK,
+             AV_PIX_FMT_NV12 => Pixel::NV12,
+             AV_PIX_FMT_NV21 => Pixel::NV21,
+ 
+@@ -1051,6 +1059,10 @@
+             Pixel::RGB8 => AV_PIX_FMT_RGB8,
+             Pixel::RGB4 => AV_PIX_FMT_RGB4,
+             Pixel::RGB4_BYTE => AV_PIX_FMT_RGB4_BYTE,
++            #[cfg(ffmpeg_rockchip)]
++            Pixel::NV15 => AV_PIX_FMT_NV15,
++            #[cfg(ffmpeg_rockchip)]
++            Pixel::NV20RK => crate::ffi::AVPixelFormat::AV_PIX_FMT_NV20,
+             Pixel::NV12 => AV_PIX_FMT_NV12,
+             Pixel::NV21 => AV_PIX_FMT_NV21,
+ 
+@@ -1298,7 +1310,7 @@
+             Pixel::YUVA444P16 => AV_PIX_FMT_YUVA444P16,
+ 
+             Pixel::XYZ12 => AV_PIX_FMT_XYZ12,
+-            Pixel::NV20 => AV_PIX_FMT_NV20,
++            Pixel::NV20 => crate::ffi::AV_PIX_FMT_NV20,
+             Pixel::AYUV64 => AV_PIX_FMT_AYUV64,
+ 
+             Pixel::P010LE => AV_PIX_FMT_P010LE,
+diff --git a/ffmpeg-sys-next/build.rs b/ffmpeg-sys-next/build.rs
+--- a/ffmpeg-sys-next/build.rs
++++ b/ffmpeg-sys-next/build.rs
+@@ -960,6 +960,8 @@
+ }
+ 
+ fn main() {
++    println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
++
+     let statik = env::var("CARGO_FEATURE_STATIC").is_ok();
+     let ffmpeg_major_version: u32 = env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap();
+ 

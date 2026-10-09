@@ -3,7 +3,14 @@
 /// Registers FFmpeg components (format, device, etc.). Call once at startup
 /// before using device inputs like x11grab or v4l2.
 pub fn init() -> anyhow::Result<()> {
-    ffmpeg_next::init().map_err(|e| anyhow::anyhow!("ffmpeg_next init: {}", e))
+    ffmpeg_next::init().map_err(|e| anyhow::anyhow!("ffmpeg_next init: {}", e))?;
+    #[cfg(feature = "rockchip")]
+    anyhow::ensure!(
+        ffmpeg_next::encoder::find_by_name("h264_rkmpp").is_some()
+            && ffmpeg_next::decoder::find_by_name("h264_rkmpp").is_some(),
+        "rockchip feature requires RK FFmpeg with h264_rkmpp encoder and decoder; check FFMPEG_DIR and LD_LIBRARY_PATH"
+    );
+    Ok(())
 }
 
 pub mod audio_mixer;

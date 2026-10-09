@@ -57,6 +57,7 @@ pavao = { version = "0.2", optional = true }
 tokio-linux-video = { workspace = true }
 
 [features]
+rockchip = ["ffmpeg-bus/rockchip"]
 # Set by build.rs when compiling for Linux; satisfies check-cfg
 linux = []
 # SMB transport backend. Off by default so the base build needs no Samba dev

@@ -3,6 +3,9 @@ name = "ffmpeg-bus"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+rockchip = []
+
 [dependencies]
 ffmpeg-next = { workspace = true, features = ["device"] }
 tokio = { workspace = true }

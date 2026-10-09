@@ -24,6 +24,8 @@ impl CodecCandidate {
 
 fn h264_hw_candidates() -> Vec<CodecCandidate> {
     vec![
+        #[cfg(feature = "rockchip")]
+        CodecCandidate::hw("h264_rkmpp"),
         CodecCandidate::hw("h264_videotoolbox"),
         CodecCandidate::hw("h264_nvenc"),
         CodecCandidate::hw("h264_qsv"),
@@ -33,6 +35,8 @@ fn h264_hw_candidates() -> Vec<CodecCandidate> {
 
 fn hevc_hw_candidates() -> Vec<CodecCandidate> {
     vec![
+        #[cfg(feature = "rockchip")]
+        CodecCandidate::hw("hevc_rkmpp"),
         CodecCandidate::hw("hevc_videotoolbox"),
         CodecCandidate::hw("hevc_nvenc"),
         CodecCandidate::hw("hevc_qsv"),
@@ -94,6 +98,21 @@ pub fn video_encoder_candidates(requested: Option<&str>) -> Vec<CodecCandidate> 
             out.extend(hevc_hw_candidates());
             out.extend(hevc_sw_candidates());
         }
+        #[cfg(feature = "rockchip")]
+        "h264_rkmpp" => {
+            out.push(CodecCandidate::hw(req));
+            out.extend(h264_sw_candidates());
+        }
+        #[cfg(feature = "rockchip")]
+        "hevc_rkmpp" => {
+            out.push(CodecCandidate::hw(req));
+            out.extend(hevc_sw_candidates());
+        }
+        #[cfg(feature = "rockchip")]
+        "mjpeg" | "mjpeg_rkmpp" => {
+            out.push(CodecCandidate::hw("mjpeg_rkmpp"));
+            out.push(CodecCandidate::sw("mjpeg"));
+        }
         "h264_videotoolbox" => {
             out.push(CodecCandidate::hw("h264_videotoolbox"));
             out.extend(h264_sw_candidates());
@@ -133,6 +152,10 @@ pub fn video_encoder_candidates(requested: Option<&str>) -> Vec<CodecCandidate> 
 
 pub fn video_decoder_candidates(codec_id: CodecId) -> Vec<CodecCandidate> {
     let mut out = Vec::new();
+    #[cfg(feature = "rockchip")]
+    if let Some(name) = rockchip_decoder_name(codec_id) {
+        out.push(CodecCandidate::hw(name));
+    }
     match codec_id {
         CodecId::H264 => {
             out.extend(vec![
@@ -161,6 +184,22 @@ pub fn video_decoder_candidates(codec_id: CodecId) -> Vec<CodecCandidate> {
         out.retain(|c| !c.is_hw);
     }
     dedup_by_name(out)
+}
+
+#[cfg(feature = "rockchip")]
+fn rockchip_decoder_name(codec_id: CodecId) -> Option<&'static str> {
+    Some(match codec_id {
+        CodecId::H264 => "h264_rkmpp",
+        CodecId::HEVC => "hevc_rkmpp",
+        CodecId::MJPEG => "mjpeg_rkmpp",
+        CodecId::MPEG1VIDEO => "mpeg1_rkmpp",
+        CodecId::MPEG2VIDEO => "mpeg2_rkmpp",
+        CodecId::MPEG4 => "mpeg4_rkmpp",
+        CodecId::VP8 => "vp8_rkmpp",
+        CodecId::VP9 => "vp9_rkmpp",
+        CodecId::AV1 => "av1_rkmpp",
+        _ => return None,
+    })
 }
 
 #[cfg(test)]

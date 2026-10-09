@@ -24,3 +24,6 @@ docs/superpowers
 
 # Local test host credentials
 /dev-env.local.md
+
+# Rockchip Rust dependency sources prepared from patches at build time
+/.cache/
