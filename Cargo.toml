@@ -54,6 +54,8 @@ env_logger = "0.11"
 argon2 = "0.5"
 harsh = "0.2"
 md5 = "0.8"
+# Build scripts
+cc = "1.2"
 # Xiaomi camera (go2rtc port)
 chacha20 = "0.9"
 dryoc = "0.7"

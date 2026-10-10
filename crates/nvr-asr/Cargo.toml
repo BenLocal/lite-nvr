@@ -18,6 +18,9 @@ log = { workspace = true }
 env_logger = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 
+[build-dependencies]
+cc = { workspace = true }
+
 # src/main.rs is the demo binary; src/lib.rs is the reusable engine.
 [[bin]]
 name = "nvr-asr-demo"
