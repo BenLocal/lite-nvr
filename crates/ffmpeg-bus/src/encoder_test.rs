@@ -1,7 +1,9 @@
 use std::time::Duration;
 
 use crate::decoder::{Decoder, DecoderTask};
-use crate::encoder::{Encoder, EncoderTask, Settings};
+use crate::encoder::{
+    DEFAULT_FRAME_QUEUE_BOUND, Encoder, EncoderTask, Settings, parse_frame_queue_bound,
+};
 use crate::input::AvInput;
 use crate::packet::RawPacketCmd;
 
@@ -479,4 +481,21 @@ fn test_audio_gap_encodes_every_silence_and_source_frame() -> anyhow::Result<()>
     );
     assert_eq!(pts.last(), Some(&10240));
     Ok(())
+}
+
+/// FFMPEG_BUS_ENCODER_QUEUE_FRAMES takes a positive frame count; anything else
+/// keeps the default instead of disabling the bound.
+#[test]
+fn test_parse_frame_queue_bound() {
+    assert_eq!(parse_frame_queue_bound(None), DEFAULT_FRAME_QUEUE_BOUND);
+    assert_eq!(parse_frame_queue_bound(Some("")), DEFAULT_FRAME_QUEUE_BOUND);
+    assert_eq!(parse_frame_queue_bound(Some(" 32 ")), 32);
+    assert_eq!(parse_frame_queue_bound(Some("1")), 1);
+    for bad in ["0", "-4", "abc", "8.5"] {
+        assert_eq!(
+            parse_frame_queue_bound(Some(bad)),
+            DEFAULT_FRAME_QUEUE_BOUND,
+            "{bad}"
+        );
+    }
 }

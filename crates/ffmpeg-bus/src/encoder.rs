@@ -15,6 +15,38 @@ use crate::{
     stream::AvStream,
 };
 
+/// Frames queued between an encoder's relay and its encoding thread. When the
+/// encoder falls behind, a lossless encoder back-pressures and a lossy one drops.
+/// Kept small: each slot is a decoded frame (~3 MB at 1080p) and a burst (e.g.
+/// ZLM's GOP cache on connect) fills every slot; at 128 that pinned ~400 MB per
+/// 1080p stream and an RK3588 board ran out of memory at 12 streams.
+const DEFAULT_FRAME_QUEUE_BOUND: usize = 8;
+
+/// The frame queue bound, overridable with `FFMPEG_BUS_ENCODER_QUEUE_FRAMES`.
+static FRAME_QUEUE_BOUND: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+    parse_frame_queue_bound(
+        std::env::var("FFMPEG_BUS_ENCODER_QUEUE_FRAMES")
+            .ok()
+            .as_deref(),
+    )
+});
+
+/// A positive frame count, or the default (with a warning for a bad value).
+fn parse_frame_queue_bound(value: Option<&str>) -> usize {
+    match value.map(str::trim) {
+        None | Some("") => DEFAULT_FRAME_QUEUE_BOUND,
+        Some(v) => match v.parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                log::warn!(
+                    "ignoring FFMPEG_BUS_ENCODER_QUEUE_FRAMES={v:?}: need a positive integer, using {DEFAULT_FRAME_QUEUE_BOUND}"
+                );
+                DEFAULT_FRAME_QUEUE_BOUND
+            }
+        },
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AudioSettings {
     pub codec: Option<String>,
@@ -1058,12 +1090,10 @@ impl EncoderTask {
             encoder.stream.index(),
             lossless
         );
-        /// Bounded queue: when encoder is slower than producer, back-pressure instead of unbounded growth (OOM).
-        const FRAME_QUEUE_BOUND: usize = 128;
         /// Log "queue full" at most every N drops; use debug level so info logs stay clean.
         const DROP_LOG_INTERVAL: u64 = 120;
         tokio::spawn(async move {
-            let (tx, rx) = std::sync::mpsc::sync_channel::<RawFrameCmd>(FRAME_QUEUE_BOUND);
+            let (tx, rx) = std::sync::mpsc::sync_channel::<RawFrameCmd>(*FRAME_QUEUE_BOUND);
             let handle_cancel = cancel_clone.clone();
             let handle = tokio::task::spawn_blocking(move || {
                 Self::encoder_loop(

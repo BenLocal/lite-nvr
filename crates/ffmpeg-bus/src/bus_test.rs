@@ -592,9 +592,11 @@ async fn test_device_rawvideo_lavfi() -> anyhow::Result<()> {
 
     let bus = Bus::new("rawvideo_test");
 
-    // Virtual test picture: lavfi testsrc, 2s, 320x240, 10fps (raw video -> RAWVIDEO codec path)
+    // Virtual test picture: lavfi testsrc, 2s, 320x240, 10fps (raw video -> RAWVIDEO codec path).
+    // `realtime` paces it like a camera: a Device input is live, so its encoder
+    // drops frames rather than queueing an unpaced burst.
     let input_config = InputConfig::Device {
-        display: "testsrc=duration=2:size=320x240:rate=10".to_string(),
+        display: "testsrc=duration=2:size=320x240:rate=10,realtime".to_string(),
         format: "lavfi".to_string(),
     };
     bus.add_input(input_config, None).await?;
