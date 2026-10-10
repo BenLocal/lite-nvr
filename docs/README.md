@@ -8,6 +8,7 @@ Project docs live here; some stay at fixed paths because tooling expects them (C
 - [memory/](memory/00-index.md) — troubleshooting conclusions and known pitfalls
 - [dashboard-rules.md](dashboard-rules.md) — frontend coding rules
 - [rockchip.md](rockchip.md) — Rockchip arm64 GNU deployment, RK FFmpeg and test procedure
+- [rockchip-capacity.md](rockchip-capacity.md) — RK3588 1080p hardware transcode capacity test: streams, CPU, memory and MPP load per level
 
 ## Top-level
 

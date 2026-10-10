@@ -141,7 +141,7 @@ FFMPEG_BUS_RK_TEST_VIDEO=/tmp/lite-nvr-rk-encode-test.mp4 CARGO_BUILD_JOBS=1 \
 
 启用 `rockchip` feature 时，H.264 / HEVC / MJPEG 编码优先使用 `h264_rkmpp` / `hevc_rkmpp` / `mjpeg_rkmpp`，也可在编码配置中显式选择这些名字。解码优先尝试 RKMPP 的 H.264、HEVC、MJPEG、MPEG-1/2/4、VP8/9、AV1，具体支持范围由芯片决定。硬件打开失败时沿用软件回退；发送帧/包时失败会标记该硬件编解码器并回退。
 
-解码选择普通内存像素格式，让 RK FFmpeg 从 MPP 缓冲复制像素，继续供 CPU 滤镜、缩放、合成和检测使用；当前不提供端到端零拷贝或 RGA 滤镜加速。`FFMPEG_BUS_DISABLE_HWDEC=1` 仍可强制软件解码。feature 未启用时不加入 RKMPP 候选。RKMPP 与 RK NPU 检测是独立能力。
+解码选择普通内存像素格式，让 RK FFmpeg 从 MPP 缓冲复制像素，继续供 CPU 滤镜、缩放、合成和检测使用；当前不提供端到端零拷贝或 RGA 滤镜加速。`FFMPEG_BUS_DISABLE_HWDEC=1` 仍可强制软件解码。每个编码器前有一个解码帧队列，默认 8 帧（1080p 约 25MB），可用 `FFMPEG_BUS_ENCODER_QUEUE_FRAMES` 调整；调大会按每帧约 3MB（1080p）增加每路内存，原先的 128 帧曾使 RK3588 在 12 路 1080p 转码时内存耗尽。feature 未启用时不加入 RKMPP 候选。RKMPP 与 RK NPU 检测是独立能力。
 
 直接复用 crate 时写 `ffmpeg-bus = { path = "...", features = ["rockchip"] }`。Cargo feature 不能替依赖 crate 修改 `FFMPEG_DIR`：直接执行 Cargo 前必须将其设为 RK FFmpeg SDK，并配置 `LD_LIBRARY_PATH`；原生构建脚本和 `make package PACKAGE_ARCHS=rockchip` 会自动下载并选择 SDK。启用 feature 后启动检查 RKMPP 编解码器是否已注册，防止误用通用 FFmpeg。
 
