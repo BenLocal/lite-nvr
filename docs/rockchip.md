@@ -5,8 +5,11 @@
 ## 运行条件
 
 - `uname -m` 应为 `aarch64`。32 位系统不能运行 arm64 包。
-- 当前 Cross 官方镜像基于 Ubuntu 24.04。优先使用 Ubuntu 24.04 的板端系统；其他系统先检查 glibc 和共享库兼容性，不能按 SoC 型号判断是否兼容。
-- 当前包以 glibc 2.39 及以上作为部署环境要求，检查：`getconf GNU_LIBC_VERSION`。老 Debian / Ubuntu 系统可能需要更换系统或针对该系统重新编译，单独替换 FFmpeg 不能解决 NVR 本身的 glibc 版本要求。
+- 板端需要 glibc（musl 系统见下文 Alpine 一节），最低版本取决于打包用的 Cross 镜像：
+  - 官方镜像 `ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main`（Ubuntu 24.04）：需要 glibc 2.39 及以上。
+  - Ubuntu 20.04 的 Cross 镜像（在 `.env` 设置 `CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE`）：需要 glibc 2.30 及以上，可原生运行在 Buildroot 等较老的系统上。该镜像的 GCC 9 缺少 sherpa-onnx 预编译库需要的 libstdc++ 符号，由 `crates/nvr-asr/src/libstdcxx_compat.cpp` 补齐。
+  - 包内 RK FFmpeg、ZLM、ONNX Runtime 的要求都不高于 glibc 2.28。
+- 检查板端 glibc：`getconf GNU_LIBC_VERSION`；BusyBox 系统没有 `getconf`，可执行 `/lib/libc.so.6` 查看版本。检查包实际需要的版本：`strings bin/nvr | grep -o 'GLIBC_2\.[0-9]*' | sort -V | tail -1`。不能按 SoC 型号判断是否兼容，单独替换 FFmpeg 也不能解决 NVR 本身的 glibc 版本要求。
 - 使用 **FFmpeg 8.1 shared RK** 包，名称匹配 `linuxarm64-gpl-shared-8.1-rk.tar.xz`。工程使用 `ffmpeg-next = 8`，不要替换成 release 中的 6.1 / 7.1；不带 `shared` 的包不能替代 NVR 链接的共享库。
 - ZLMediaKit 使用 [BenLocal/ZLMediaKit-Build release](https://github.com/BenLocal/ZLMediaKit-Build/releases/tag/autobuild-2026-06-24) 的 Linux arm64 预编译库，无需在板子上编译 ZLM。
 
@@ -32,12 +35,13 @@ RK_USER=<SSH用户名>
 scp dist/lite-nvr-0.1.0-linux-arm64-rockchip.tar.gz "$RK_USER@$RK_HOST:/tmp/"
 ```
 
-在板子上解压到一个新的目录，避免覆盖已有实例的数据：
+首次安装时，在板子上解压到一个新的目录，避免覆盖已有实例的数据。安装目录要放在空间充足的数据分区（例如 `/userdata`），不要放在根分区：数据库和录像默认都写在安装目录下（见下文「在板子上启动」）。
 
 ```bash
-RK_INSTALL_ROOT="$HOME/lite-nvr-rk-$(date +%Y%m%d-%H%M%S)"
-mkdir "$RK_INSTALL_ROOT"
-tar -xzf /tmp/lite-nvr-0.1.0-linux-arm64-rockchip.tar.gz -C "$RK_INSTALL_ROOT"
+RK_INSTALL_ROOT=/userdata/lite-nvr-rk-$(date +%Y%m%d)
+mkdir -p "$RK_INSTALL_ROOT"
+# BusyBox 的 tar 不支持 -z，统一用 gzip 管道解包。
+gzip -dc /tmp/lite-nvr-0.1.0-linux-arm64-rockchip.tar.gz | tar -x -C "$RK_INSTALL_ROOT"
 cd "$RK_INSTALL_ROOT/lite-nvr-0.1.0-linux-arm64-rockchip"
 ```
 
@@ -96,20 +100,89 @@ ldd ./bin/nvr
 
 此方式使用现有依赖安装脚本下载 FFmpeg 和 ZLM，不需要自行编译 ZLM。如果在另一台 arm64 机器构建，用 `scp` 将 `target/release/nvr` 上传到板端安装目录的 `bin/nvr`。后续启动与检查步骤均在安装目录执行，`start.sh` 将运行刚复制的 `bin/nvr`。
 
-## 启动与检查
+## 在板子上启动
+
+以下命令都在安装目录（`.../lite-nvr-0.1.0-linux-arm64-rockchip`）中执行。包内的 `start.sh`（源码在仓库 `scripts/rockchip/start.sh`，POSIX `sh`，BusyBox 可直接运行）会先 `cd` 到安装目录，设置 `LD_LIBRARY_PATH`（包内 `lib/`、`ffmpeg/lib/`）和 `ORT_DYLIB_PATH`，再运行 `bin/nvr`：
+
+| 命令 | 作用 |
+|---|---|
+| `./start.sh` 或 `./start.sh run` | 前台运行，日志输出到终端，Ctrl-C 退出（Docker 方式也用它） |
+| `./start.sh start` | 后台运行，日志写到 `nvr.log`，上一份日志改名为 `nvr.log.prev` |
+| `./start.sh stop` | 停止本目录启动的 nvr；15 秒内未退出则强制结束 |
+| `./start.sh restart` | 先停止再后台启动 |
+| `./start.sh status` | 进程、端口和管理页面检查；未运行时退出码为 3 |
+
+`stop` / `status` 按可执行文件路径（`本目录/bin/nvr`）识别进程，不会误伤板上其他服务；请用它们代替 `pkill -f nvr` 这类宽泛匹配。
+
+### 端口与数据位置
+
+- 端口：管理后台和 API 为 18080；内置 ZLM 的 HTTP、RTSP、RTMP 分别为 8553、8554、8555。启动前确认没有被占用：`netstat -ltn | grep -E ':(18080|8553|8554|8555) '`。板上已有的录播服务可能占用 80、554、1935 等端口，与 NVR 不冲突，不要停止它们。
+- 数据：数据库 `nvr.db*` 和录像 `data/records/` 都在安装目录下；录像目录可用 `NVR_RECORD_DIR` 改到别处。
+
+### 启动
+
+首次部署建议先前台运行，直接看日志；确认正常后改为后台运行：
 
 ```bash
-RUST_LOG=info ./start.sh
+./start.sh            # 前台，Ctrl-C 退出
+./start.sh start      # 后台
+./start.sh status
 ```
 
-后台地址为 `http://<板子地址>:18080/nvr/`。NVR API 使用 18080；内置 ZLM 的 HTTP、RTSP、RTMP 分别为 8553、8554、8555。
+启动约 5 秒后，日志里会有一行主机信息，例如：
 
-在另一个终端检查，先进入实际安装目录并设置库路径：
+```text
+metrics: host Linux (Buildroot 2018.02-rc3) 5.10.252-... (Rockchip RK3588 EVB1 LP4 V10 Board), 8 cpus
+```
+
+常用环境变量，写在命令前面，例如 `RUST_LOG=debug ./start.sh start`：
+
+| 变量 | 作用 |
+|---|---|
+| `RUST_LOG` | 日志级别，默认 `info`；如 `ffmpeg_bus=debug` |
+| `NVR_RECORD_DIR` | 录像目录，默认 `安装目录/data/records` |
+| `FFMPEG_BUS_ENCODER_QUEUE_FRAMES` | 编码器前的帧队列长度，默认 8；路数与内存见 [rockchip-capacity.md](rockchip-capacity.md) |
+| `FFMPEG_BUS_DISABLE_HWDEC=1` | 强制软件解码，排查硬解问题时用 |
+| `DETECT_MODELS_DIR` / `ASR_MODELS_DIR` | 检测 / ASR 模型目录，默认在安装目录下的 `third_party/` |
+
+### 检查是否正常运行
+
+`./start.sh status` 已检查进程、端口和管理页面。还可以调用主机信息接口确认后端正常（板上通常没有 `curl`，用 BusyBox 自带的 `wget`）：
+
+```bash
+TOKEN=$(wget -q -O - --header 'Content-Type: application/json' \
+  --post-data '{"username":"admin","password":"admin"}' \
+  http://127.0.0.1:18080/api/user/login | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+wget -q -O - --header "Authorization: Bearer $TOKEN" http://127.0.0.1:18080/api/system/os
+```
+
+后台地址为 `http://<板子地址>:18080/nvr/`，默认账号 `admin` / `admin`，部署后应修改密码。
+
+### 原地升级
+
+在开发机重新打包并上传后，停止 NVR，把新包解压到**同一个**安装根目录，覆盖 `bin/`、`lib/`、`ffmpeg/` 和 `start.sh`；`nvr.db*` 和 `data/` 不在包里，会原样保留，设备配置和录像不会丢失：
+
+```bash
+cd "$RK_INSTALL_ROOT/lite-nvr-0.1.0-linux-arm64-rockchip"
+./start.sh stop
+cd "$RK_INSTALL_ROOT"
+gzip -dc /tmp/lite-nvr-0.1.0-linux-arm64-rockchip.tar.gz | tar -x
+cd lite-nvr-0.1.0-linux-arm64-rockchip
+./start.sh start
+```
+
+### 开机自启
+
+安装包不配置开机自启。需要时按板端系统的方式自行添加：systemd 系统写一个 service 单元，`ExecStart` 用 `安装目录/start.sh run`；Buildroot / BusyBox 系统可在 `/etc/init.d/` 下加脚本，`start` / `stop` 分别调用 `安装目录/start.sh start` / `安装目录/start.sh stop`。
+
+### 硬件检查
+
+先进入实际安装目录并设置库路径：
 
 ```bash
 cd /实际安装目录/lite-nvr-0.1.0-linux-arm64-rockchip
 export LD_LIBRARY_PATH="$PWD/lib:$PWD/ffmpeg/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-curl -f http://127.0.0.1:18080/nvr/ -o /dev/null
+wget -q -O /dev/null http://127.0.0.1:18080/nvr/ && echo admin page OK
 ./ffmpeg/bin/ffmpeg -hide_banner -decoders | grep rkmpp
 ./ffmpeg/bin/ffmpeg -hide_banner -encoders | grep rkmpp
 ls -l /dev/dri /dev/mpp_service /dev/rga
@@ -143,6 +216,8 @@ FFMPEG_BUS_RK_TEST_VIDEO=/tmp/lite-nvr-rk-encode-test.mp4 CARGO_BUILD_JOBS=1 \
 
 解码选择普通内存像素格式，让 RK FFmpeg 从 MPP 缓冲复制像素，继续供 CPU 滤镜、缩放、合成和检测使用；当前不提供端到端零拷贝或 RGA 滤镜加速。`FFMPEG_BUS_DISABLE_HWDEC=1` 仍可强制软件解码。每个编码器前有一个解码帧队列，默认 8 帧（1080p 约 25MB），可用 `FFMPEG_BUS_ENCODER_QUEUE_FRAMES` 调整；调大会按每帧约 3MB（1080p）增加每路内存，原先的 128 帧曾使 RK3588 在 12 路 1080p 转码时内存耗尽。feature 未启用时不加入 RKMPP 候选。RKMPP 与 RK NPU 检测是独立能力。
 
+V4L2 采集走 FFmpeg 的 v4l2 输入，它只支持单平面（`VIDEO_CAPTURE`）设备。RK3588 的 rkcif（MIPI/LVDS 摄像头接口）和 hdmirx 节点只提供多平面接口（capabilities `0x84201000`），FFmpeg 读取时 `VIDIOC_DQBUF` 报 `Invalid argument`，因此不能作为 V4L2 设备接入；管理后台的 V4L2 节点列表只列出单平面采集节点。可用 `media-ctl -p` 查看 rkcif 是否接了传感器（例如测试板上的 LT6911C HDMI 转 MIPI 芯片）。
+
 直接复用 crate 时写 `ffmpeg-bus = { path = "...", features = ["rockchip"] }`。Cargo feature 不能替依赖 crate 修改 `FFMPEG_DIR`：直接执行 Cargo 前必须将其设为 RK FFmpeg SDK，并配置 `LD_LIBRARY_PATH`；原生构建脚本和 `make package PACKAGE_ARCHS=rockchip` 会自动下载并选择 SDK。启用 feature 后启动检查 RKMPP 编解码器是否已注册，防止误用通用 FFmpeg。
 
 参考：[RK FFmpeg 解码说明](https://github.com/nyanmisaka/ffmpeg-rockchip/wiki/Decoder)、[编码说明](https://github.com/nyanmisaka/ffmpeg-rockchip/wiki/Encoder)。
@@ -160,3 +235,6 @@ FFMPEG_BUS_RK_TEST_VIDEO=/tmp/lite-nvr-rk-encode-test.mp4 CARGO_BUILD_JOBS=1 \
 - 2026-10-09：HEVC 初始化失败的原因已验证为 Docker 默认屏蔽 `/sys/firmware`、MPP 读不到设备树。传入只读设备树并用 `--security-opt systempaths=unconfined` 解除屏蔽后，HEVC 硬编码成功，Rust 库同时通过 H.264/HEVC 硬编码、H.264 硬解码和内存帧格式测试（4 项通过）。
 
 Rockchip 打包和项目构建脚本会自动下载或复用原始 crate，并将补丁应用到 `.cache/rockchip-rust/`；无需保留 `vendor/`。普通构建不启用补丁。手动 Cargo/Cross 命令需通过 `scripts/with-rockchip-patch.sh`，完成后会恢复 Cargo.lock；构建期间请勿并行运行其他 Cargo 命令。
+
+- 2026-10-10：用 Ubuntu 20.04 的 Cross 镜像打包（nvr 只需 glibc 2.30），在 RK3588 + Buildroot 2018.02（glibc 2.33、无 Docker）上原生运行通过：管理后台、RKMPP 硬解 / 硬编、`/api/system/os` 均正常；1080p 转码路数与资源占用见 [rockchip-capacity.md](rockchip-capacity.md)。原地升级保留了 `nvr.db` 中的设备配置。
+- 2026-10-10：该板 12 个 `/dev/video*`（rkcif、hdmirx）均为多平面接口，FFmpeg v4l2 输入无法读取；对无信号节点抓帧时 ffmpeg 会阻塞在驱动调用里，`timeout` 发出的 SIGTERM 无效，只能 `kill -9`。
