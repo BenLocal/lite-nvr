@@ -13,6 +13,7 @@ pub fn system_router() -> Router {
         .route("/", get(index))
         .route("/overview", get(overview))
         .route("/metrics", get(metrics))
+        .route("/os", get(os_info))
         .route("/list/device/formats", get(list_device_formats))
         .route("/list/v4l2/devices", get(list_v4l2_device))
         .route("/list/x11grab/devices", get(list_x11grab_device))
@@ -144,6 +145,12 @@ async fn overview() -> ApiJsonResult<OverviewResponse> {
 /// the in-memory cache the background sampler fills, so it's cheap to poll.
 async fn metrics() -> ApiJsonResult<crate::metrics::SystemMetrics> {
     Ok(ok_json(crate::metrics::snapshot()))
+}
+
+/// Static host information (OS, kernel, CPU, memory, board), collected once at
+/// startup and served from cache.
+async fn os_info() -> ApiJsonResult<crate::metrics::OsInfo> {
+    Ok(ok_json(crate::metrics::os_info()))
 }
 
 #[derive(Serialize, Deserialize)]

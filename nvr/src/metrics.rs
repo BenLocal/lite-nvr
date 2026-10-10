@@ -2,12 +2,15 @@
 //! worker into a shared in-memory cache. The `/system/metrics` API just clones
 //! the cached snapshot — it never touches `sysinfo` on the request path, so the
 //! endpoint is always cheap no matter how often the dashboard polls it.
+//!
+//! Static host information (`/system/os`) is collected once when the worker
+//! starts and cached for the life of the process.
 
-use std::sync::{LazyLock, RwLock};
+use std::sync::{LazyLock, OnceLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use sysinfo::{MINIMUM_CPU_UPDATE_INTERVAL, Networks, System};
+use sysinfo::{CpuRefreshKind, MINIMUM_CPU_UPDATE_INTERVAL, Networks, System};
 use tokio_util::sync::CancellationToken;
 
 /// How often the worker samples the system. Also the window over which network
@@ -51,6 +54,76 @@ pub fn snapshot() -> SystemMetrics {
     CACHE.read().unwrap().clone()
 }
 
+/// Static host information, collected once at startup.
+#[derive(Clone, Debug, Serialize)]
+pub struct OsInfo {
+    pub host_name: Option<String>,
+    /// OS name, e.g. "Ubuntu" / "Buildroot".
+    pub os_name: Option<String>,
+    pub os_version: Option<String>,
+    /// e.g. "Linux 24.04 Ubuntu 24.04 LTS".
+    pub long_os_version: Option<String>,
+    pub kernel_version: Option<String>,
+    /// CPU architecture, e.g. "x86_64" / "aarch64".
+    pub arch: String,
+    /// Board model from the device tree (ARM boards), e.g. "Rockchip RK3588 EVB1".
+    pub board_model: Option<String>,
+    /// CPU model; empty on platforms that do not report one (many ARM SoCs).
+    pub cpu_brand: Option<String>,
+    pub cpu_core_count: usize,
+    pub cpu_physical_core_count: Option<usize>,
+    /// Physical memory / swap, bytes.
+    pub mem_total: u64,
+    pub swap_total: u64,
+    /// Unix-epoch seconds the host booted; uptime = now - boot_time.
+    pub boot_time: u64,
+    pub nvr_version: String,
+}
+
+static OS_INFO: OnceLock<OsInfo> = OnceLock::new();
+
+/// The startup-collected host information (collected on first use if the
+/// worker has not reached it yet; never recollected).
+pub fn os_info() -> OsInfo {
+    OS_INFO.get_or_init(collect_os_info).clone()
+}
+
+fn collect_os_info() -> OsInfo {
+    let mut sys = System::new();
+    sys.refresh_cpu_list(CpuRefreshKind::nothing());
+    sys.refresh_memory();
+    let cpu_brand = sys
+        .cpus()
+        .first()
+        .map(|cpu| cpu.brand().trim().to_string())
+        .filter(|brand| !brand.is_empty());
+    OsInfo {
+        host_name: System::host_name(),
+        os_name: System::name(),
+        os_version: System::os_version(),
+        long_os_version: System::long_os_version(),
+        kernel_version: System::kernel_version(),
+        arch: System::cpu_arch(),
+        board_model: std::fs::read("/proc/device-tree/model")
+            .ok()
+            .and_then(|raw| device_tree_string(&raw)),
+        cpu_brand,
+        cpu_core_count: sys.cpus().len(),
+        cpu_physical_core_count: sys.physical_core_count(),
+        mem_total: sys.total_memory(),
+        swap_total: sys.total_swap(),
+        boot_time: System::boot_time(),
+        nvr_version: env!("CARGO_PKG_VERSION").to_string(),
+    }
+}
+
+/// A device-tree string property: NUL-terminated (possibly NUL-padded) text.
+fn device_tree_string(raw: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(raw);
+    let text = text.trim_end_matches('\0').trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -82,6 +155,14 @@ pub fn spawn_worker(cancel: CancellationToken) {
         .name("metrics".into())
         .spawn(move || {
             log::info!("metrics: worker started");
+            let os = os_info();
+            log::info!(
+                "metrics: host {} {} ({}), {} cpus",
+                os.long_os_version.as_deref().unwrap_or("unknown os"),
+                os.kernel_version.as_deref().unwrap_or(""),
+                os.board_model.as_deref().unwrap_or(&os.arch),
+                os.cpu_core_count
+            );
             let mut sys = System::new();
             let mut networks = Networks::new_with_refreshed_list();
 
@@ -139,3 +220,7 @@ pub fn spawn_worker(cancel: CancellationToken) {
         log::error!("metrics: failed to start worker thread: {e}");
     }
 }
+
+#[cfg(test)]
+#[path = "metrics_test.rs"]
+mod metrics_test;
