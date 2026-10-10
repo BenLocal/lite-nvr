@@ -73,6 +73,7 @@ cd nvr-dashboard/app && npm run lint && npm run type-check && npm test   # 前�
 ## 📇 项目 Skill 索引（全仓 SKILL.md，脚本生成）
 <!-- SKILLS:START -->
 - **build-nvr** — 编译 lite-nvr 工程（Rust workspace + 内嵌 Vue 后台） （`.agent/skills/build-nvr`）
+- **setup-env** — 问答式准备 lite-nvr 本地开发环境（含 Rockchip 测试主机） （`.agent/skills/setup-env`）
 <!-- SKILLS:END -->
 
 ## 📂 模块文档索引（docs/agents-dot-md/，脚本生成）
