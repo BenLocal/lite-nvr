@@ -29,9 +29,9 @@ function confidenceLabel(): string {
 </script>
 
 <template>
-  <div class="field field-inline">
+  <div class="field">
     <label for="detect_enabled">启用检测</label>
-    <ToggleSwitch id="detect_enabled" name="detect_enabled" />
+    <ToggleSwitch input-id="detect_enabled" name="detect_enabled" />
     <span class="field-hint">开启后该设备的流会自动跑目标检测</span>
   </div>
 

@@ -166,7 +166,7 @@ onMounted(load)
       <div class="transport-toolbar">
         <i class="pi pi-upload transport-icon" /><span class="transport-title">录像转存</span>
         <Button label="新增目标" icon="pi pi-plus" :disabled="!ready || loading" @click="open()" />
-        <Button label="刷新" icon="pi pi-refresh" text :loading="loading" @click="load" />
+        <Button label="刷新" icon="pi pi-refresh" severity="secondary" outlined :loading="loading" @click="load" />
       </div>
     </template>
     <template #content>

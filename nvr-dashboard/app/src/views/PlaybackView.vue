@@ -870,7 +870,7 @@ function formatDaySecond(second: number) {
       <div class="page-actions">
         <Tag severity="contrast" :value="`${totalDevices} 设备`" />
         <Tag severity="secondary" :value="`${totalSegments} 片段`" />
-        <Button icon="pi pi-refresh" text aria-label="刷新" @click="loadPlayback" />
+        <Button icon="pi pi-refresh" severity="secondary" outlined aria-label="刷新" @click="loadPlayback" />
       </div>
     </div>
 

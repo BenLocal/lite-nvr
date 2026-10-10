@@ -255,6 +255,82 @@ const NvrPrimePreset = definePreset(Aura, {
         }
       `,
     },
+    // The app runs Aura's light scheme with custom dark surfaces, so secondary
+    // buttons need dark values under colorScheme.light (default: white).
+    button: {
+      colorScheme: {
+        light: {
+          root: {
+            secondary: {
+              background: 'rgb(148 163 184 / 12%)',
+              hoverBackground: 'rgb(148 163 184 / 18%)',
+              activeBackground: 'rgb(148 163 184 / 24%)',
+              borderColor: 'rgb(148 163 184 / 20%)',
+              hoverBorderColor: 'rgb(148 163 184 / 30%)',
+              activeBorderColor: 'rgb(148 163 184 / 36%)',
+              color: '#cbd5e1',
+              hoverColor: '#e2e8f0',
+              activeColor: '#f1f5f9',
+              focusRing: {
+                color: '#94a3b8',
+                shadow: 'none',
+              },
+            },
+          },
+          outlined: {
+            secondary: {
+              hoverBackground: 'rgb(148 163 184 / 10%)',
+              activeBackground: 'rgb(148 163 184 / 16%)',
+              borderColor: 'rgb(148 163 184 / 30%)',
+              color: '#cbd5e1',
+            },
+          },
+          text: {
+            secondary: {
+              hoverBackground: 'rgb(148 163 184 / 10%)',
+              activeBackground: 'rgb(148 163 184 / 16%)',
+              color: '#cbd5e1',
+            },
+          },
+        },
+      },
+    },
+    // Inline (non-overlay) list, e.g. a side selector inside a card: blends
+    // into the card, options styled like the select/multiselect overlays.
+    listbox: {
+      root: {
+        background: 'transparent',
+        borderColor: 'transparent',
+        color: '#cbd5e1',
+        disabledBackground: 'transparent',
+        disabledColor: '#64748b',
+        shadow: 'none',
+        borderRadius: '0.75rem',
+      },
+      list: {
+        padding: '0',
+        gap: '0.25rem',
+      },
+      option: {
+        color: '#cbd5e1',
+        focusColor: '#e2e8f0',
+        focusBackground: 'rgb(148 163 184 / 10%)',
+        selectedColor: '#bfdbfe',
+        selectedBackground: 'rgb(59 130 246 / 18%)',
+        selectedFocusColor: '#bfdbfe',
+        selectedFocusBackground: 'rgb(59 130 246 / 22%)',
+        padding: '0.5rem 0.75rem',
+        borderRadius: '0.5rem',
+      },
+      // Listbox has no size prop, so the global sm sizing never reaches it; a
+      // fixed size/line-height also keeps CJK-fallback rows as tall as Latin ones.
+      css: `
+        .p-listbox-option {
+          font-size: 0.875rem;
+          line-height: 1.25rem;
+        }
+      `,
+    },
     multiselect: {
       root: controlRoot,
       dropdown: {

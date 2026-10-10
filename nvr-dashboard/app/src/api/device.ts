@@ -40,6 +40,12 @@ export function listDevices() {
   return request<DeviceItem[]>('/device/list')
 }
 
+// The backend has no single-device endpoint; resolve it from the list.
+export async function getDevice(id: string): Promise<DeviceItem | undefined> {
+  const devices = await listDevices()
+  return devices.find((device) => device.id === id)
+}
+
 export function addDevice(payload: DevicePayload) {
   return request<DeviceItem>('/device/add', {
     method: 'POST',

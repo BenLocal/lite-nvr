@@ -3,7 +3,10 @@ import type { DeviceItem } from '../api/device'
 import {
   buildDevicePayload,
   deviceFormInitialValues,
+  inputSettingsKind,
+  inputTypeOptions,
   resolveDeviceForm,
+  urlInputMeta,
 } from './deviceForm'
 
 const DEVICE: DeviceItem = {
@@ -219,5 +222,35 @@ describe('device form helpers', () => {
       port: 8899,
       profile_token: 'main',
     })
+  })
+})
+
+describe('input type settings', () => {
+  test('maps every selectable input type to a settings component', () => {
+    const kinds = Object.fromEntries(
+      inputTypeOptions.map((option) => [option.value, inputSettingsKind(option.value)]),
+    )
+    expect(kinds).toEqual({
+      rtsp: 'url',
+      rtmp: 'url',
+      stream: 'url',
+      file: 'url',
+      v4l2: 'url',
+      x11grab: 'url',
+      lavfi: 'url',
+      xiaomi: 'xiaomi',
+      gb28181: 'gb28181',
+      onvif: 'onvif',
+    })
+  })
+
+  test('gives every address-based input type its own label and example', () => {
+    const urlTypes = inputTypeOptions
+      .map((option) => option.value)
+      .filter((value) => inputSettingsKind(value) === 'url')
+    const labels = new Set(urlTypes.map((value) => urlInputMeta(value).label))
+    expect(labels.size).toBe(urlTypes.length)
+    expect(urlInputMeta('stream').hint).toContain('yt-dlp')
+    expect(urlInputMeta('unknown').label).toBe('输入地址/标识')
   })
 })

@@ -141,3 +141,37 @@ await fetch(url, {
   2. `npm run lint`
   3. `npm run type-check`
 - Keep frontend CI path-filtered to frontend scope to avoid unrelated pipeline noise.
+
+## 11. Form Layout (`label: control`)
+
+- Page and card forms use the shared horizontal layout from `src/styles/global-dark-theme.css`: wrap the fields in `.form-horizontal`; each `.field` has the `<label>` as its first child, then the control, the validation `Message` and an optional hint. The label sits in a fixed column; control, message and hint stack in the second column.
+- Toggles use the same `.field` row (`label` + `ToggleSwitch`), not an inline flex row mixing label, switch and hint — a wrapping hint there widens the row and causes scrollbars.
+- Hints use `.field-hint` (block text that wraps); do not redefine it in views.
+- Buttons that belong to a form (save, probe…) go in `.field-actions`, which aligns them with the control column.
+- `.field-grid` (two fields per row) collapses to one column at `width <= 1200px` inside `.form-horizontal`, and `.form-horizontal` itself falls back to label-above-control at `width <= 768px`.
+- Narrow dialogs (for example the add-user dialog) keep the default label-above-control `.field`.
+- Bind labels to `ToggleSwitch` / `InputNumber` / `Password` with `input-id`, so clicking the label focuses the control.
+
+## 12. Cards and Card Headers
+
+- `.data-card` styles only apply to a PrimeVue `Card` (`.p-card.data-card`); use `<Card class="data-card">`, not a plain `div` with that class.
+- Card titles go in the `#header` slot as `.card-header` > `.card-header-icon` + `.card-header-title` (optional trailing actions). The card header already has padding; do not add more.
+
+## 13. Theming PrimeVue Components
+
+- A PrimeVue component without tokens in `src/styles/prime-preset.ts` renders in the light Aura defaults (white backgrounds). Before using a new component, add its dark tokens there (see `select`, `multiselect`, `listbox`) instead of overriding `.p-*` classes in views.
+- Components without a `size` prop (for example `Listbox`) do not get the global `sm` sizing; set their font size and line height in the preset `css` so CJK text does not render taller than Latin text.
+
+## 14. Add / Edit Pages
+
+- Creating or editing a resource with more than a few fields is a standalone page, not a dialog: routes `/<resource>/new` and `/<resource>/:id/edit` sharing one view. The view reloads when the route param changes, because the router reuses the component.
+- Header: back icon (`pi pi-arrow-left`) at the top left returns to the previous page, falling back to the list when opened directly; close icon (`pi pi-times`) at the top right always returns to the list.
+- When the settings depend on a type (for example a device input type), pick the type with a side `Listbox` bound to the form field, and render each type's settings as its own component (for example `src/components/device-input/*`).
+- Child components receive `$form` as a prop and read it, but never write to it; they emit an event (for example `set-field`) and the page sets the field.
+
+## 15. Button Variants
+
+- Primary actions (save, confirm, add) use the default filled button.
+- Secondary actions (cancel, refresh, probe-like helpers) use `severity="secondary" outlined`, not a borderless `text` button: on the dark surfaces a text button reads as background until hovered or focused.
+- Secondary button colors come from `button.colorScheme.light` in `src/styles/prime-preset.ts` (the app runs Aura's light scheme with custom dark surfaces); do not restyle `.p-button-secondary` in views.
+- Form action rows under cards align their right edge with the inputs: pad by the card border plus content padding, and give a scrolling area and the action row the same `scrollbar-gutter: stable` (see `DeviceFormView.vue`).

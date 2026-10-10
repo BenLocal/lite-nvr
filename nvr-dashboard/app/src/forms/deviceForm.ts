@@ -7,17 +7,67 @@ import {
 } from './detectionForm'
 
 export const inputTypeOptions = [
-  { label: 'RTSP', value: 'rtsp' },
-  { label: 'RTMP', value: 'rtmp' },
-  { label: '平台直播', value: 'stream' },
-  { label: '文件', value: 'file' },
-  { label: 'V4L2', value: 'v4l2' },
-  { label: 'X11 Grab', value: 'x11grab' },
-  { label: 'Lavfi', value: 'lavfi' },
-  { label: '小米摄像头', value: 'xiaomi' },
-  { label: '国标 GB28181', value: 'gb28181' },
-  { label: 'ONVIF 摄像头', value: 'onvif' },
+  { label: 'RTSP', value: 'rtsp', icon: 'pi pi-video' },
+  { label: 'RTMP', value: 'rtmp', icon: 'pi pi-upload' },
+  { label: '平台直播', value: 'stream', icon: 'pi pi-globe' },
+  { label: '文件', value: 'file', icon: 'pi pi-file' },
+  { label: 'V4L2', value: 'v4l2', icon: 'pi pi-camera' },
+  { label: 'X11 Grab', value: 'x11grab', icon: 'pi pi-desktop' },
+  { label: 'Lavfi', value: 'lavfi', icon: 'pi pi-palette' },
+  { label: '小米摄像头', value: 'xiaomi', icon: 'pi pi-mobile' },
+  { label: '国标 GB28181', value: 'gb28181', icon: 'pi pi-sitemap' },
+  { label: 'ONVIF 摄像头', value: 'onvif', icon: 'pi pi-wifi' },
 ]
+
+/**
+ * The `$form` slot of @primevue/forms: each field's reactive state. Writing
+ * `.value` sets the field, as `setFieldValue` does internally.
+ */
+export type DeviceFormFields = Record<
+  string,
+  { value?: unknown; invalid?: boolean; error?: { message?: string } } | undefined
+>
+
+/** Which settings component an input type uses. */
+export type InputSettingsKind = 'url' | 'xiaomi' | 'gb28181' | 'onvif'
+
+export function inputSettingsKind(inputType: string): InputSettingsKind {
+  if (inputType === 'xiaomi' || inputType === 'gb28181' || inputType === 'onvif') {
+    return inputType
+  }
+  return 'url'
+}
+
+export interface UrlInputMeta {
+  label: string
+  placeholder: string
+  hint?: string
+}
+
+const URL_INPUT_META: Record<string, UrlInputMeta> = {
+  rtsp: { label: 'RTSP 地址', placeholder: 'rtsp://user:pass@192.168.1.10:554/stream1' },
+  rtmp: { label: 'RTMP 地址', placeholder: 'rtmp://host/live/stream' },
+  stream: {
+    label: '直播间地址',
+    placeholder: '如 https://www.twitch.tv/xxx 或 https://live.bilibili.com/123',
+    hint:
+      '填直播间页面地址（B站/虎牙/斗鱼/Twitch/YouTube 等）。拉流地址由 yt-dlp ' +
+      '在启动和每次重连时自动重新解析（地址带签名会过期），服务器需已安装 yt-dlp。',
+  },
+  file: { label: '文件路径', placeholder: '/data/videos/demo.mp4', hint: '服务器上的本地媒体文件路径' },
+  v4l2: { label: '设备节点', placeholder: '/dev/video0', hint: '服务器上的 V4L2 视频采集设备' },
+  x11grab: { label: '显示器', placeholder: ':0.0', hint: '要采集的 X11 显示器（DISPLAY）' },
+  lavfi: {
+    label: '滤镜图',
+    placeholder: 'testsrc=size=1280x720:rate=25',
+    hint: 'FFmpeg lavfi 滤镜描述，常用于生成测试图案',
+  },
+}
+
+/** Label, example and hint for an input type that takes a single address. */
+export function urlInputMeta(inputType: string): UrlInputMeta {
+  return URL_INPUT_META[inputType] ?? { label: '输入地址/标识', placeholder: '如 rtsp://camera/live' }
+}
 
 // go2rtc Xiaomi cloud regions ("" = mainland China).
 export const xiaomiRegionOptions = [

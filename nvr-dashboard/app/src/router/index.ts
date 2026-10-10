@@ -27,6 +27,16 @@ const router = createRouter({
           component: () => import('../views/DeviceListView.vue'),
         },
         {
+          path: 'device/new',
+          name: 'device-create',
+          component: () => import('../views/DeviceFormView.vue'),
+        },
+        {
+          path: 'device/:id/edit',
+          name: 'device-edit',
+          component: () => import('../views/DeviceFormView.vue'),
+        },
+        {
           path: 'switcher',
           name: 'switcher',
           component: () => import('../views/SwitcherView.vue'),

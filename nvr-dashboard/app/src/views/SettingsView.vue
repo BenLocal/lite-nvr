@@ -231,184 +231,191 @@ onMounted(async () => {
 
     <Card class="data-card settings-card">
       <template #header>
-        <div class="settings-card-header">
-          <i class="pi pi-play-circle settings-card-icon" />
-          <span class="settings-card-title">播放器</span>
+        <div class="card-header">
+          <i class="pi pi-play-circle card-header-icon" />
+          <span class="card-header-title">播放器</span>
         </div>
       </template>
       <template #content>
-        <div class="field settings-field">
-          <label for="player">播放方式</label>
-          <Select
-            id="player"
-            v-model="player"
-            :options="playerOptions"
-            option-label="label"
-            option-value="value"
-            size="small"
-            class="field-input"
-            :disabled="loading"
-          />
-          <p class="settings-hint">{{ currentHint }}</p>
-        </div>
+        <div class="form-horizontal">
+          <div class="field">
+            <label for="player">播放方式</label>
+            <Select
+              id="player"
+              v-model="player"
+              :options="playerOptions"
+              option-label="label"
+              option-value="value"
+              size="small"
+              class="field-input"
+              :disabled="loading"
+            />
+            <p class="field-hint">{{ currentHint }}</p>
+          </div>
 
-        <div class="settings-actions">
-          <Button
-            label="保存"
-            icon="pi pi-check"
-            size="small"
-            :loading="saving"
-            :disabled="loading"
-            @click="onSave"
-          />
+          <div class="field-actions">
+            <Button
+              label="保存"
+              icon="pi pi-check"
+              size="small"
+              :loading="saving"
+              :disabled="loading"
+              @click="onSave"
+            />
+          </div>
         </div>
       </template>
     </Card>
 
     <Card class="data-card settings-card">
       <template #header>
-        <div class="settings-card-header">
-          <i class="pi pi-trash settings-card-icon" />
-          <span class="settings-card-title">录制清理</span>
+        <div class="card-header">
+          <i class="pi pi-trash card-header-icon" />
+          <span class="card-header-title">录制清理</span>
         </div>
       </template>
       <template #content>
-        <div class="cleanup-toggle">
-          <label for="cleanup-enabled">启用定时清理</label>
-          <ToggleSwitch
-            input-id="cleanup-enabled"
-            v-model="cleanup.enabled"
-            :disabled="cleanupLoading"
-          />
-        </div>
+        <div class="form-horizontal">
+          <div class="field">
+            <label for="cleanup-enabled">启用定时清理</label>
+            <ToggleSwitch
+              input-id="cleanup-enabled"
+              v-model="cleanup.enabled"
+              :disabled="cleanupLoading"
+            />
+          </div>
 
-        <div class="field settings-field">
-          <label for="cleanup-age">保留天数</label>
-          <InputNumber
-            input-id="cleanup-age"
-            v-model="cleanup.max_age_days"
-            :min="0"
-            :max="3650"
-            suffix=" 天"
-            show-buttons
-            size="small"
-            class="field-input"
-            :disabled="cleanupLoading || !cleanup.enabled"
-          />
-          <p class="settings-hint">删除超过该天数的录制片段;0 表示不按时间清理。</p>
-        </div>
+          <div class="field">
+            <label for="cleanup-age">保留天数</label>
+            <InputNumber
+              input-id="cleanup-age"
+              v-model="cleanup.max_age_days"
+              :min="0"
+              :max="3650"
+              suffix=" 天"
+              show-buttons
+              size="small"
+              class="field-input"
+              :disabled="cleanupLoading || !cleanup.enabled"
+            />
+            <p class="field-hint">删除超过该天数的录制片段;0 表示不按时间清理。</p>
+          </div>
 
-        <div class="field settings-field">
-          <label for="cleanup-size">总容量上限</label>
-          <InputNumber
-            input-id="cleanup-size"
-            v-model="cleanup.max_total_gb"
-            :min="0"
-            :max="1048576"
-            suffix=" GB"
-            show-buttons
-            size="small"
-            class="field-input"
-            :disabled="cleanupLoading || !cleanup.enabled"
-          />
-          <p class="settings-hint">录制总大小超过该值时,从最旧的片段开始删除;0 表示不按容量清理。</p>
-        </div>
+          <div class="field">
+            <label for="cleanup-size">总容量上限</label>
+            <InputNumber
+              input-id="cleanup-size"
+              v-model="cleanup.max_total_gb"
+              :min="0"
+              :max="1048576"
+              suffix=" GB"
+              show-buttons
+              size="small"
+              class="field-input"
+              :disabled="cleanupLoading || !cleanup.enabled"
+            />
+            <p class="field-hint">录制总大小超过该值时,从最旧的片段开始删除;0 表示不按容量清理。</p>
+          </div>
 
-        <div class="field settings-field">
-          <label for="cleanup-interval">运行间隔</label>
-          <InputNumber
-            input-id="cleanup-interval"
-            v-model="cleanup.interval_minutes"
-            :min="1"
-            :max="10080"
-            suffix=" 分钟"
-            show-buttons
-            size="small"
-            class="field-input"
-            :disabled="cleanupLoading || !cleanup.enabled"
-          />
-          <p class="settings-hint">后台清理任务的执行周期。</p>
-        </div>
+          <div class="field">
+            <label for="cleanup-interval">运行间隔</label>
+            <InputNumber
+              input-id="cleanup-interval"
+              v-model="cleanup.interval_minutes"
+              :min="1"
+              :max="10080"
+              suffix=" 分钟"
+              show-buttons
+              size="small"
+              class="field-input"
+              :disabled="cleanupLoading || !cleanup.enabled"
+            />
+            <p class="field-hint">后台清理任务的执行周期。</p>
+          </div>
 
-        <div class="settings-actions">
-          <Button
-            label="保存"
-            icon="pi pi-check"
-            size="small"
-            :loading="cleanupSaving"
-            :disabled="cleanupLoading"
-            @click="onSaveCleanup"
-          />
+          <div class="field-actions">
+            <Button
+              label="保存"
+              icon="pi pi-check"
+              size="small"
+              :loading="cleanupSaving"
+              :disabled="cleanupLoading"
+              @click="onSaveCleanup"
+            />
+          </div>
         </div>
       </template>
     </Card>
 
     <Card class="data-card settings-card">
       <template #header>
-        <div class="settings-card-header">
-          <i class="pi pi-shield settings-card-icon" />
-          <span class="settings-card-title">账户安全</span>
+        <div class="card-header">
+          <i class="pi pi-shield card-header-icon" />
+          <span class="card-header-title">账户安全</span>
         </div>
       </template>
       <template #content>
-        <p class="settings-hint account-current">
-          当前账号：<span class="mono-text">{{ currentUsername || '-' }}</span>
-        </p>
+        <div class="form-horizontal">
+          <div class="field">
+            <label>当前账号</label>
+            <span class="mono-text">{{ currentUsername || '-' }}</span>
+          </div>
 
-        <div class="field settings-field">
-          <label for="old-password">旧密码</label>
-          <Password
-            input-id="old-password"
-            v-model="oldPassword"
-            :feedback="false"
-            toggle-mask
-            size="small"
-            class="field-input"
-          />
-        </div>
+          <div class="field">
+            <label for="old-password">旧密码</label>
+            <Password
+              input-id="old-password"
+              v-model="oldPassword"
+              :feedback="false"
+              toggle-mask
+              size="small"
+              class="field-input"
+            />
+          </div>
 
-        <div class="field settings-field">
-          <label for="new-password">新密码</label>
-          <Password
-            input-id="new-password"
-            v-model="newPassword"
-            :feedback="false"
-            toggle-mask
-            size="small"
-            class="field-input"
-          />
-        </div>
+          <div class="field">
+            <label for="new-password">新密码</label>
+            <Password
+              input-id="new-password"
+              v-model="newPassword"
+              :feedback="false"
+              toggle-mask
+              size="small"
+              class="field-input"
+            />
+          </div>
 
-        <div class="field settings-field">
-          <label for="confirm-password">确认新密码</label>
-          <Password
-            input-id="confirm-password"
-            v-model="confirmNewPassword"
-            :feedback="false"
-            toggle-mask
-            size="small"
-            class="field-input"
-          />
-          <p class="settings-hint">修改成功后，该账号在其他设备上的登录会话将全部失效。</p>
-        </div>
+          <div class="field">
+            <label for="confirm-password">确认新密码</label>
+            <Password
+              input-id="confirm-password"
+              v-model="confirmNewPassword"
+              :feedback="false"
+              toggle-mask
+              size="small"
+              class="field-input"
+            />
+            <p class="field-hint">修改成功后，该账号在其他设备上的登录会话将全部失效。</p>
+          </div>
 
-        <div class="settings-actions">
-          <Button
-            label="修改密码"
-            icon="pi pi-key"
-            size="small"
-            :loading="passwordSaving"
-            @click="onChangePassword"
-          />
+          <div class="field-actions">
+            <Button
+              label="修改密码"
+              icon="pi pi-key"
+              size="small"
+              :loading="passwordSaving"
+              @click="onChangePassword"
+            />
+          </div>
         </div>
       </template>
     </Card>
 
     <Card class="data-card settings-card">
       <template #header>
-        <div class="settings-card-header">
-          <i class="pi pi-users settings-card-icon" />
-          <span class="settings-card-title">用户管理</span>
+        <div class="card-header">
+          <i class="pi pi-users card-header-icon" />
+          <span class="card-header-title">用户管理</span>
           <Button
             label="添加用户"
             icon="pi pi-plus"
@@ -511,47 +518,8 @@ onMounted(async () => {
   margin-top: 10px;
 }
 
-.settings-card-header {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 1rem 1.25rem 0;
-}
-
-.settings-card-icon {
-  color: #38bdf8;
-}
-
-.settings-card-title {
-  font-size: 0.95rem;
-  font-weight: 600;
-  color: #e2e8f0;
-}
-
 .settings-field {
   max-width: 32rem;
-}
-
-.cleanup-toggle {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 1.25rem;
-}
-
-.settings-hint {
-  margin: 0.5rem 0 0;
-  font-size: 0.8rem;
-  line-height: 1.5;
-  color: #94a3b8;
-}
-
-.settings-actions {
-  margin-top: 1.25rem;
-}
-
-.account-current {
-  margin: 0 0 1.25rem;
 }
 
 .user-add-button {

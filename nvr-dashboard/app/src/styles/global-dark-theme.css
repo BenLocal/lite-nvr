@@ -150,6 +150,24 @@
   padding: 1rem 1.25rem 1.25rem;
 }
 
+/* Card #header content: icon + title, optional trailing actions. The card
+   header already has padding, so this adds none. */
+.card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.card-header-icon {
+  color: #38bdf8;
+}
+
+.card-header-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
 /* ============================================
    Empty States
    ============================================ */
@@ -225,6 +243,61 @@
   gap: 1rem;
 }
 
+.field-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: #94a3b8;
+}
+
+/*
+ * Horizontal "label: control" form. Put .form-horizontal on a container: each
+ * .field inside puts its label in a fixed column and stacks the control,
+ * validation message and hint in the second column. Hints wrap as plain
+ * blocks, so long text never widens the row.
+ */
+.form-horizontal {
+  --form-label-width: 8rem;
+
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.form-horizontal .field {
+  display: grid;
+  grid-template-columns: var(--form-label-width) minmax(0, 1fr);
+  gap: 0.375rem 1rem;
+  align-items: center;
+}
+
+.form-horizontal .field > * {
+  grid-column: 2;
+  min-width: 0;
+}
+
+.form-horizontal .field > label {
+  grid-row: 1;
+  grid-column: 1;
+}
+
+.form-horizontal .field:has(> textarea) > label {
+  align-self: start;
+  padding-top: 0.5rem;
+}
+
+.form-horizontal .field > .p-toggleswitch {
+  justify-self: start;
+}
+
+/* Buttons (save, probe…) aligned with the control column. */
+.form-horizontal .field-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding-left: calc(var(--form-label-width) + 1rem);
+}
+
 /* ============================================
    Responsive
    ============================================ */
@@ -241,6 +314,26 @@
   }
 
   .field-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .form-horizontal .field {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .form-horizontal .field > *,
+  .form-horizontal .field > label {
+    grid-column: 1;
+  }
+
+  .form-horizontal .field-actions {
+    padding-left: 0;
+  }
+}
+
+/* Two horizontal fields per row get cramped before the single-column switch. */
+@media (width <= 1200px) {
+  .form-horizontal .field-grid {
     grid-template-columns: 1fr;
   }
 }
