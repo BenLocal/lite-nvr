@@ -13,6 +13,13 @@ pub fn init() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Shared test fixture: `e2e/test.mp4` at the workspace root
+/// (320x240, ~5s @ 10fps, 50 video frames + AAC). Works regardless of cwd.
+#[cfg(test)]
+pub(crate) fn test_mp4_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../e2e/test.mp4")
+}
+
 pub mod audio_mixer;
 pub mod bsf;
 pub mod bus;

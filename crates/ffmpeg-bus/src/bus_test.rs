@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use futures::StreamExt;
 use tokio::io::AsyncWriteExt as _;
@@ -7,16 +7,7 @@ use crate::bus::{Bus, EncodeConfig, InputConfig, OutputAvType, OutputConfig, Out
 use crate::encoder::{AudioSettings, Encoder, Settings};
 use crate::input::AvInput;
 use crate::metadata::probe;
-
-/// Path to scripts/test.mp4 at the workspace root (crates/ffmpeg-bus/../..). Works regardless of cwd.
-pub(super) fn test_mp4_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .unwrap()
-        .join("scripts")
-        .join("test.mp4")
-}
+use crate::test_mp4_path;
 
 /// Path for a test-generated media file under `crates/ffmpeg-bus/.test_media/`
 /// (git-ignored), creating the directory if needed.
@@ -26,7 +17,7 @@ pub(super) fn test_media(name: &str) -> String {
     dir.join(name).to_string_lossy().into_owned()
 }
 
-/// Requires scripts/test.mp4 (~5s, 10fps).
+/// Requires e2e/test.mp4 (~5s, 10fps).
 #[tokio::test]
 async fn test_mux_h264() -> anyhow::Result<()> {
     let file_name = &test_media("output.h264");
@@ -112,7 +103,7 @@ async fn test_mux_aac() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Requires scripts/test.mp4 (~5s, 10fps).
+/// Requires e2e/test.mp4 (~5s, 10fps).
 #[tokio::test]
 async fn test_mux_only_video_mp4() -> anyhow::Result<()> {
     let file_name = &test_media("output.mp4");
@@ -144,7 +135,7 @@ async fn test_mux_only_video_mp4() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Requires scripts/test.mp4. Transcodes the video to a smaller resolution and
+/// Requires e2e/test.mp4. Transcodes the video to a smaller resolution and
 /// muxes it to a file, exercising decode -> scale -> encode -> mux. Verifies the
 /// output is a valid MP4 with a video stream.
 #[tokio::test]
@@ -411,7 +402,7 @@ async fn verify_av_sync(path: &str, expected_dur: f64) -> anyhow::Result<()> {
 }
 
 /// Stable init-level regression: prefer HW H.264 encoder and fallback to software automatically.
-/// Uses scripts/test.mp4 to obtain real stream parameters, then only validates encoder init path.
+/// Uses e2e/test.mp4 to obtain real stream parameters, then only validates encoder init path.
 #[test]
 fn test_encoder_init_auto_hw_fallback_from_test_mp4() -> anyhow::Result<()> {
     crate::init()?;
@@ -437,7 +428,7 @@ fn test_encoder_init_auto_hw_fallback_from_test_mp4() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Stable init-level regression: force software libx264 init from scripts/test.mp4.
+/// Stable init-level regression: force software libx264 init from e2e/test.mp4.
 #[test]
 fn test_encoder_init_force_software_from_test_mp4() -> anyhow::Result<()> {
     crate::init()?;

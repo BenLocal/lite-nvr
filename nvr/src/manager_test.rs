@@ -77,10 +77,10 @@ async fn transport_stream_bytes() -> Vec<u8> {
         Bus, InputConfig as FbInput, OutputAvType, OutputConfig as FbOutput, OutputDest,
     };
     use futures::StreamExt;
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/test.mp4");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../e2e/test.mp4");
     assert!(
         path.is_file(),
-        "scripts/test.mp4 is required for this network regression test"
+        "e2e/test.mp4 is required for this network regression test"
     );
     let bus = Bus::new_deferred("network-regression-ts");
     bus.add_input(

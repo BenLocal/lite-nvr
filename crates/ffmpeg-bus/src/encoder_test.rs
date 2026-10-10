@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::time::Duration;
 
 use crate::decoder::{Decoder, DecoderTask};
@@ -66,7 +65,7 @@ fn test_rockchip_hardware_encode() -> anyhow::Result<()> {
 /// subscriber leaves, while frames are still arriving.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_auto_stop_encoder_stops_without_subscribers() -> anyhow::Result<()> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test.mp4");
+    let path = crate::test_mp4_path();
     if !path.exists() {
         return Ok(());
     }
@@ -128,7 +127,7 @@ async fn test_auto_stop_encoder_stops_without_subscribers() -> anyhow::Result<()
 /// and the failing frame is replayed: every frame still comes out encoded.
 #[test]
 fn test_hardware_encoder_runtime_failure_falls_back_to_software() -> anyhow::Result<()> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test.mp4");
+    let path = crate::test_mp4_path();
     if !path.exists() {
         return Ok(());
     }
@@ -304,7 +303,7 @@ fn test_pick_sample_rate() {
 }
 
 fn test_mp4_streams() -> Option<(AvInput, crate::stream::AvStream, crate::stream::AvStream)> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test.mp4");
+    let path = crate::test_mp4_path();
     if !path.exists() {
         return None;
     }

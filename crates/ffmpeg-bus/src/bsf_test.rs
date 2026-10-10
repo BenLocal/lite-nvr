@@ -76,10 +76,10 @@ fn test_hvcc_parameter_sets_keeps_vps_sps_pps() {
     );
 }
 
-/// Real MP4 (AVCC) extradata from scripts/test.mp4 yields SPS + PPS.
+/// Real MP4 (AVCC) extradata from e2e/test.mp4 yields SPS + PPS.
 #[test]
 fn test_parameter_sets_from_test_mp4() -> anyhow::Result<()> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test.mp4");
+    let path = crate::test_mp4_path();
     if !path.exists() {
         return Ok(());
     }

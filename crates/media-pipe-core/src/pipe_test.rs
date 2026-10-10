@@ -360,14 +360,14 @@ async fn test_pipe_start_with_rtsp_input() {
 /// consumer legitimately sees `Lagged` — the loop must continue on it (as the
 /// real tap does), not break.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires ffmpeg libs + scripts/test.mp4"]
+#[ignore = "requires ffmpeg libs + e2e/test.mp4"]
 async fn test_subscribe_audio_delivers_frames() {
     use std::time::Duration;
 
     use ffmpeg_bus::frame::{RawFrame, RawFrameCmd};
     use tokio::sync::broadcast::error::RecvError;
 
-    let media = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/test.mp4");
+    let media = concat!(env!("CARGO_MANIFEST_DIR"), "/../../e2e/test.mp4");
 
     // No-output pipe == exactly the ASR tap scenario.
     let pipe = Arc::new(Pipe::new(PipeConfig::builder().input_file(media).build()));

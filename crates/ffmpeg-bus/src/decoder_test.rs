@@ -1,4 +1,3 @@
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::decoder::{Decoder, DecoderTask};
@@ -6,6 +5,7 @@ use crate::frame::RawFrameCmd;
 use crate::input::AvInput;
 use crate::packet::RawPacketCmd;
 use crate::stream::AvStream;
+use crate::test_mp4_path;
 
 #[cfg(feature = "rockchip")]
 #[test]
@@ -57,16 +57,6 @@ fn test_rockchip_hardware_decode() -> anyhow::Result<()> {
         "software fallback does not count as hardware validation"
     );
     Ok(())
-}
-
-/// scripts/test.mp4 at the workspace root (~5s, 10fps, 50 video frames).
-fn test_mp4_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .unwrap()
-        .join("scripts")
-        .join("test.mp4")
 }
 
 /// Open test.mp4 and return its video stream plus all of its packets.

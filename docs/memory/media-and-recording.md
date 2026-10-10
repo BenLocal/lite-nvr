@@ -13,7 +13,7 @@
 - 2026-07-13：删掉 admin 后重启，又能用 admin/admin 登录 → `ensure_default_admin_user` 每次启动执行，admin 不存在就以密码 admin 重建 → 收紧默认口令应保留 admin 并改密码，不要删（证据：nvr-db/src/migrations.rs:43-59、nvr/src/main.rs:56）
 - 2026-10-01：本机 QSV 能打开 h264 解码器，但首包报 "MFX session" 失败，降级软解后一帧都解不出 → 降级时丢掉了失败的那个包，而它往往是流里第一个关键帧 → 硬解运行期降级必须把失败包重放给软解（证据：crates/ffmpeg-bus/src/decoder.rs `Decoder::send_packet`）
 - 2026-10-01：同一个文件源上的第二个 File 输出永远不写 moov → 第一个输出就启动了 input，短文件瞬间读完（< 4096 包缓冲），后加的输出订阅 input 时已错过 EOF，复用器一直等 → 全转码的 mux 只等编码器 EOF，不订阅 input；2026-10-02 起 Pipe 改用 `Bus::new_deferred` + `start()`，先注册完所有输出再开始读。`start()` 之后再加的输出 / 订阅（ASR、检测）仍是中途加入，文件源会丢开头（证据：crates/ffmpeg-bus/src/bus.rs `spawn_multi_stream_mux`、`Bus::new_deferred`）
-- 2026-10-01：`scripts/test.mp4` 本身是 320x240 / 10fps / 50 帧，只有开头一个关键帧 → 要求 320x240 的 EncodeConfig 会被自适应判成 copy，不会真转码 → 写转码测试要选不同分辨率；测试产物统一写 `crates/ffmpeg-bus/.test_media/`（已 gitignore）
+- 2026-10-01：`e2e/test.mp4` 本身是 320x240 / 10fps / 50 帧，只有开头一个关键帧 → 要求 320x240 的 EncodeConfig 会被自适应判成 copy，不会真转码 → 写转码测试要选不同分辨率；测试产物统一写 `crates/ffmpeg-bus/.test_media/`（已 gitignore）
 - 2026-10-01：所有视频转码输出时长塌缩（5s 源转出来 0.15s、约快 100 倍），只数帧数的测试一直发现不了 → 解码帧 / rawvideo 帧的 pts 用的是输入流时间基，编码器时间基是 1/1_000_000，送编码器前没换算 → `Encoder::send_frame` 先把 pts 从输入流时间基换算到编码器时间基；转码测试必须断言时长（证据：crates/ffmpeg-bus/src/encoder.rs `send_frame`）
 - 2026-10-01：Net 输出（RTSP 推流）连一个没人监听的地址，`add_output` 照样返回 Ok，只在后台日志报错 → RTSP 等网络输出直到写 header 才连接，原来要等写第一个包时才写 header → File/Net mux 在 `add_output` 里就先写 header，连接错误直接返回给调用方（证据：crates/ffmpeg-bus/src/output.rs `AvOutput::write_header`）
 - 2026-10-01：lavfi `testsrc` 出来的是 WRAPPED_AVFRAME，不是 RAWVIDEO，走的是解码路径；而且单独跑会报 "input format not found: lavfi" → 要先 `crate::init()` 注册 device（别的测试先注册了，才掩盖了这个顺序依赖）；真正的 RAWVIDEO 输入要用 `rawvideo` demuxer 打开裸 yuv（见 bus_test `write_raw_yuv`）

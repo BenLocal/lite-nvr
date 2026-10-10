@@ -11,13 +11,14 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 use tokio::task::JoinHandle;
 
-use super::bus_test::{test_media, test_mp4_path};
+use super::bus_test::test_media;
 use crate::bus::{
     Bus, EncodeConfig, InputConfig, OutputAvType, OutputConfig, OutputDest, VideoRawFrameStream,
 };
 use crate::frame::{RawFrameCmd, RawFrameReceiver, VideoFrame};
 use crate::metadata::probe;
 use crate::stream::AvStream;
+use crate::test_mp4_path;
 
 /// Upper bound for any single wait in these tests.
 const WAIT: Duration = Duration::from_secs(20);

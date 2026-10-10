@@ -10,7 +10,7 @@ use crate::output::AvOutputStream;
 /// instead of dropping chunks (a lost chunk corrupts the byte stream).
 #[tokio::test(flavor = "multi_thread")]
 async fn test_mux_stream_slow_reader_loses_nothing() -> anyhow::Result<()> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test.mp4");
+    let path = crate::test_mp4_path();
     if !path.exists() {
         return Ok(());
     }
