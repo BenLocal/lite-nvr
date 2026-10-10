@@ -175,3 +175,7 @@ await fetch(url, {
 - Secondary actions (cancel, refresh, probe-like helpers) use `severity="secondary" outlined`, not a borderless `text` button: on the dark surfaces a text button reads as background until hovered or focused.
 - Secondary button colors come from `button.colorScheme.light` in `src/styles/prime-preset.ts` (the app runs Aura's light scheme with custom dark surfaces); do not restyle `.p-button-secondary` in views.
 - Form action rows under cards align their right edge with the inputs: pad by the card border plus content padding, and give a scrolling area and the action row the same `scrollbar-gutter: stable` (see `DeviceFormView.vue`).
+
+## 16. Dev Server Backend
+
+- `npm run dev` proxies `/api` to `NVR_API_TARGET` (shell env > `.env` > `http://localhost:18080`). Copy `.env.example` to `.env` to point it at another nvr; `.env` is git-ignored.
