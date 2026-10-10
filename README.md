@@ -27,10 +27,14 @@ make run            # = cargo run --package nvr, with LD_LIBRARY_PATH set up
 | REST API | `http://localhost:18080/api` |
 | Dashboard | `http://localhost:18080/nvr/` |
 | ZLM HTTP / HLS | `:8553` |
-| ZLM RTSP | `:8554` |
+| ZLM RTSP | `:8554` (override with `NVR_ZLM_RTSP_PORT`) |
 | ZLM RTMP | `:8555` |
 
-A default `admin` / `admin` user is created on first start — change the password after deployment.
+A default `admin` / `admin` user is created at startup if `admin` does not exist — change the password after deployment.
+
+V4L2 capture requires accessible video input nodes; Rockchip builds support multi-plane capture and H.264 hardware encoding. X11 capture is offered only when an accessible display and its capture dependencies are available.
+
+For Rockchip packaging and deployment, see [`docs/rockchip.md`](docs/rockchip.md).
 
 ## Example
 
@@ -59,7 +63,7 @@ More requests are in [`rest/api.rest`](rest/api.rest).
 
 ```bash
 make help                                             # list all targets
-cargo check --workspace
+make build BUILD_MODE=check                            # workspace check with dependency paths configured
 cargo test --workspace --lib --tests --no-fail-fast
 cd nvr-dashboard/app && npm run dev                   # dashboard dev server
 ```

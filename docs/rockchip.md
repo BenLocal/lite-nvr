@@ -53,7 +53,7 @@ cd "$RK_INSTALL_ROOT/lite-nvr-0.1.0-linux-arm64-rockchip"
 
 ```bash
 set --
-for device in /dev/mpp_service /dev/rga /dev/dri/renderD128 /dev/dri/renderD129 /dev/dma_heap/*; do
+for device in /dev/video* /dev/mpp_service /dev/rga /dev/dri/renderD128 /dev/dri/renderD129 /dev/dma_heap/*; do
   [ ! -e "$device" ] || set -- "$@" --device "$device"
 done
 docker run -d --name lite-nvr-rockchip --cpus=1 \
@@ -66,7 +66,7 @@ docker run -d --name lite-nvr-rockchip --cpus=1 \
 
 `systempaths=unconfined` 取消 Docker 对系统路径的默认屏蔽，让 MPP 能读取上面只读挂载的设备树并识别 SoC；也会取消其他默认系统路径屏蔽，部署时需评估容器访问权限。若设备树被屏蔽，H.264 可能仍可用，但 HEVC 会报 MPP 初始化失败。
 
-上面的映射需要 Docker 桥接网络。测试板 Docker 的 bridge 不可用，创建网络返回 `operation not supported`，因而实测使用 `--network host`（去掉所有 `-p` 参数）。使用 host 网络前检查 18080、8553、8554、8555 是否被占用，已有服务占用时不要直接替换或停止它们。测试板已有服务占用 8554、8555，NVR 的页面和 HTTP 媒体服务可用，但该测试容器的 RTSP / RTMP 监听失败，不能按完整部署验收。
+上面的映射需要 Docker 桥接网络。测试板 Docker 的 bridge 不可用，创建网络返回 `operation not supported`，因而实测使用 `--network host`（去掉所有 `-p` 参数）。使用 host 网络前检查 18080、8553、8554、8555 是否被占用，已有服务占用时不要直接替换或停止它们。RTSP 端口可通过容器环境变量 `NVR_ZLM_RTSP_PORT` 修改；测试容器设置为 8556 后已验证播放，RTMP 的 8555 仍被其他服务占用。
 
 Alpine 的 musl 与 GNU ABI 不同；改 Rust target 不能转换已有 glibc 共享库。如需 musl 原生包，还需重建 FFmpeg/MPP/RGA、ZLM、ONNX Runtime、sherpa-onnx 及其 C/C++ 依赖。
 
@@ -140,6 +140,7 @@ metrics: host Linux (Buildroot 2018.02-rc3) 5.10.252-... (Rockchip RK3588 EVB1 L
 | 变量 | 作用 |
 |---|---|
 | `RUST_LOG` | 日志级别，默认 `info`；如 `ffmpeg_bus=debug` |
+| `NVR_ZLM_RTSP_PORT` | RTSP 监听端口，默认 8554；端口冲突时可改为其他非零 TCP 端口 |
 | `NVR_RECORD_DIR` | 录像目录，默认 `安装目录/data/records` |
 | `FFMPEG_BUS_ENCODER_QUEUE_FRAMES` | 编码器前的帧队列长度，默认 8；路数与内存见 [rockchip-capacity.md](rockchip-capacity.md) |
 | `FFMPEG_BUS_DISABLE_HWDEC=1` | 强制软件解码，排查硬解问题时用 |
@@ -216,7 +217,7 @@ FFMPEG_BUS_RK_TEST_VIDEO=/tmp/lite-nvr-rk-encode-test.mp4 CARGO_BUILD_JOBS=1 \
 
 解码选择普通内存像素格式，让 RK FFmpeg 从 MPP 缓冲复制像素，继续供 CPU 滤镜、缩放、合成和检测使用；当前不提供端到端零拷贝或 RGA 滤镜加速。`FFMPEG_BUS_DISABLE_HWDEC=1` 仍可强制软件解码。每个编码器前有一个解码帧队列，默认 8 帧（1080p 约 25MB），可用 `FFMPEG_BUS_ENCODER_QUEUE_FRAMES` 调整；调大会按每帧约 3MB（1080p）增加每路内存，原先的 128 帧曾使 RK3588 在 12 路 1080p 转码时内存耗尽。feature 未启用时不加入 RKMPP 候选。RKMPP 与 RK NPU 检测是独立能力。
 
-V4L2 采集走 FFmpeg 的 v4l2 输入，它只支持单平面（`VIDEO_CAPTURE`）设备。RK3588 的 rkcif（MIPI/LVDS 摄像头接口）和 hdmirx 节点只提供多平面接口（capabilities `0x84201000`），FFmpeg 读取时 `VIDIOC_DQBUF` 报 `Invalid argument`，因此不能作为 V4L2 设备接入；管理后台的 V4L2 节点列表只列出单平面采集节点。可用 `media-ctl -p` 查看 rkcif 是否接了传感器（例如测试板上的 LT6911C HDMI 转 MIPI 芯片）。
+当前 RK FFmpeg 8.1 已支持 V4L2 多平面采集。管理后台列出单平面、多平面视频输入，并过滤 rkcif 的内部 stream/scale/tools 节点，仅保留其 `/dev/video0` 主输入。测试板的 `/dev/video11`（hdmirx）已完成 1920×1080/60 采集、H.264 硬编码及网页预览；无信号时驱动可能返回 `VIDIOC_DQBUF: Invalid argument`，应先检查信号锁定状态。节点编号取决于板端驱动，可用 `media-ctl -p` 查看输入拓扑。
 
 直接复用 crate 时写 `ffmpeg-bus = { path = "...", features = ["rockchip"] }`。Cargo feature 不能替依赖 crate 修改 `FFMPEG_DIR`：直接执行 Cargo 前必须将其设为 RK FFmpeg SDK，并配置 `LD_LIBRARY_PATH`；原生构建脚本和 `make package PACKAGE_ARCHS=rockchip` 会自动下载并选择 SDK。启用 feature 后启动检查 RKMPP 编解码器是否已注册，防止误用通用 FFmpeg。
 
@@ -237,4 +238,4 @@ V4L2 采集走 FFmpeg 的 v4l2 输入，它只支持单平面（`VIDEO_CAPTURE`�
 Rockchip 打包和项目构建脚本会自动下载或复用原始 crate，并将补丁应用到 `.cache/rockchip-rust/`；无需保留 `vendor/`。普通构建不启用补丁。手动 Cargo/Cross 命令需通过 `scripts/with-rockchip-patch.sh`，完成后会恢复 Cargo.lock；构建期间请勿并行运行其他 Cargo 命令。
 
 - 2026-10-10：用 Ubuntu 20.04 的 Cross 镜像打包（nvr 只需 glibc 2.30），在 RK3588 + Buildroot 2018.02（glibc 2.33、无 Docker）上原生运行通过：管理后台、RKMPP 硬解 / 硬编、`/api/system/os` 均正常；1080p 转码路数与资源占用见 [rockchip-capacity.md](rockchip-capacity.md)。原地升级保留了 `nvr.db` 中的设备配置。
-- 2026-10-10：该板 12 个 `/dev/video*`（rkcif、hdmirx）均为多平面接口，FFmpeg v4l2 输入无法读取；对无信号节点抓帧时 ffmpeg 会阻塞在驱动调用里，`timeout` 发出的 SIGTERM 无效，只能 `kill -9`。
+- 2026-10-10：该板 12 个 `/dev/video*`（rkcif、hdmirx）均为多平面接口。早期将无信号时的读取失败归因于多平面不受支持，后由 video11 实际采集证伪；NVR 已使用非阻塞 V4L2 读取并在管线取消时停止输入探测，解决无信号设备更新时等待旧管线退出的问题。
