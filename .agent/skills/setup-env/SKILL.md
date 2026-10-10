@@ -79,7 +79,7 @@ ssh -p <port> <user>@<host> 'uname -m; getconf GNU_LIBC_VERSION; cat /etc/os-rel
 逐项对应用户选中的能力，全部通过才算完成：
 
 - 重跑 `check-env.sh`，选中的项全部变 `OK`。
-- 基础依赖：`bash .agent/skills/build-nvr/scripts/build.sh check -p nvr`。
+- 基础依赖：`make build BUILD_MODE=check BUILD_ARGS="-p nvr"`。
 - ASR / 检测：对应目录存在，检测目录含 `models.json`。
 - 交叉打包：`cross --version`、`docker info` 可用（完整 `make package` 耗时长，问用户是否现在跑）。
 - Rockchip 板端：SSH 能连上，`dev-env.local.md` 每一行都已填实测值；后续部署与硬件验证按 `docs/rockchip.md` 走。

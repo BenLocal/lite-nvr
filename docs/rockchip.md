@@ -85,8 +85,7 @@ ldd ./ffmpeg/lib/libavcodec.so
 # 在新终端重新设置 release URL，文件名以 release 页面为准。
 RK_FFMPEG_URL=https://github.com/BenLocal/FFmpeg-Builds/releases/download/latest/ffmpeg-d90e3a1c18-latest-linuxarm64-gpl-shared-8.1-rk.tar.xz
 FFMPEG_URL="$RK_FFMPEG_URL" make install-deps
-CARGO_BUILD_JOBS=1 CMAKE_BUILD_PARALLEL_LEVEL=1 \
-  bash .agent/skills/build-nvr/scripts/build.sh release -p nvr --features rockchip
+make build BUILD_JOBS=1 BUILD_MODE=release BUILD_ARGS="-p nvr --features rockchip"
 # 填写前面已经准备好的安装目录，把新二进制放回该目录。
 RK_PACKAGE_DIR=/实际安装目录/lite-nvr-0.1.0-linux-arm64-rockchip
 cp target/release/nvr "$RK_PACKAGE_DIR/bin/nvr"

@@ -5,24 +5,26 @@ description: 编译 lite-nvr 工程（Rust workspace + 内嵌 Vue 后台）。�
 
 # build-nvr
 
-用 `scripts/build.sh` 编译，它会加载 `.env`、拼好 `FFMPEG_DIR` / `ZLM_DIR` / `LD_LIBRARY_PATH` / `SHERPA_ONNX_LIB_DIR`（与 Makefile 同一套逻辑），先检查前置依赖再调 cargo。
+一律用 `make build` 编译。它调用 `scripts/build.sh`：加载 `.env`，拼好 `FFMPEG_DIR` / `ZLM_DIR` / `LD_LIBRARY_PATH` / `SHERPA_ONNX_LIB_DIR`，检查前置依赖后再调 cargo；并按 `BUILD_JOBS`（默认 CPU 核数的一半）和 `BUILD_NICE` 限制并发与优先级。
 
 ```bash
-bash .agent/skills/build-nvr/scripts/build.sh                 # cargo build --workspace（debug）
-bash .agent/skills/build-nvr/scripts/build.sh check           # cargo check --workspace，最快
-bash .agent/skills/build-nvr/scripts/build.sh release         # cargo build --workspace --release
-bash .agent/skills/build-nvr/scripts/build.sh -p nvr          # 只编某个 crate；其余参数原样透传给 cargo
-bash .agent/skills/build-nvr/scripts/build.sh check -p nvr --features smb
+make build                                                    # cargo build --workspace（debug）
+make build BUILD_MODE=check                                   # cargo check --workspace，最快
+make build BUILD_MODE=release                                 # cargo build --workspace --release
+make build BUILD_ARGS="-p nvr"                                # 只编某个 crate；BUILD_ARGS 原样透传给 cargo
+make build BUILD_MODE=check BUILD_ARGS="-p nvr --features smb"
+make build BUILD_JOBS=1 BUILD_MODE=release BUILD_ARGS="-p nvr --features rockchip"   # Rockchip 原生构建，需 Linux aarch64
 ```
 
 ## 怎么选
 
-- 只是验证改动能编过：`check`，并只带改动涉及的 crate（`-p <crate>`）。
-- 要运行 / 交付二进制：默认 build 或 `release`，产物在 `target/{debug,release}/nvr`。
-- 改了 `nvr/src/transport/smb.rs`：额外跑 `check -p nvr --features smb`（需系统装 libsmbclient 开发包）。
+- 只是验证改动能编过：`BUILD_MODE=check`，并只带改动涉及的 crate（`BUILD_ARGS="-p <crate>"`）。
+- 要运行 / 交付二进制：默认 build 或 `BUILD_MODE=release`，产物在 `target/{debug,release}/nvr`。
+- 改了 `nvr/src/transport/smb.rs`：额外跑 `BUILD_MODE=check BUILD_ARGS="-p nvr --features smb"`（需系统装 libsmbclient 开发包）。
+- 带 `rockchip` feature 时会自动下载 RK FFmpeg SDK、套用 `scripts/with-rockchip-patch.sh`；非 aarch64 主机改用 `make package PACKAGE_ARCHS=rockchip` 交叉打包。
 - 想强制重建前端：前面加 `FORCE_REBUILD=1`。
 
-编译通过后如需验证测试，跑 `cargo test --workspace --lib --tests --no-fail-fast`（同样需要脚本里那套环境变量，可 `source` 后执行，见下）。
+编译通过后如需验证测试，跑 `make test`（与 CI 一致）。
 
 ## 前置依赖
 
@@ -46,5 +48,5 @@ bash .agent/skills/build-nvr/scripts/build.sh check -p nvr --features smb
 ## 只要环境变量、不编译
 
 ```bash
-source .agent/skills/build-nvr/scripts/build.sh env   # 在当前 shell 导出环境后返回，不执行 cargo
+source scripts/build.sh env   # 在当前 shell 导出环境后返回，不执行 cargo
 ```

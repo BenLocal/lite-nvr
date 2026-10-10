@@ -75,7 +75,7 @@ help:
 	@echo "  frontend-install   npm ci in $(DASHBOARD_DIR)"
 	@echo ""
 	@echo "Build / Run:"
-	@echo "  build              cargo build --workspace (BUILD_JOBS=$(BUILD_JOBS), BUILD_NICE=$(BUILD_NICE))"
+	@echo "  build              scripts/build.sh BUILD_MODE=check|build|release BUILD_ARGS=... (BUILD_JOBS=$(BUILD_JOBS), BUILD_NICE=$(BUILD_NICE))"
 	@echo "  package            cross Linux amd64/arm64 GNU + arm64 Rockchip packages into dist/ (PACKAGE_JOBS=$(PACKAGE_JOBS))"
 	@echo "  run                cargo run --package nvr"
 	@echo "  asr-demo           Run nvr-asr streaming demo on a WAV (see ASR_* vars)"
@@ -125,9 +125,15 @@ xvfb:
 install-watch:
 	cargo install cargo-watch
 
+# Build via scripts/build.sh (env wiring, prereq checks, Rockchip SDK), e.g.
+#   make build BUILD_MODE=check BUILD_ARGS="-p nvr"
+#   make build BUILD_MODE=release BUILD_ARGS="-p nvr --features rockchip"
+BUILD_MODE ?= build
+BUILD_ARGS ?=
+
 build:
-	CMAKE_BUILD_PARALLEL_LEVEL=$(BUILD_JOBS) \
-		nice -n $(BUILD_NICE) cargo build --workspace -j $(BUILD_JOBS) -vv
+	CARGO_BUILD_JOBS=$(BUILD_JOBS) CMAKE_BUILD_PARALLEL_LEVEL=$(BUILD_JOBS) \
+		nice -n $(BUILD_NICE) bash scripts/build.sh $(BUILD_MODE) $(BUILD_ARGS)
 
 package:
 	CARGO_BUILD_JOBS=$(PACKAGE_JOBS) \

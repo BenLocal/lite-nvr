@@ -5,7 +5,7 @@
 #
 # `source build.sh env` exports the environment into the current shell only.
 
-_nvr_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+_nvr_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 _nvr_setup_env() {
     if [ -f "$_nvr_root/.env" ]; then
