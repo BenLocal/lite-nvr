@@ -25,6 +25,7 @@ Makefile 会自动 `include .env` 并导出（`.env.example` 为模板，主要�
 | `LD_LIBRARY_PATH` | 本地运行需含 `ffmpeg/lib`、`zlm/lib`（Makefile 自动拼） |
 | `RUST_LOG` | 日志级别，如 `info`、`ffmpeg_bus=debug` |
 | `SHERPA_ONNX_LIB_DIR` | sherpa-onnx 预编译库，存在 `third_party/sherpa-onnx/*/lib` 时 Makefile 自动设置 |
+| `NVR_ZLM_RTSP_PORT` | NVR 内嵌 ZLM 的 RTSP 监听端口，默认 8554；端口冲突时可设置其他非零 TCP 端口 |
 
 运行期开关（`NVR_GB_*`、`NVR_RECORD_DIR`、`DETECT_MODELS_DIR`、`ASR_MODELS_DIR` 等）以代码里的 `std::env::var` 为准，用 CodeGraph / grep 查。
 

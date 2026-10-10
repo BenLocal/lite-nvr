@@ -537,3 +537,41 @@ async fn test_failed_input_open_ends_pipe_without_cancel() {
     assert!(!pipe.is_started());
     assert!(pipe.subscribe_video().await.is_err());
 }
+
+#[tokio::test]
+async fn test_cancel_interrupts_input_probe() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let pipe = Arc::new(Pipe::new(PipeConfig {
+        input: InputConfig::Network {
+            url: format!("tcp://{addr}"),
+        },
+        outputs: vec![OutputConfig::new(
+            OutputDest::RawFrame {
+                sink: Arc::new(RawSinkSource::new()),
+            },
+            None,
+        )],
+    }));
+    let running = Arc::clone(&pipe);
+    let mut task = tokio::spawn(async move { running.start(None).await });
+    let (connection, _) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+    // Keep the peer open without supplying a stream header: probing must stop
+    // through cancellation, rather than because the peer closes the connection.
+    pipe.cancel();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), &mut task).await;
+    drop(connection);
+    if result.is_err() {
+        let _ = task.await;
+    }
+    assert!(
+        result.is_ok(),
+        "cancellation did not interrupt input probing"
+    );
+    assert!(!pipe.is_started());
+    assert!(pipe.subscribe_video().await.is_err());
+}

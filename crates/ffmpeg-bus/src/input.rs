@@ -260,6 +260,11 @@ impl AvInput {
             if ps.is_null() {
                 anyhow::bail!("avformat_alloc_context failed");
             }
+            // V4L2's blocking DQBUF does not poll the interrupt callback.
+            // Nonblocking reads return EAGAIN so probing/reading can observe stop.
+            if matches!(format, Some("v4l2" | "video4linux2")) {
+                (*ps).flags |= ffmpeg_next::ffi::AVFMT_FLAG_NONBLOCK;
+            }
             (*ps).interrupt_callback = ffmpeg_next::ffi::AVIOInterruptCB {
                 callback: Some(interrupt_callback),
                 opaque: Arc::as_ptr(&interrupt) as *mut std::ffi::c_void,

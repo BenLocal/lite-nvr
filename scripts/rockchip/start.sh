@@ -14,7 +14,7 @@ set -eu
 root=$(cd "$(dirname "$0")" && pwd)
 bin="$root/bin/nvr"
 log="$root/nvr.log"
-ports="18080 8553 8554 8555"
+ports="18080 8553 ${NVR_ZLM_RTSP_PORT:-8554} 8555"
 
 cd "$root"
 export LD_LIBRARY_PATH="$root/lib:$root/ffmpeg/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"

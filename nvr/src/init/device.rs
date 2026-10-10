@@ -7,7 +7,7 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use crate::{db::app_db_conn, manager};
-use media_pipe_core::{InputConfig, PipeConfig};
+use media_pipe_core::{EncodeConfig, InputConfig, PipeConfig};
 
 pub(crate) fn init_device_pipes(
     detect_hub: &'static crate::detect::hub::DetectHub,
@@ -110,6 +110,7 @@ pub(crate) async fn ensure_device_pipe(
     device: &DeviceInfo,
 ) -> anyhow::Result<()> {
     validate_device_input(device)?;
+    crate::x11::validate_input(&device.input_type, &device.input_value).await?;
     // Xiaomi cameras bypass ffmpeg entirely: a native worker pushes the
     // decoded H264 straight into a ZLM Media. `input_value` carries the
     // XiaomiConfig as JSON.
@@ -237,7 +238,14 @@ pub(crate) async fn ensure_device_pipe(
         device.record,
         false,
     ));
-    let outputs = media_pipe_zlm::zlm_outputs(media, device.include_audio);
+    let mut outputs = media_pipe_zlm::zlm_outputs(media, device.include_audio);
+    // Capture devices produce raw frames, which ZLM cannot distribute directly.
+    if matches!(device.input_type.as_str(), "v4l2" | "x11grab" | "lavfi") {
+        outputs[0].encode = Some(EncodeConfig {
+            pixel_format: Some("yuv420p".to_string()),
+            ..EncodeConfig::default()
+        });
+    }
 
     let config = PipeConfig { input, outputs };
     manager::update_pipe(&device.id, config).await?;

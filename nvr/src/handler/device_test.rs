@@ -229,3 +229,54 @@ async fn invalid_add_never_persists_a_device() {
         assert!(nvr_db::device::get(id, &conn).await.unwrap().is_none());
     }
 }
+
+#[tokio::test]
+async fn unavailable_x11_is_rejected_before_persistence() {
+    let _db = crate::auth::auth_test::ensure_test_db().await;
+    let conn = crate::db::app_db_conn().unwrap();
+    let id = "unavailable-x11";
+    nvr_db::device::delete(id, &conn).await.unwrap();
+    let hub = Box::leak(Box::new(DetectHub::new_for_test(
+        vec![],
+        PathBuf::new(),
+        500,
+    )));
+    let payload = json!({"id": id, "name": "Unavailable X11", "input_type": "x11grab", "input_value": ":65534"});
+    let response = device_router(hub)
+        .oneshot(request("/add", payload))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    );
+    assert!(nvr_db::device::get(id, &conn).await.unwrap().is_none());
+
+    let response = device_router(hub)
+        .oneshot(request(
+            "/add",
+            json!({
+                "id": id, "name": "Valid device", "input_type": "gb28181",
+                "input_value": r#"{"device_id":"platform","channel_id":"channel"}"#
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let response = device_router(hub)
+        .oneshot(request(
+            &format!("/update/{id}"),
+            json!({
+                "name": "Unavailable X11", "input_type": "x11grab", "input_value": ":65534"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    );
+    assert_eq!(listed_device(hub, id).await.input_type, "gb28181");
+    crate::manager::remove_pipe(id).await.unwrap();
+    nvr_db::device::delete(id, &conn).await.unwrap();
+}

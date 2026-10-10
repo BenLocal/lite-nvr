@@ -329,72 +329,9 @@ fn sort_video_paths(paths: &mut [std::path::PathBuf]) {
     paths.sort_by_key(|p| key(p));
 }
 
-/// One X11 display that x11grab can capture.
-#[derive(Debug, Serialize)]
-struct X11Display {
-    /// x11grab input, e.g. ":0".
-    display: String,
-    /// It is the server's own DISPLAY.
-    current: bool,
-}
-
-/// List the host's X11 displays: one per X server socket in /tmp/.X11-unix
-/// (`X<N>` serves `:N`), plus the server's own DISPLAY. Falls back to ":0" so
-/// callers always have an option.
-async fn list_x11grab_device() -> ApiJsonResult<Vec<X11Display>> {
-    #[cfg(target_os = "linux")]
-    {
-        let mut sockets = Vec::new();
-        if let Ok(mut dir) = tokio::fs::read_dir("/tmp/.X11-unix").await {
-            while let Ok(Some(entry)) = dir.next_entry().await {
-                sockets.push(entry.file_name().to_string_lossy().into_owned());
-            }
-        }
-        let current = std::env::var("DISPLAY").ok();
-        Ok(ok_json(x11_displays(&sockets, current.as_deref())))
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        Err(anyhow::anyhow!("not supported").into())
-    }
-}
-
-/// Displays from X socket names (`X0` -> `:0`) and DISPLAY, current first,
-/// then by display number; ":0" when nothing is found.
-fn x11_displays(sockets: &[String], current: Option<&str>) -> Vec<X11Display> {
-    let current = current.map(str::trim).filter(|d| !d.is_empty());
-    let mut numbers: Vec<u32> = sockets
-        .iter()
-        .filter_map(|name| name.strip_prefix('X')?.parse().ok())
-        .collect();
-    numbers.sort_unstable();
-    numbers.dedup();
-    let mut displays: Vec<X11Display> = Vec::new();
-    if let Some(current) = current {
-        displays.push(X11Display {
-            display: current.to_string(),
-            current: true,
-        });
-    }
-    for n in numbers {
-        let display = format!(":{n}");
-        // DISPLAY may name the same server as ":0" or ":0.0".
-        let same_as_current =
-            current.is_some_and(|c| c == display || c.strip_suffix(".0") == Some(display.as_str()));
-        if !same_as_current {
-            displays.push(X11Display {
-                display,
-                current: false,
-            });
-        }
-    }
-    if displays.is_empty() {
-        displays.push(X11Display {
-            display: ":0".to_string(),
-            current: false,
-        });
-    }
-    displays
+/// Only displays that the NVR process can actually capture are offered.
+async fn list_x11grab_device() -> ApiJsonResult<crate::x11::X11Environment> {
+    Ok(ok_json(crate::x11::environment().await))
 }
 
 #[cfg(test)]

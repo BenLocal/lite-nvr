@@ -63,6 +63,10 @@ impl Pipe {
 
     pub fn cancel(&self) {
         self.cancel.cancel();
+        // Opening/probing can block before start reaches its cancellation wait.
+        if let Some(bus) = self.bus.lock().unwrap().as_ref() {
+            bus.stop();
+        }
     }
 
     /// Check if the pipeline has been started
@@ -99,6 +103,13 @@ impl Pipe {
         // Publish the handle so consumers (ASR) can subscribe while we run.
         *self.bus.lock().unwrap() = Some(Arc::clone(&bus));
         let cancel = self.cancel.clone();
+        // Cover cancellation before the bus was published.
+        if cancel.is_cancelled() {
+            bus.stop();
+            *self.bus.lock().unwrap() = None;
+            self.started.store(false, Ordering::Relaxed);
+            return;
+        }
 
         // Map and add input
         let fb_input = self.config.input.clone().into();

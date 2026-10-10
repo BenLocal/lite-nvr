@@ -12,17 +12,19 @@ const nodes = ref<V4l2Node[]>([])
 const loadFailed = ref(false)
 const suggestions = ref<string[]>([])
 
-// Only nodes that capture video are worth offering; a UVC camera's metadata
-// node is listed by the server but cannot be used as a source.
-const captureNodes = computed(() => nodes.value.filter((node) => node.capture))
+// RK CIF exposes internal stream/scale/tools nodes alongside its primary input.
+const captureNodes = computed(() => nodes.value.filter((node) =>
+  (node.capture || node.mplane) && (node.driver !== 'rkcif' || node.path === '/dev/video0'),
+))
 const nameByPath = computed(() => new Map(captureNodes.value.map((node) => [node.path, node.name])))
+const mplanePaths = computed(() => new Set(captureNodes.value.filter((node) => node.mplane).map((node) => node.path)))
 const unreadableCount = computed(() => nodes.value.filter((node) => node.error).length)
-const mplaneCount = computed(() => nodes.value.filter((node) => node.mplane).length)
+const mplaneCount = computed(() => mplanePaths.value.size)
 
 const hint = computed(() => {
   if (loadFailed.value) return '无法读取 nvr 上的节点列表，请直接输入设备路径'
-  if (!captureNodes.value.length && mplaneCount.value) {
-    return `nvr 上的 ${mplaneCount.value} 个视频节点只支持多平面采集（如 Rockchip rkcif、HDMI RX），FFmpeg 的 V4L2 输入无法读取`
+  if (mplaneCount.value) {
+    return `已列出 ${mplaneCount.value} 个多平面视频输入节点；请确认输入信号已连接并开启`
   }
   if (!captureNodes.value.length) return '未在 nvr 上检测到可采集视频的节点，可直接输入设备路径'
   return meta.hint
@@ -69,6 +71,7 @@ onMounted(loadNodes)
         <div class="node-option">
           <span class="mono-text">{{ option }}</span>
           <span class="node-option-name">{{ nameByPath.get(option) }}</span>
+          <span v-if="mplanePaths.has(option)" class="node-option-name">多平面</span>
         </div>
       </template>
     </AutoComplete>

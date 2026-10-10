@@ -1,3 +1,4 @@
+use anyhow::Context;
 use rszlm::{
     init::{EnvIni, EnvInitBuilder},
     server::{http_server_start, rtmp_server_start, rtsp_server_start},
@@ -32,6 +33,14 @@ pub(crate) fn start_zlm_server(
     cancel: CancellationToken,
     ready_tx: oneshot::Sender<()>,
 ) -> anyhow::Result<()> {
+    let rtsp_port = match std::env::var("NVR_ZLM_RTSP_PORT") {
+        Ok(value) => value
+            .parse::<u16>()
+            .context("NVR_ZLM_RTSP_PORT must be a TCP port number")?,
+        Err(std::env::VarError::NotPresent) => 8554,
+        Err(error) => return Err(error.into()),
+    };
+    anyhow::ensure!(rtsp_port != 0, "NVR_ZLM_RTSP_PORT must not be zero");
     tokio::spawn(async move {
         let cancel_clone = cancel.clone();
         let runtime = tokio::runtime::Handle::current();
@@ -49,7 +58,7 @@ pub(crate) fn start_zlm_server(
             }
 
             http_server_start(8553, false);
-            rtsp_server_start(8554, false);
+            rtsp_server_start(rtsp_port, false);
             rtmp_server_start(8555, false);
 
             {

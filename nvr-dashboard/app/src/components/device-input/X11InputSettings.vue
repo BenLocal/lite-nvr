@@ -6,24 +6,34 @@ import { listX11Displays, type X11Display } from '../../api/system'
 import { urlInputMeta, type DeviceFormFields } from '../../forms/deviceForm'
 
 defineProps<{ form: DeviceFormFields }>()
+const emit = defineEmits<{ availability: [available: boolean] }>()
 
 const meta = urlInputMeta('x11grab')
 const displays = ref<X11Display[]>([])
 const loadFailed = ref(false)
 const suggestions = ref<string[]>([])
+const available = ref(false)
+const reason = ref('正在检查 X11 显示环境…')
 
 const currentDisplay = computed(() => displays.value.find((d) => d.current)?.display)
 
 const hint = computed(() =>
-  loadFailed.value ? '无法读取 nvr 上的显示器列表，请直接输入（如 :0）' : meta.hint,
+  loadFailed.value ? '无法检查 X11 显示环境，暂时不能添加 X11 设备' : reason.value || meta.hint,
 )
 
 async function loadDisplays() {
+  emit('availability', false)
   try {
-    displays.value = await listX11Displays()
+    const environment = await listX11Displays()
+    displays.value = environment.displays
+    available.value = environment.available
+    reason.value = environment.reason
+    emit('availability', available.value)
     loadFailed.value = false
   } catch {
     displays.value = []
+    available.value = false
+    emit('availability', false)
     loadFailed.value = true
   }
 }
@@ -46,6 +56,7 @@ onMounted(loadDisplays)
       name="input_value"
       class="field-input"
       dropdown
+      :disabled="!available"
       :suggestions="suggestions"
       :placeholder="meta.placeholder"
       :invalid="form.input_value?.invalid"

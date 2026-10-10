@@ -83,7 +83,16 @@ export async function createStreamPlayer(
       }
       return
     }
-    const p: MpegtsPlayer = mpegts.createPlayer({ type: 'flv', url, isLive: true })
+    const p: MpegtsPlayer = mpegts.createPlayer(
+      { type: 'flv', url, isLive: true },
+      {
+        // Avoid accumulating low-bitrate desktop frames in the IO stash.
+        enableStashBuffer: false,
+        liveBufferLatencyChasing: true,
+        liveBufferLatencyMaxLatency: 0.6,
+        liveBufferLatencyMinRemain: 0.2,
+      },
+    )
     p.on?.('media_info', (info) => opts.onMediaInfo?.(asRecord(info)))
     p.on?.('statistics_info', (info) => opts.onStats?.(asRecord(info)))
     p.on?.('error', (payload) => {

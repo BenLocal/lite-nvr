@@ -72,6 +72,22 @@ export interface X11Display {
   current: boolean
 }
 
-export function listX11Displays() {
-  return request<X11Display[]>('/system/list/x11grab/devices')
+export interface X11Environment {
+  available: boolean
+  reason: string
+  displays: X11Display[]
+}
+
+export async function listX11Displays(): Promise<X11Environment> {
+  const result = await request<unknown>('/system/list/x11grab/devices')
+  if (typeof result !== 'object' || result === null ||
+    !('available' in result) || typeof result.available !== 'boolean' ||
+    !('reason' in result) || typeof result.reason !== 'string' ||
+    !('displays' in result) || !Array.isArray(result.displays) ||
+    !result.displays.every((item: unknown) => typeof item === 'object' && item !== null &&
+      'display' in item && typeof item.display === 'string' &&
+      'current' in item && typeof item.current === 'boolean')) {
+    throw new Error('X11 环境信息格式错误')
+  }
+  return { available: result.available, reason: result.reason, displays: result.displays }
 }

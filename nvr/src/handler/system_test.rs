@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::{sort_video_paths, x11_displays};
+use super::sort_video_paths;
 
 /// video10 sorts after video2, not between video1 and video2.
 #[test]
@@ -45,41 +45,4 @@ fn test_has_cap_prefers_per_node_caps() {
         CapabilityFlag::none(),
         capture
     ));
-}
-
-fn display_names(sockets: &[&str], current: Option<&str>) -> Vec<(String, bool)> {
-    let sockets: Vec<String> = sockets.iter().map(|s| s.to_string()).collect();
-    x11_displays(&sockets, current)
-        .into_iter()
-        .map(|d| (d.display, d.current))
-        .collect()
-}
-
-/// Every X server socket is a display; DISPLAY comes first and is not repeated.
-#[test]
-fn test_x11_displays_from_sockets_and_display_env() {
-    assert_eq!(
-        display_names(&["X99", "X0", "X1"], Some(":0")),
-        [
-            (":0".into(), true),
-            (":1".into(), false),
-            (":99".into(), false)
-        ]
-    );
-    // ":0.0" names the same server as socket X0.
-    assert_eq!(
-        display_names(&["X0"], Some(":0.0")),
-        [(":0.0".into(), true)]
-    );
-    // Non-display entries are ignored.
-    assert_eq!(
-        display_names(&["X1", "lock", "Xabc"], None),
-        [(":1".into(), false)]
-    );
-}
-
-#[test]
-fn test_x11_displays_fall_back_to_zero() {
-    assert_eq!(display_names(&[], None), [(":0".into(), false)]);
-    assert_eq!(display_names(&[], Some("  ")), [(":0".into(), false)]);
 }

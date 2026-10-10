@@ -23,6 +23,7 @@ mod onvif;
 mod program;
 mod proxy;
 mod transport;
+mod x11;
 mod xiaomi;
 mod zlm;
 

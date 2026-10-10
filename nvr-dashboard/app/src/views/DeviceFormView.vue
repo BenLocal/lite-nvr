@@ -40,6 +40,7 @@ const isEdit = computed(() => editId.value !== '')
 const device = ref<DeviceItem | null>(null)
 const loadingDevice = ref(false)
 const saving = ref(false)
+const x11Available = ref(false)
 
 // GB28181 device/channel live outside @primevue/forms (see GbInputSettings).
 const gbDeviceId = ref('')
@@ -159,6 +160,10 @@ function resolver(event: { values: Record<string, unknown> }) {
 async function onSubmit(event: { valid: boolean; values: Record<string, unknown> }) {
   if (!event.valid) return
   const inputType = String(event.values.input_type ?? '')
+  if (inputType === 'x11grab' && !x11Available.value) {
+    appToast.warn('X11 不可用', '当前环境没有可访问的 X11 显示服务，无法保存该设备')
+    return
+  }
   if (inputType === 'gb28181' && (!gbDeviceId.value || !gbChannelId.value)) return
   if (Boolean(event.values.detect_enabled) && detectCapabilityStatus.value !== 'ready') {
     appToast.warn('检测能力尚未就绪', '请重试能力加载后再启用检测')
@@ -298,6 +303,7 @@ function close() {
                 <X11InputSettings
                   v-else-if="settingsKind($form.input_type?.value) === 'x11grab'"
                   :form="$form"
+                  @availability="x11Available = $event"
                 />
                 <XiaomiInputSettings
                   v-else-if="settingsKind($form.input_type?.value) === 'xiaomi'"
@@ -375,7 +381,7 @@ function close() {
 
         <div class="form-actions">
           <Button type="button" label="取消" severity="secondary" outlined @click="close" />
-          <Button type="submit" :label="isEdit ? '保存修改' : '确认添加'" :loading="saving" />
+          <Button type="submit" :label="isEdit ? '保存修改' : '确认添加'" :loading="saving" :disabled="settingsKind($form.input_type?.value) === 'x11grab' && !x11Available" />
         </div>
       </div>
     </Form>

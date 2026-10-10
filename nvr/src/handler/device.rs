@@ -112,6 +112,7 @@ async fn add_device(
         updated_at: now,
     };
     validate_device(&device)?;
+    crate::x11::validate_input(&device.input_type, &device.input_value).await?;
     let _operation = DEVICE_OPERATIONS.lock(&device.id).await;
     if nvr_db::device::get(&device.id, &conn).await?.is_some() {
         return Err(anyhow::anyhow!("device already exists").into());
@@ -144,6 +145,7 @@ async fn update_device(
         updated_at: Utc::now(),
     };
     validate_device(&device)?;
+    crate::x11::validate_input(&device.input_type, &device.input_value).await?;
     save_and_apply_device(detect_hub, &device, Some(&existing), &conn).await?;
     Ok(ok_json(device))
 }

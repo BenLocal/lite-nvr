@@ -4,6 +4,8 @@
 // bundle) and is loaded at most once — the resolved factory is cached and
 // shared across every player.
 
+import type MpegtsFactory from 'mpegts.js'
+
 export type MpegtsPlayer = {
   attachMediaElement: (element: HTMLVideoElement) => void
   load: () => void
@@ -17,7 +19,10 @@ export type MpegtsPlayer = {
 
 export type Mpegts = {
   isSupported: () => boolean
-  createPlayer: (mediaDataSource: { type: 'flv'; url: string; isLive: boolean }) => MpegtsPlayer
+  createPlayer: (
+    mediaDataSource: { type: 'flv'; url: string; isLive: boolean },
+    config?: Parameters<typeof MpegtsFactory.createPlayer>[1],
+  ) => MpegtsPlayer
 }
 
 let cached: Mpegts | undefined
