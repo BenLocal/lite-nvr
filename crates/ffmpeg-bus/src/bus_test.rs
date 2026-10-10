@@ -1133,6 +1133,42 @@ async fn test_same_encode_config_shares_encoder() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// An Encoded output is described by the encoder's output params (codec,
+/// size), not the input stream's, so a consumer such as ZLM labels and times
+/// the packets correctly.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_encoded_output_describes_encoder_output() -> anyhow::Result<()> {
+    let input_path = test_mp4_path();
+    if !input_path.exists() {
+        log::warn!("skip: {} not found", input_path.display());
+        return Ok(());
+    }
+    let bus = Bus::new("encoded-av");
+    bus.add_input(
+        InputConfig::File {
+            path: input_path.to_string_lossy().into_owned(),
+        },
+        None,
+    )
+    .await?;
+    // test.mp4 is 320x240 H.264: only the encoder's params give 160x120.
+    let encode = EncodeConfig {
+        width: Some(160),
+        height: Some(120),
+        ..EncodeConfig::default()
+    };
+    let (av, stream) = bus
+        .add_output(
+            OutputConfig::new("enc".to_string(), OutputAvType::Video, OutputDest::Encoded)
+                .with_encode(encode),
+        )
+        .await?;
+    assert_eq!(av.parameters().id(), ffmpeg_next::codec::Id::H264);
+    assert_eq!((av.width(), av.height()), (160, 120));
+    assert!(!drain_frames(stream).await?.is_empty());
+    Ok(())
+}
+
 /// Decoded audio subscription delivers every audio frame of the file, then EOF.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_subscribe_audio() -> anyhow::Result<()> {

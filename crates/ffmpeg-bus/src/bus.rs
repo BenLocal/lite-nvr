@@ -593,8 +593,7 @@ impl Bus {
                 None => Self::create_mux_output_stream(state, format, input_stream_index).await,
             },
             OutputDest::Encoded => {
-                Self::create_encoded_output_stream(state, input_stream_index, encoder_key.as_ref())
-                    .await
+                Self::create_encoded_output_stream(state, encoder_key.as_ref()).await
             }
             OutputDest::Demuxed => {
                 Self::create_demuxed_output_stream(state, input_stream_index).await
@@ -1126,18 +1125,18 @@ impl Bus {
         Ok(output)
     }
 
+    /// Encoded packets plus the encoder's real output params (codec, size,
+    /// time base, extradata), so a consumer can describe and time them.
     async fn create_encoded_output_stream(
         state: &mut BusState,
-        input_stream_index: usize,
         encoder_key: Option<&EncoderKey>,
     ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
-        let av = state
-            .input_streams
-            .iter()
-            .find(|s| s.index() == input_stream_index)
-            .ok_or(anyhow::anyhow!("stream not found"))?
-            .clone();
         let key = encoder_key.ok_or(anyhow::anyhow!("encoder task not found"))?;
+        let av = state
+            .encoder_output_streams
+            .get(key)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("no encoder output stream"))?;
         let encoder_receiver = Self::subscribe_encoder(state, key).await?;
 
         let stream = BroadcastStream::new(encoder_receiver).filter_map(|r| async move {
@@ -1148,7 +1147,7 @@ impl Bus {
             }
         });
 
-        Ok((av.clone(), Box::pin(stream)))
+        Ok((av, Box::pin(stream)))
     }
 
     /// Mux encoded packets (from encoder_tasks) into format (e.g. "h264"). Used when input

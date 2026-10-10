@@ -109,8 +109,9 @@ pub enum OutputDest {
     /// Encoded packet sink，only for encoded packet
     #[allow(dead_code)]
     RawPacket { sink: Arc<RawSinkSource> },
-    /// Demuxed (raw codec) passthrough delivered to a [`DemuxedSink`], e.g. a
-    /// ZLMediaKit media. One demuxed input packet per emitted item.
+    /// Raw codec packets delivered to a [`DemuxedSink`], e.g. a ZLMediaKit
+    /// media: one demuxed input packet per emitted item, or one encoded packet
+    /// when the output has an encode config.
     Demuxed { sink: Arc<dyn DemuxedSink> },
 }
 
@@ -276,9 +277,11 @@ fn to_fb_output(config: &OutputConfig) -> Option<FbOutputConfig> {
         OutputDest::RawFrame { .. } => FbOutputDest::Raw,
         OutputDest::RawPacket { .. } => FbOutputDest::Encoded,
         // A demuxed sink (e.g. ZLM) consumes raw codec frames directly (no
-        // container framing). `Demuxed` gives one demuxed input packet per
-        // emitted item with no re-encoding or muxing, so video gets clean
-        // Annex B / AVCC NALs and audio gets one raw AAC frame per packet.
+        // container framing). Without an encode, `Demuxed` gives one demuxed
+        // input packet per emitted item, so video gets clean Annex B / AVCC NALs
+        // and audio gets one raw AAC frame per packet. With an encode, the sink
+        // gets the encoder's packets (and its output params) instead.
+        OutputDest::Demuxed { .. } if config.encode.is_some() => FbOutputDest::Encoded,
         OutputDest::Demuxed { .. } => FbOutputDest::Demuxed,
     };
     let id = config
@@ -311,3 +314,7 @@ fn to_fb_encode_config(e: &EncodeConfig) -> ffmpeg_bus::bus::EncodeConfig {
         audio_bitrate: e.audio_bitrate,
     }
 }
+
+#[cfg(test)]
+#[path = "types_test.rs"]
+mod types_test;
