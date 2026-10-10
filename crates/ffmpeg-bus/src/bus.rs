@@ -1390,6 +1390,15 @@ impl Bus {
         (w, h)
     }
 
+    /// Encoder frame size: an explicit `encode` width/height, else the source
+    /// size. Frames keep the source size; the encoder's scaler resizes them.
+    fn encoder_size(encode: Option<&EncodeConfig>, source_w: u32, source_h: u32) -> (u32, u32) {
+        Self::ensure_video_dimensions(
+            encode.and_then(|e| e.width).unwrap_or(source_w),
+            encode.and_then(|e| e.height).unwrap_or(source_h),
+        )
+    }
+
     /// Build encoder options from EncodeConfig for faster encoding (preset, bitrate).
     fn encoder_options_from_config(encode: Option<&EncodeConfig>) -> Option<Dictionary<'_>> {
         let encode = encode?;
@@ -1498,10 +1507,11 @@ impl Bus {
             let (width, height, pixel_format) =
                 Self::raw_video_params_from_parameters(input_stream.parameters());
             let (width, height) = Self::ensure_video_dimensions(width, height);
+            let (target_w, target_h) = Self::encoder_size(encode, width, height);
             let codec = Self::encoder_codec_from_config(encode);
             let encoder_settings = Settings {
-                width,
-                height,
+                width: target_w,
+                height: target_h,
                 pixel_format: pixel_format_for_libx264(pixel_format),
                 codec: Some(codec),
                 ..Settings::default()
@@ -1559,12 +1569,13 @@ impl Bus {
             let encoder_receiver =
                 Self::subscribe_decoder(state, input_stream_index, lossless).await?;
             // Decoded path: decoder outputs RawFrame; encoder needs correct size/format.
-            // For WRAPPED_AVFRAME (e.g. lavfi testsrc), use stream params so output resolution matches source.
+            // For WRAPPED_AVFRAME (e.g. lavfi testsrc), take the source size and
+            // format from the stream params.
             let codec = Self::encoder_codec_from_config(encode);
             let encoder_settings = if codec_id == ffmpeg_next::codec::Id::WRAPPED_AVFRAME {
                 let (width, height, pixel_format) =
                     Self::raw_video_params_from_parameters(input_stream.parameters());
-                let (width, height) = Self::ensure_video_dimensions(width, height);
+                let (width, height) = Self::encoder_size(encode, width, height);
                 Settings {
                     width,
                     height,
@@ -1575,15 +1586,9 @@ impl Bus {
             } else {
                 // Decoded video transcode: size the encoder to the input (so a
                 // codec-only transcode preserves resolution), honoring explicit
-                // width/height overrides. The encoder's send_frame scaler handles
-                // any resize/format conversion.
-                let target_w = encode
-                    .and_then(|e| e.width)
-                    .unwrap_or_else(|| input_stream.width());
-                let target_h = encode
-                    .and_then(|e| e.height)
-                    .unwrap_or_else(|| input_stream.height());
-                let (target_w, target_h) = Self::ensure_video_dimensions(target_w, target_h);
+                // width/height overrides.
+                let (target_w, target_h) =
+                    Self::encoder_size(encode, input_stream.width(), input_stream.height());
                 Settings {
                     width: target_w,
                     height: target_h,

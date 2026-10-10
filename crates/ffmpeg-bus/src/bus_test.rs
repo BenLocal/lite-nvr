@@ -1133,6 +1133,69 @@ async fn test_same_encode_config_shares_encoder() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The video size of the MP4 at `path`, once its File output has finished.
+async fn wait_video_size(path: &str) -> anyhow::Result<(Option<u32>, Option<u32>)> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while probe(path).is_err() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    let info = probe(path)?;
+    let video = info
+        .streams
+        .iter()
+        .find(|s| s.codec_type == "video")
+        .ok_or_else(|| anyhow::anyhow!("no video stream in {path}"))?;
+    Ok((video.width, video.height))
+}
+
+/// An encode width/height resizes raw device input — RAWVIDEO (v4l2, x11grab)
+/// and lavfi's WRAPPED_AVFRAME — as it already did for decoded input.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_raw_device_input_honors_encode_size() -> anyhow::Result<()> {
+    let resized = |w, h| EncodeConfig {
+        width: Some(w),
+        height: Some(h),
+        ..EncodeConfig::default()
+    };
+    let file_output = |path: &str, encode| {
+        OutputConfig::new(
+            "file".to_string(),
+            OutputAvType::Video,
+            OutputDest::File {
+                path: path.to_string(),
+            },
+        )
+        .with_encode(encode)
+    };
+
+    let raw_mp4 = test_media("rawvideo_resize.mp4");
+    std::fs::remove_file(&raw_mp4).ok();
+    let yuv = write_raw_yuv("input_resize_64x48.yuv", 64, 48, 20);
+    let raw_bus = raw_yuv_bus(&yuv).await?;
+    let _ = raw_bus
+        .add_output(file_output(&raw_mp4, resized(32, 24)))
+        .await?;
+    assert_eq!(wait_video_size(&raw_mp4).await?, (Some(32), Some(24)));
+
+    let lavfi_mp4 = test_media("lavfi_resize.mp4");
+    std::fs::remove_file(&lavfi_mp4).ok();
+    let lavfi_bus = Bus::new("lavfi_resize");
+    lavfi_bus
+        .add_input(
+            InputConfig::Device {
+                display: "testsrc=duration=1:size=320x240:rate=10".to_string(),
+                format: "lavfi".to_string(),
+            },
+            None,
+        )
+        .await?;
+    let _ = lavfi_bus
+        .add_output(file_output(&lavfi_mp4, resized(160, 120)))
+        .await?;
+    assert_eq!(wait_video_size(&lavfi_mp4).await?, (Some(160), Some(120)));
+    Ok(())
+}
+
 /// An Encoded output is described by the encoder's output params (codec,
 /// size), not the input stream's, so a consumer such as ZLM labels and times
 /// the packets correctly.
