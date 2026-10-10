@@ -37,10 +37,15 @@ _nvr_setup_env() {
     fi
 
     # An empty SHERPA_ONNX_LIB_DIR breaks sherpa-onnx-sys, so only set it when
-    # prebuilt libs actually exist.
+    # prebuilt libs for the host arch exist (make package also fetches other
+    # arches into third_party/).
     if [ -z "${SHERPA_ONNX_LIB_DIR:-}" ]; then
         unset SHERPA_ONNX_LIB_DIR
-        for d in "$_nvr_root"/third_party/sherpa-onnx/*/lib; do
+        case "$(uname -m)" in
+            x86_64 | amd64) _nvr_sherpa_arch=x64 ;;
+            *) _nvr_sherpa_arch="$(uname -m)" ;;
+        esac
+        for d in "$_nvr_root"/third_party/sherpa-onnx/*-"$_nvr_sherpa_arch"-*/lib; do
             if [ -d "$d" ]; then
                 export SHERPA_ONNX_LIB_DIR="$d"
                 break
