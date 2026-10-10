@@ -27,3 +27,6 @@ docs/superpowers
 
 # Rockchip Rust dependency sources prepared from patches at build time
 /.cache/
+
+# Claude Code per-user settings
+/.claude/settings.local.json
