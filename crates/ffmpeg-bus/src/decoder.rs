@@ -262,7 +262,9 @@ impl Decoder {
             let mut selected_is_hw = false;
             let mut first_hw_failure: Option<String> = None;
             let mut opened: Option<(ffmpeg_next::codec::decoder::Video, Rational)> = None;
-            for candidate in hw::video_decoder_candidates(stream.parameters().id()) {
+            let candidates =
+                hw::video_decoder_candidates(stream.parameters().id(), source_pixel_format(stream));
+            for candidate in candidates {
                 let Some(codec) = ffmpeg_next::decoder::find_by_name(&candidate.name) else {
                     continue;
                 };
@@ -383,6 +385,16 @@ impl Decoder {
 
     pub fn stream_index(&self) -> usize {
         self.stream.index()
+    }
+}
+
+/// The source pixel format from the stream parameters, `Pixel::None` when
+/// unknown. Read without opening a decoder.
+fn source_pixel_format(stream: &AvStream) -> ffmpeg_next::format::Pixel {
+    match ffmpeg_next::codec::Context::from_parameters(stream.parameters().clone()) {
+        // SAFETY: the context is valid and owned here; pix_fmt is a plain field.
+        Ok(ctx) => unsafe { (*ctx.as_ptr()).pix_fmt }.into(),
+        Err(_) => ffmpeg_next::format::Pixel::None,
     }
 }
 

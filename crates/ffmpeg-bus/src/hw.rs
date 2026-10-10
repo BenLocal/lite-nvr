@@ -1,4 +1,5 @@
 use ffmpeg_next::codec::Id as CodecId;
+use ffmpeg_next::format::Pixel;
 
 #[derive(Clone, Debug)]
 pub struct CodecCandidate {
@@ -150,10 +151,13 @@ pub fn video_encoder_candidates(requested: Option<&str>) -> Vec<CodecCandidate> 
     dedup_by_name(out)
 }
 
-pub fn video_decoder_candidates(codec_id: CodecId) -> Vec<CodecCandidate> {
+#[cfg_attr(not(feature = "rockchip"), allow(unused_variables))]
+pub fn video_decoder_candidates(codec_id: CodecId, pixel_format: Pixel) -> Vec<CodecCandidate> {
     let mut out = Vec::new();
     #[cfg(feature = "rockchip")]
-    if let Some(name) = rockchip_decoder_name(codec_id) {
+    if let Some(name) = rockchip_decoder_name(codec_id)
+        && rkmpp_decodes(pixel_format)
+    {
         out.push(CodecCandidate::hw(name));
     }
     match codec_id {
@@ -184,6 +188,17 @@ pub fn video_decoder_candidates(codec_id: CodecId) -> Vec<CodecCandidate> {
         out.retain(|c| !c.is_hw);
     }
     dedup_by_name(out)
+}
+
+/// Whether RKMPP may decode a source in `pixel_format`. On non-4:2:0 sources
+/// (e.g. 4:2:2 MJPEG, 4:4:4 HEVC) it can open and take packets yet never
+/// yield a frame or an error, so no software fallback would trigger. An
+/// unknown source format is still tried.
+fn rkmpp_decodes(pixel_format: Pixel) -> bool {
+    match pixel_format.descriptor() {
+        Some(d) => d.nb_components() >= 3 && d.log2_chroma_w() == 1 && d.log2_chroma_h() == 1,
+        None => true,
+    }
 }
 
 #[cfg(feature = "rockchip")]
