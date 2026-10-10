@@ -14,6 +14,8 @@ import DetectionConfigFields from '../components/DetectionConfigFields.vue'
 import GbInputSettings from '../components/device-input/GbInputSettings.vue'
 import OnvifInputSettings from '../components/device-input/OnvifInputSettings.vue'
 import UrlInputSettings from '../components/device-input/UrlInputSettings.vue'
+import V4l2InputSettings from '../components/device-input/V4l2InputSettings.vue'
+import X11InputSettings from '../components/device-input/X11InputSettings.vue'
 import XiaomiInputSettings from '../components/device-input/XiaomiInputSettings.vue'
 import { addDevice, getDevice, updateDevice, type DeviceItem } from '../api/device'
 import { getDetectionCapabilities } from '../api/detect'
@@ -289,8 +291,16 @@ function close() {
             </template>
             <template #content>
               <div class="form-horizontal">
+                <V4l2InputSettings
+                  v-if="settingsKind($form.input_type?.value) === 'v4l2'"
+                  :form="$form"
+                />
+                <X11InputSettings
+                  v-else-if="settingsKind($form.input_type?.value) === 'x11grab'"
+                  :form="$form"
+                />
                 <XiaomiInputSettings
-                  v-if="settingsKind($form.input_type?.value) === 'xiaomi'"
+                  v-else-if="settingsKind($form.input_type?.value) === 'xiaomi'"
                   :form="$form"
                 />
                 <GbInputSettings

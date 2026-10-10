@@ -29,11 +29,16 @@ export type DeviceFormFields = Record<
 >
 
 /** Which settings component an input type uses. */
-export type InputSettingsKind = 'url' | 'xiaomi' | 'gb28181' | 'onvif'
+export type InputSettingsKind = 'url' | 'v4l2' | 'x11grab' | 'xiaomi' | 'gb28181' | 'onvif'
 
 export function inputSettingsKind(inputType: string): InputSettingsKind {
-  if (inputType === 'xiaomi' || inputType === 'gb28181' || inputType === 'onvif') {
-    return inputType
+  switch (inputType) {
+    case 'v4l2':
+    case 'x11grab':
+    case 'xiaomi':
+    case 'gb28181':
+    case 'onvif':
+      return inputType
   }
   return 'url'
 }
@@ -55,8 +60,16 @@ const URL_INPUT_META: Record<string, UrlInputMeta> = {
       '在启动和每次重连时自动重新解析（地址带签名会过期），服务器需已安装 yt-dlp。',
   },
   file: { label: '文件路径', placeholder: '/data/videos/demo.mp4', hint: '服务器上的本地媒体文件路径' },
-  v4l2: { label: '设备节点', placeholder: '/dev/video0', hint: '服务器上的 V4L2 视频采集设备' },
-  x11grab: { label: '显示器', placeholder: ':0.0', hint: '要采集的 X11 显示器（DISPLAY）' },
+  v4l2: {
+    label: '设备节点',
+    placeholder: '/dev/video0',
+    hint: '下拉列出 nvr 上可采集视频的 V4L2 节点，也可直接输入路径',
+  },
+  x11grab: {
+    label: '显示器',
+    placeholder: ':0',
+    hint: '下拉列出 nvr 上正在运行的 X11 显示器，也可直接输入（如 :0 或 :0.0）',
+  },
   lavfi: {
     label: '滤镜图',
     placeholder: 'testsrc=size=1280x720:rate=25',

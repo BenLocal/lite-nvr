@@ -45,3 +45,33 @@ export interface SystemMetrics {
 export function getMetrics() {
   return request<SystemMetrics>('/system/metrics')
 }
+
+/** A `/dev/video*` node on the nvr host. `capture`: nvr can read it
+ * (single-planar video capture); false for metadata nodes and for
+ * multi-planar-only nodes, which FFmpeg's v4l2 input cannot read. */
+export interface V4l2Node {
+  path: string
+  name: string
+  driver: string
+  bus: string
+  capture: boolean
+  /** Only the multi-planar capture API (e.g. Rockchip rkcif / hdmirx). */
+  mplane: boolean
+  /** Why the node could not be queried (e.g. no permission). */
+  error?: string
+}
+
+export function listV4l2Nodes() {
+  return request<V4l2Node[]>('/system/list/v4l2/devices')
+}
+
+/** An X11 display on the nvr host that x11grab can capture. */
+export interface X11Display {
+  display: string
+  /** It is the nvr server's own DISPLAY. */
+  current: boolean
+}
+
+export function listX11Displays() {
+  return request<X11Display[]>('/system/list/x11grab/devices')
+}

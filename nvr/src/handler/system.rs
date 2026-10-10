@@ -1,7 +1,7 @@
 use axum::{Json, Router, routing::get};
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "linux")]
-use tokio_linux_video::Device;
+use tokio_linux_video::{Device, types::CapabilityFlag};
 
 use crate::db::app_db_conn;
 use crate::handler::{ApiJsonResult, ok_json};
@@ -212,16 +212,41 @@ async fn list_device_formats(
     }
 }
 
-async fn list_v4l2_device() -> ApiJsonResult<Vec<String>> {
+/// One `/dev/video*` node on the host.
+#[derive(Debug, Serialize)]
+struct V4l2Node {
+    path: String,
+    /// Card name, e.g. "Integrated Camera".
+    name: String,
+    driver: String,
+    bus: String,
+    /// Whether nvr can capture from the node: single-planar video capture.
+    /// False for metadata nodes (a UVC camera exposes one) and for
+    /// multi-planar-only nodes (e.g. Rockchip rkcif / hdmirx), which FFmpeg's
+    /// v4l2 input cannot read (VIDIOC_DQBUF fails with EINVAL).
+    capture: bool,
+    /// The node only supports the multi-planar capture API.
+    mplane: bool,
+    /// Why the node could not be queried (e.g. no permission).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// List the host's V4L2 nodes with their names and capture capability.
+async fn list_v4l2_device() -> ApiJsonResult<Vec<V4l2Node>> {
     #[cfg(target_os = "linux")]
     {
         let mut devices = Device::list().await?;
-
-        let mut device_names = Vec::new();
-        while let Some(device) = devices.fetch_next().await? {
-            device_names.push(device.display().to_string());
+        let mut paths = Vec::new();
+        while let Some(path) = devices.fetch_next().await? {
+            paths.push(path);
         }
-        Ok(ok_json(device_names))
+        sort_video_paths(&mut paths);
+        let mut nodes = Vec::with_capacity(paths.len());
+        for path in paths {
+            nodes.push(probe_v4l2_node(path).await);
+        }
+        Ok(ok_json(nodes))
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -229,28 +254,142 @@ async fn list_v4l2_device() -> ApiJsonResult<Vec<String>> {
     }
 }
 
-/// List x11grab `-i` options (X11 display strings). Uses DISPLAY env when set;
-/// otherwise returns a default `:0` so callers have at least one option.
-async fn list_x11grab_device() -> ApiJsonResult<Vec<String>> {
+#[cfg(target_os = "linux")]
+async fn probe_v4l2_node(path: std::path::PathBuf) -> V4l2Node {
+    let display = path.display().to_string();
+    let caps = match Device::open(&path).await {
+        Ok(device) => device.capabilities().await,
+        Err(e) => Err(e),
+    };
+    match caps {
+        Ok(caps) => V4l2Node {
+            path: display,
+            name: caps.card().to_string(),
+            driver: caps.driver().to_string(),
+            bus: caps.bus().to_string(),
+            capture: has_cap(
+                caps.capabilities(),
+                caps.device_capabilities(),
+                CapabilityFlag::VideoCapture,
+            ),
+            mplane: !has_cap(
+                caps.capabilities(),
+                caps.device_capabilities(),
+                CapabilityFlag::VideoCapture,
+            ) && has_cap(
+                caps.capabilities(),
+                caps.device_capabilities(),
+                CapabilityFlag::VideoCaptureMplane,
+            ),
+            error: None,
+        },
+        Err(e) => V4l2Node {
+            path: display,
+            name: String::new(),
+            driver: String::new(),
+            bus: String::new(),
+            capture: false,
+            mplane: false,
+            error: Some(e.to_string()),
+        },
+    }
+}
+
+/// Whether the node has `flag`: per-node device caps when the driver reports
+/// them, else the whole device's.
+#[cfg(target_os = "linux")]
+fn has_cap(
+    capabilities: CapabilityFlag,
+    device_capabilities: CapabilityFlag,
+    flag: CapabilityFlag,
+) -> bool {
+    let caps = if capabilities.contains(CapabilityFlag::DeviceCaps) {
+        device_capabilities
+    } else {
+        capabilities
+    };
+    caps.contains(flag)
+}
+
+/// Order nodes as video0, video1, ..., video10 instead of lexically.
+fn sort_video_paths(paths: &mut [std::path::PathBuf]) {
+    fn key(path: &std::path::Path) -> (String, u64) {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let digits = name.len() - name.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+        let (stem, num) = name.split_at(name.len() - digits);
+        (stem.to_string(), num.parse().unwrap_or(0))
+    }
+    paths.sort_by_key(|p| key(p));
+}
+
+/// One X11 display that x11grab can capture.
+#[derive(Debug, Serialize)]
+struct X11Display {
+    /// x11grab input, e.g. ":0".
+    display: String,
+    /// It is the server's own DISPLAY.
+    current: bool,
+}
+
+/// List the host's X11 displays: one per X server socket in /tmp/.X11-unix
+/// (`X<N>` serves `:N`), plus the server's own DISPLAY. Falls back to ":0" so
+/// callers always have an option.
+async fn list_x11grab_device() -> ApiJsonResult<Vec<X11Display>> {
     #[cfg(target_os = "linux")]
     {
-        let mut list = Vec::new();
-        if let Ok(display) = std::env::var("DISPLAY") {
-            let display = display.trim();
-            if !display.is_empty() {
-                list.push(display.to_string());
-                if !display.contains('.') {
-                    list.push(format!("{}.0", display));
-                }
+        let mut sockets = Vec::new();
+        if let Ok(mut dir) = tokio::fs::read_dir("/tmp/.X11-unix").await {
+            while let Ok(Some(entry)) = dir.next_entry().await {
+                sockets.push(entry.file_name().to_string_lossy().into_owned());
             }
         }
-        if list.is_empty() {
-            list.push(":0".to_string());
-        }
-        Ok(ok_json(list))
+        let current = std::env::var("DISPLAY").ok();
+        Ok(ok_json(x11_displays(&sockets, current.as_deref())))
     }
     #[cfg(not(target_os = "linux"))]
     {
         Err(anyhow::anyhow!("not supported").into())
     }
 }
+
+/// Displays from X socket names (`X0` -> `:0`) and DISPLAY, current first,
+/// then by display number; ":0" when nothing is found.
+fn x11_displays(sockets: &[String], current: Option<&str>) -> Vec<X11Display> {
+    let current = current.map(str::trim).filter(|d| !d.is_empty());
+    let mut numbers: Vec<u32> = sockets
+        .iter()
+        .filter_map(|name| name.strip_prefix('X')?.parse().ok())
+        .collect();
+    numbers.sort_unstable();
+    numbers.dedup();
+    let mut displays: Vec<X11Display> = Vec::new();
+    if let Some(current) = current {
+        displays.push(X11Display {
+            display: current.to_string(),
+            current: true,
+        });
+    }
+    for n in numbers {
+        let display = format!(":{n}");
+        // DISPLAY may name the same server as ":0" or ":0.0".
+        let same_as_current =
+            current.is_some_and(|c| c == display || c.strip_suffix(".0") == Some(display.as_str()));
+        if !same_as_current {
+            displays.push(X11Display {
+                display,
+                current: false,
+            });
+        }
+    }
+    if displays.is_empty() {
+        displays.push(X11Display {
+            display: ":0".to_string(),
+            current: false,
+        });
+    }
+    displays
+}
+
+#[cfg(test)]
+#[path = "system_test.rs"]
+mod system_test;

@@ -331,6 +331,44 @@ const NvrPrimePreset = definePreset(Aura, {
         }
       `,
     },
+    // Typeable dropdown (e.g. device node / X display pickers): input like
+    // inputtext, overlay and options like select, dark dropdown button.
+    autocomplete: {
+      root: controlRoot,
+      overlay: {
+        background: 'rgb(15 23 42 / 98%)',
+        borderColor: 'rgb(148 163 184 / 16%)',
+        borderRadius: '0.75rem',
+        color: '#e2e8f0',
+        shadow: '0 18px 54px rgb(2 6 23 / 62%)',
+      },
+      option: {
+        color: '#cbd5e1',
+        focusColor: '#e2e8f0',
+        focusBackground: 'rgb(148 163 184 / 10%)',
+        selectedColor: '#bfdbfe',
+        selectedBackground: 'rgb(59 130 246 / 18%)',
+        selectedFocusColor: '#bfdbfe',
+        selectedFocusBackground: 'rgb(59 130 246 / 22%)',
+      },
+      dropdown: {
+        borderColor: controlBorder,
+        hoverBorderColor: 'rgb(96 165 250 / 38%)',
+        activeBorderColor: controlFocus,
+      },
+      colorScheme: {
+        light: {
+          dropdown: {
+            background: controlBackground,
+            hoverBackground: 'rgb(148 163 184 / 10%)',
+            activeBackground: 'rgb(148 163 184 / 16%)',
+            color: '#cbd5e1',
+            hoverColor: '#e2e8f0',
+            activeColor: '#f1f5f9',
+          },
+        },
+      },
+    },
     multiselect: {
       root: controlRoot,
       dropdown: {
