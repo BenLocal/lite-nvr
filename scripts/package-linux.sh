@@ -108,7 +108,11 @@ for arch in "${architectures[@]}"; do
         done' _ "${rust_arch}-linux-gnu-g++"
     cp "$deps/onnxruntime/LICENSE" "$staging/ONNXRUNTIME-LICENSE"
     if [[ -f LICENSE ]]; then cp LICENSE "$staging/"; fi
-    cat > "$staging/start.sh" <<'START'
+    if [[ "$arch" == rockchip ]]; then
+        # Board launcher with run/start/stop/restart/status (POSIX sh for BusyBox).
+        cp scripts/rockchip/start.sh "$staging/start.sh"
+    else
+        cat > "$staging/start.sh" <<'START'
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "$0")" && pwd)"
@@ -118,15 +122,17 @@ export ORT_DYLIB_PATH="${ORT_DYLIB_PATH:-$root/lib/libonnxruntime.so}"
 cd "$root"
 exec "$root/bin/nvr" "$@"
 START
+    fi
     cat > "$staging/README.txt" <<'README'
-Run ./start.sh on GNU Linux (Ubuntu 24.04 or a compatible glibc 2.39+ system).
+Run ./start.sh on GNU Linux with a glibc at least as new as the build image's
+(check what the binary needs: strings bin/nvr | grep -o 'GLIBC_2\.[0-9]*' | sort -V | tail -1).
 Dashboard: http://localhost:18080/nvr/
 FFmpeg, ZLMediaKit and ONNX Runtime CPU libraries are included.
 ASR/detection model files are configured separately and are not included.
 SMB transport is disabled (the default Cargo feature set).
 README
     if [[ "$arch" == rockchip ]]; then
-        printf '\nRockchip feature enabled; RK FFmpeg and MPP/RGA libraries included.\nRKMPP hardware requires matching Rockchip kernel drivers and device access.\n' >> "$staging/README.txt"
+        printf '\nRockchip feature enabled; RK FFmpeg and MPP/RGA libraries included.\nRKMPP hardware requires matching Rockchip kernel drivers and device access.\n./start.sh [run|start|stop|restart|status]: run in the foreground (default) or manage a background nvr.\n' >> "$staging/README.txt"
     fi
     chmod +x "$staging/start.sh"
     tar -czf "dist/$package.tar.gz" -C target/cross-deps "$package"
