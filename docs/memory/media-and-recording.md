@@ -48,3 +48,10 @@
 - 2026-10-09：RK3588 Docker 中 H.264 可编码但 HEVC 报 `Failed to init MPP context: -1` → Docker 默认 maskedPaths 含 `/sys/firmware`，MPP 读不到 `/proc/device-tree` 的真实目标 → 只读挂载设备树并用 `--security-opt systempaths=unconfined` 解除系统路径屏蔽后，HEVC 命令和 Rust 硬编码测试均通过；此参数会解除其他默认路径屏蔽，部署权限见 `docs/rockchip.md`。
 
 - 2026-10-10：Cargo 无法按 feature 条件选择 crates.io patch → Rockchip 构建入口通过 `scripts/with-rockchip-patch.sh` 临时传入路径覆盖，自动准备 `.cache/rockchip-rust/` 并恢复 Cargo.lock；普通构建使用原始 crates.io 依赖，无需 vendor。
+
+- 2026-10-10：RK3588 上 MJPEG 4:2:2、HEVC 4:4:4 源选中 `*_rkmpp` 后一帧不出、也不回退软解 → RKMPP 对非 4:2:0 源能打开、能收包，但既不出帧也不报错（CLI：`0 frames decoded; 0 decode errors`），打开失败 / send_packet 报错两层回退都不触发；HEVC 4:2:2、H.264 4:4:4 则在打开时报 ENOSYS，H.264 4:2:2 实测可解 → 非 4:2:0 的源不再提供 RKMPP 候选（格式未知时仍尝试）（`hw::rkmpp_decodes`）；验证硬解要数帧数，不能只看返回码
+- 2026-10-10：`/api/pipe/add` 的 zlm 输出带 `encode` 时原样透传、不转码 → zlm 输出是 `Demuxed`（纯透传），encode 被静默丢弃；而 `Encoded` 输出返回的是输入流的 `AvStream`，ZlmSink 会按输入的编码和时间基建轨道 → Demuxed 带 encode 时改映射为 Encoded，Encoded 返回编码器真实输出参数（`encoder_output_streams`）
+- 2026-10-10：rawvideo（v4l2、x11grab）和 lavfi 设备输入转码时 encode 的 width/height 不生效，输出仍是源尺寸 → `start_encoder_task` 的 RAWVIDEO / WRAPPED_AVFRAME 分支按源参数建编码器，只有解码路径读了 encode 的尺寸 → 三个分支统一用 `Bus::encoder_size`：帧仍按源尺寸构造，编码器按目标尺寸建，由 `Encoder::send_frame` 的缩放器缩放（证据：bus_test `test_raw_device_input_honors_encode_size`）
+- 2026-10-10：用内网 cross 镜像（Ubuntu 20.04 / GCC 9）打包时 nvr 链接报 `undefined reference ... basic_string::reserve()` → sherpa-onnx 预编译静态库需要 GCC 11 的 4 个 libstdc++ 符号 → `nvr-asr` 用 `libstdcxx_compat.cpp` 垫片补齐；20.04 镜像产物只需 glibc 2.30，可原生跑在 glibc 2.33 的 Buildroot RK3588 上，官方 24.04 镜像产物需要 2.39
+- 2026-10-10：前端 `npm ci` 报 `EALLOWSCRIPTS: --allow-scripts is not allowed in project-scoped installs` → npm 11.19 准备 git 依赖（锁文件里的 `git+ssh` 依赖 `webworkify-webpack`）时会在临时目录跑项目级 install，并把用户级 npmrc 的 `allow-scripts` 当参数传入 → 用户级 npmrc 不要配 `allow-scripts`；另外该 git+ssh 依赖要求每台构建机能用 SSH 访问 GitHub
+- 2026-10-10：Buildroot 板子（BusyBox 1.27）上 `tar -xzf` 报 invalid option → BusyBox tar 不支持 `-z` → 解包用 `gzip -dc pkg.tar.gz | tar -x`；该板也没有 getconf，glibc 版本看 `/lib/libc.so.6` 的输出
