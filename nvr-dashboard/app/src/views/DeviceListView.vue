@@ -1,22 +1,25 @@
 <script setup lang="ts">
 /* eslint-disable @typescript-eslint/no-unused-vars -- bindings are consumed by the external SFC template. */
-import { onMounted, onUnmounted, ref } from "vue";
+import { onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import Button from "primevue/button";
 import Card from "primevue/card";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";
 import Dialog from "primevue/dialog";
+import Menu from "primevue/menu";
+import type { MenuItem } from "primevue/menuitem";
 import InputNumber from "primevue/inputnumber";
 import Select from "primevue/select";
 import Slider from "primevue/slider";
 import Tag from "primevue/tag";
 import { useConfirm } from "primevue/useconfirm";
 import FlvPreviewPlayer from "../components/FlvPreviewPlayer.vue";
+import DeviceFlowTopology from "../components/DeviceFlowTopology.vue";
+import Message from "primevue/message";
 import TranscriptPanel from "../components/TranscriptPanel.vue";
-import { listDevices, removeDevice, type DeviceItem } from "../api/device";
-import { getGbStreams, ptzControl, type GbStream } from "../api/gb";
-import { getOnvifPresets, onvifPtz, type OnvifPreset } from "../api/onvif";
+import { listDevices, removeDevice, getDeviceMetrics, type DeviceItem, type DeviceMetrics } from "../api/device";
+import { ptzControl } from "../api/gb";
 import { useAppToast } from "../utils/toast";
 
 const appToast = useAppToast();
@@ -25,24 +28,66 @@ const router = useRouter();
 
 const loading = ref(false);
 const devices = ref<DeviceItem[]>([]);
+const actionsMenu = ref<InstanceType<typeof Menu> | null>(null);
+const actionItems = ref<MenuItem[]>([]);
+function openActions(event: Event, device: DeviceItem) {
+  actionItems.value = [
+    { label: "流拓扑", icon: "pi pi-share-alt", command: () => openMetrics(device) },
+    ...(device.input_type === "gb28181" ? [{ label: "云台", icon: "pi pi-compass", command: () => openPtzDialog(device) }] : []),
+    { label: "编辑", icon: "pi pi-pencil", command: () => openEditPage(device) },
+    { separator: true },
+    { label: "删除", icon: "pi pi-trash", class: "device-menu-delete", command: () => confirmDelete(device) },
+  ];
+  actionsMenu.value?.toggle(event);
+}
+const metricsVisible = ref(false);
+const metricsDevice = ref<DeviceItem | null>(null);
+const deviceMetrics = ref<Record<string, DeviceMetrics>>({});
+const metricsError = ref<string | null>(null);
+let metricsTimer: ReturnType<typeof setTimeout> | undefined;
+let metricsController: AbortController | undefined;
+let disposed = false;
+
+async function pollMetrics() {
+  if (disposed || !metricsVisible.value) return;
+  const controller = new AbortController();
+  metricsController = controller;
+  if (document.visibilityState !== "hidden") {
+    const deadline = setTimeout(() => controller.abort(), 5000);
+    try {
+      const samples = await getDeviceMetrics(controller.signal);
+      if (!disposed && metricsVisible.value && metricsController === controller) {
+        deviceMetrics.value = Object.fromEntries(samples.map(sample => [sample.id, sample]));
+        metricsError.value = null;
+      }
+    } catch (error) {
+      if (!disposed && metricsVisible.value && metricsController === controller) metricsError.value = error instanceof Error ? error.message : "流量数据更新失败";
+    } finally {
+      clearTimeout(deadline);
+    }
+  }
+  if (!disposed && metricsVisible.value && metricsController === controller) metricsTimer = setTimeout(() => { void pollMetrics(); }, 2000);
+}
+watch(metricsVisible, visible => {
+  if (metricsTimer) clearTimeout(metricsTimer);
+  metricsController?.abort();
+  metricsController = undefined;
+  if (visible) {
+    metricsError.value = null;
+    void pollMetrics();
+  }
+});
+
+function openMetrics(device: DeviceItem) {
+  metricsDevice.value = device;
+  metricsVisible.value = true;
+}
+
 const previewVisible = ref(false);
 const previewDevice = ref<DeviceItem | null>(null);
 
-// Live-status polling for gb28181 device rows: maps stream_id (== device id)
-// to its current ZLM publishing status, refreshed every 5s while this view is mounted.
-const gbStreamStatus = ref<Record<string, GbStream>>({});
-async function loadGbStreams() {
-  try {
-    const list = await getGbStreams();
-    const map: Record<string, GbStream> = {};
-    for (const s of list) map[s.stream_id] = s;
-    gbStreamStatus.value = map;
-  } catch {
-    // Keep the last-known status on a transient poll failure instead of
-    // flashing every row to 空闲; the next successful poll reconciles.
-  }
-}
-let gbTimer: ReturnType<typeof setInterval> | undefined;
+let devicesTimer: ReturnType<typeof setInterval> | undefined;
+let devicesRefreshInFlight = false;
 
 // PTZ (云台) control for gb28181 devices. The target is resolved from the
 // device's input_value JSON ({device_id, channel_id}); moves are press-and-hold
@@ -94,72 +139,31 @@ function ptzRelease() {
   void sendPtz("stop");
 }
 
-// PTZ (云台) control for onvif devices. The target is simply the device's own
-// id (ONVIF connection config is registered under that same id server-side);
-// moves are press-and-hold (move on press, stop on release/leave) and presets
-// are selected from a dropdown populated on open, mirroring the gb28181 block above.
-const onvifPtzDialogVisible = ref(false);
-const onvifPtzTarget = ref<string | null>(null);
-const onvifPtzSpeed = ref(128);
-const onvifPtzPresets = ref<OnvifPreset[]>([]);
-const onvifPtzPresetToken = ref<string>("");
-
-function openOnvifPtzDialog(device: DeviceItem) {
-  onvifPtzTarget.value = device.id;
-  onvifPtzPresetToken.value = "";
-  onvifPtzDialogVisible.value = true;
-}
-
-async function loadOnvifPtzPresets() {
-  if (!onvifPtzTarget.value) return;
-  try {
-    onvifPtzPresets.value = await getOnvifPresets(onvifPtzTarget.value);
-  } catch {
-    onvifPtzPresets.value = [];
-  }
-}
-
-async function sendOnvifPtz(direction: string, presetToken?: string) {
-  if (!onvifPtzTarget.value) return;
-  try {
-    await onvifPtz({
-      device_id: onvifPtzTarget.value,
-      direction,
-      speed: onvifPtzSpeed.value,
-      preset_token: presetToken,
-    });
-  } catch {
-    // Best-effort: a failed PTZ command shouldn't disrupt the UI. A dropped
-    // move still gets a stop on release, so the camera won't run away.
-  }
-}
-
-// Press-and-hold: send the move on press, stop on release/leave/cancel.
-function onvifPtzPress(direction: string) {
-  void sendOnvifPtz(direction);
-}
-
-function onvifPtzRelease() {
-  void sendOnvifPtz("stop");
-}
-
 onMounted(() => {
   void loadDevices();
-  loadGbStreams();
-  gbTimer = setInterval(loadGbStreams, 5000);
+  devicesTimer = setInterval(() => {
+    if (document.visibilityState !== "hidden") void loadDevices(true);
+  }, 5000);
 });
 
 onUnmounted(() => {
-  if (gbTimer) clearInterval(gbTimer);
+  if (devicesTimer) clearInterval(devicesTimer);
+  disposed = true;
+  if (metricsTimer) clearTimeout(metricsTimer);
+  metricsController?.abort();
 });
 
-async function loadDevices() {
-  loading.value = true;
+async function loadDevices(silent = false) {
+  if (devicesRefreshInFlight || disposed) return;
+  devicesRefreshInFlight = true;
+  if (!silent) loading.value = true;
   try {
-    devices.value = await listDevices();
+    const list = await listDevices();
+    if (!disposed) devices.value = list;
   } catch (error) {
-    appToast.errorFrom("加载失败", error, "设备列表加载失败");
+    if (!silent && !disposed) appToast.errorFrom("加载失败", error, "设备列表加载失败");
   } finally {
+    devicesRefreshInFlight = false;
     loading.value = false;
   }
 }

@@ -17,6 +17,8 @@ app.use(PrimeVue, {
   pt: {
     Button: { root: { class: 'p-button-sm' } },
     InputText: { root: { class: 'p-inputtext-sm p-inputfield-sm' } },
+    Select: { root: { class: 'p-select-sm' } },
+    MultiSelect: { root: { class: 'p-multiselect-sm' } },
     Password: { root: { class: 'p-inputfield-sm' }, pcInputText: { class: 'p-inputtext-sm p-inputfield-sm' } },
     Checkbox: { root: { class: 'p-checkbox-sm p-inputfield-sm' } },
     Message: { root: { class: 'p-message-sm' } },

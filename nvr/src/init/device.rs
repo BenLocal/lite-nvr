@@ -71,6 +71,7 @@ struct GbInput {
 /// Validate source configuration before any persistence or runtime mutation.
 /// Offline cameras remain valid; this checks shape, not network reachability.
 pub(crate) fn validate_device_input(device: &DeviceInfo) -> anyhow::Result<()> {
+    crate::device_output::validate(device)?;
     match device.input_type.as_str() {
         "gb28181" => {
             let cfg: GbInput = serde_json::from_str(&device.input_value)
@@ -179,7 +180,15 @@ pub(crate) async fn ensure_device_pipe(
             device.record,
             false,
         ));
-        manager::upsert_onvif(&device.id, media, cfg, device.include_audio, true).await?;
+        manager::upsert_onvif(
+            &device.id,
+            media,
+            cfg,
+            device.include_audio,
+            device.config.output.clone(),
+            true,
+        )
+        .await?;
         crate::detect::control::reconcile_detection(detect_hub, device).await;
         return Ok(());
     }
@@ -201,6 +210,7 @@ pub(crate) async fn ensure_device_pipe(
             media,
             device.input_value.clone(),
             device.include_audio,
+            device.config.output.clone(),
             true,
         )
         .await?;
@@ -247,6 +257,7 @@ pub(crate) async fn ensure_device_pipe(
         });
     }
 
+    crate::device_output::apply(&mut outputs, device.config.output.as_ref());
     let config = PipeConfig { input, outputs };
     manager::update_pipe(&device.id, config).await?;
     crate::detect::control::reconcile_detection(detect_hub, device).await;

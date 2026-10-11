@@ -30,6 +30,7 @@ pub mod frame;
 pub mod hw;
 pub mod input;
 pub mod metadata;
+pub mod metrics;
 pub mod output;
 pub mod packet;
 pub mod scaler;

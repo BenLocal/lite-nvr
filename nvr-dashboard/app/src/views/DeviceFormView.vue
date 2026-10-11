@@ -10,6 +10,7 @@ import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import Textarea from 'primevue/textarea'
 import ToggleSwitch from 'primevue/toggleswitch'
+import DeviceOutputSettings from '../components/DeviceOutputSettings.vue'
 import DetectionConfigFields from '../components/DetectionConfigFields.vue'
 import GbInputSettings from '../components/device-input/GbInputSettings.vue'
 import OnvifInputSettings from '../components/device-input/OnvifInputSettings.vue'
@@ -354,6 +355,11 @@ function close() {
                 </div>
               </div>
             </template>
+          </Card>
+
+          <Card class="data-card">
+            <template #header><div class="card-header"><i class="pi pi-send card-header-icon" /><span class="card-header-title">输出参数</span></div></template>
+            <template #content><DeviceOutputSettings :form="$form" /></template>
           </Card>
 
           <!-- v-show keeps the detection fields registered for every input type. -->

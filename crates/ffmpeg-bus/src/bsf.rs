@@ -6,7 +6,9 @@ use crate::packet::RawPacket;
 
 /// Reads extradata from codec parameters via the raw AVCodecParameters pointer.
 /// Returns None if extradata is null or empty.
-fn get_extradata(codec_params: &Parameters) -> Option<&[u8]> {
+pub fn get_extradata(codec_params: &Parameters) -> Option<&[u8]> {
+    // SAFETY: Parameters owns a valid AVCodecParameters and its extradata;
+    // the returned slice cannot outlive that shared borrow. Size/null are checked.
     unsafe {
         // AVCodecParameters has extradata (uint8_t*) and extradata_size (int)
         let p = codec_params.as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
@@ -145,9 +147,17 @@ pub fn convert_avcc_to_annexb(avcc: &[u8]) -> Bytes {
 /// PPS; HEVC VPS + SPS + PPS), as one Annex B buffer. MP4 sources keep these
 /// only in extradata, not in-band, so a consumer of the converted Annex B
 /// stream (e.g. ZLMediaKit) needs them prepended to keyframes. `None` when
-/// the stream is not H.264/HEVC or the extradata is not AVCC/HVCC.
+/// the stream is not H.264/HEVC or no supported extradata is available.
+/// Annex B extradata from RTSP SDP is returned without conversion.
 pub fn parameter_sets_annexb(codec_params: &Parameters) -> Option<Bytes> {
     let extradata = get_extradata(codec_params)?;
+    if matches!(
+        codec_params.id(),
+        ffmpeg_next::codec::Id::H264 | ffmpeg_next::codec::Id::HEVC
+    ) && is_annexb_packet(extradata)
+    {
+        return Some(Bytes::copy_from_slice(extradata));
+    }
     match codec_params.id() {
         ffmpeg_next::codec::Id::H264 => avcc_parameter_sets(extradata),
         ffmpeg_next::codec::Id::HEVC => hvcc_parameter_sets(extradata),
@@ -251,6 +261,33 @@ impl FilteredPacket {
             self.data.len()
         }
     }
+}
+
+/// Build an ADTS header from MPEG-4 AudioSpecificConfig for raw AAC packets.
+/// Extended object types, explicit sample rates and PCE layouts are unsupported.
+pub fn aac_adts_header(config: &[u8], payload_len: usize) -> Option<[u8; 7]> {
+    let first = *config.first()?;
+    let second = *config.get(1)?;
+    let object_type = first >> 3;
+    let sample_index = ((first & 7) << 1) | (second >> 7);
+    let channels = (second >> 3) & 15;
+    let len = payload_len.checked_add(7)?;
+    if !(1..=4).contains(&object_type)
+        || sample_index > 12
+        || !(1..=7).contains(&channels)
+        || len > 8191
+    {
+        return None;
+    }
+    Some([
+        0xff,
+        0xf1,
+        ((object_type - 1) << 6) | (sample_index << 2) | (channels >> 2),
+        ((channels & 3) << 6) | u8::try_from(len >> 11).ok()?,
+        u8::try_from((len >> 3) & 255).ok()?,
+        u8::try_from((len & 7) << 5).ok()? | 0x1f,
+        0xfc,
+    ])
 }
 
 #[cfg(test)]

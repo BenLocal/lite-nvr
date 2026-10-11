@@ -499,3 +499,49 @@ fn test_parse_frame_queue_bound() {
         );
     }
 }
+
+#[test]
+fn video_fps_limit_drops_frames_without_changing_timeline() -> anyhow::Result<()> {
+    use crate::frame::{RawFrame, RawVideoFrame};
+    let Some((_input, video, _)) = test_mp4_streams() else {
+        return Ok(());
+    };
+    let stream = crate::stream::AvStream::new(
+        video.index(),
+        video.parameters().clone(),
+        ffmpeg_next::Rational(1, 30),
+        ffmpeg_next::Rational(30, 1),
+    );
+    let mut encoder = Encoder::new(
+        &stream,
+        Settings {
+            width: 160,
+            height: 120,
+            fps: Some(15),
+            codec: Some("libx264".into()),
+            ..Settings::default()
+        },
+        None,
+    )?;
+    assert_eq!(
+        encoder.output_stream(0).rate(),
+        ffmpeg_next::Rational(15, 1)
+    );
+    let mut timestamps = Vec::new();
+    for index in 0..30 {
+        let mut frame =
+            ffmpeg_next::frame::Video::new(ffmpeg_next::format::Pixel::YUV420P, 160, 120);
+        frame.set_pts(Some(index));
+        encoder.send_frame(RawFrame::Video(RawVideoFrame::from(frame)))?;
+        while let Some(packet) = encoder.encoder_receive_packet()? {
+            timestamps.push(packet.packet().pts().unwrap());
+        }
+    }
+    encoder.send_eof()?;
+    while let Some(packet) = encoder.encoder_receive_packet()? {
+        timestamps.push(packet.packet().pts().unwrap());
+    }
+    assert_eq!(timestamps.len(), 15);
+    assert!(timestamps.last().unwrap() - timestamps.first().unwrap() >= 900_000);
+    Ok(())
+}

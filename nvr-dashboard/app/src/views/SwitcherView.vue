@@ -68,6 +68,7 @@ const programJessibuca = ref<HTMLDivElement | null>(null)
 let programHandle: StreamPlayerHandle | null = null
 // Bumped on every stop/start so a superseded async start tears itself down.
 let programGen = 0
+let programRetryTimer: ReturnType<typeof setTimeout> | undefined
 const copiedKey = ref('')
 let copyTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -302,8 +303,8 @@ const addrs = computed(() => {
   const m = (p.publish_url || '').match(/^\w+:\/\/[^/]+\/(.+)$/)
   const path = m?.[1] ?? `switcher/${p.id}`
   return {
-    rtsp: `rtsp://${host}:8554/${path}`,
-    rtmp: `rtmp://${host}:8555/${path}`,
+    rtsp: `rtsp://${host}:${program.value?.rtsp_port ?? 8554}/${path}`,
+    rtmp: `rtmp://${host}:${p.publish_url.match(/:\d+(?=\/)/)?.[0].slice(1) ?? '1935'}/${path}`,
     flv: `http://${host}:8553/${path}.live.flv`,
     proxy: `/media/${path}.live.flv`,
   }
@@ -321,7 +322,7 @@ const addrRows = computed(() => {
   ]
 })
 
-async function startProgramPlayer(url: string) {
+async function startProgramPlayer(url: string, retryCount = 0) {
   stopProgramPlayer()
   const video = programVideo.value
   const container = programJessibuca.value
@@ -330,19 +331,42 @@ async function startProgramPlayer(url: string) {
   }
   const myGen = ++programGen
   try {
-    const created = await createStreamPlayer({ video, container }, url, { muted: true })
+    const created = await createStreamPlayer({ video, container }, url, {
+      muted: true,
+      onError: (message) => {
+        if (myGen !== programGen || programRetryTimer) {
+          return
+        }
+        if (retryCount >= 5) {
+          programError.value = message
+          return
+        }
+        programRetryTimer = setTimeout(() => {
+          programRetryTimer = undefined
+          if (myGen === programGen) {
+            void startProgramPlayer(url, retryCount + 1)
+          }
+        }, 1500)
+      },
+    })
     if (myGen !== programGen) {
       created.destroy()
       return
     }
     programHandle = created
-  } catch {
-    // playback errors surface as a black preview; the addresses stay valid
+  } catch (error) {
+    if (myGen === programGen) {
+      programError.value = error instanceof Error ? error.message : '合成播放启动失败'
+    }
   }
 }
 
 function stopProgramPlayer() {
   programGen++
+  if (programRetryTimer) {
+    clearTimeout(programRetryTimer)
+    programRetryTimer = undefined
+  }
   if (programHandle) {
     programHandle.destroy()
     programHandle = null
@@ -595,7 +619,7 @@ onBeforeUnmount(() => {
       <div class="program-actions">
         <Button
           v-if="!isLive"
-          label="上线合成"
+          label="更新"
           icon="pi pi-bolt"
           size="small"
           :loading="programBusy"

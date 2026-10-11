@@ -29,10 +29,7 @@ pub(crate) fn stop_all() {
     rszlm::server::stop_all_server();
 }
 
-pub(crate) fn start_zlm_server(
-    cancel: CancellationToken,
-    ready_tx: oneshot::Sender<()>,
-) -> anyhow::Result<()> {
+pub(crate) fn rtsp_port() -> anyhow::Result<u16> {
     let rtsp_port = match std::env::var("NVR_ZLM_RTSP_PORT") {
         Ok(value) => value
             .parse::<u16>()
@@ -41,6 +38,27 @@ pub(crate) fn start_zlm_server(
         Err(error) => return Err(error.into()),
     };
     anyhow::ensure!(rtsp_port != 0, "NVR_ZLM_RTSP_PORT must not be zero");
+    Ok(rtsp_port)
+}
+
+pub(crate) fn rtmp_port() -> anyhow::Result<u16> {
+    let port = match std::env::var("NVR_ZLM_RTMP_PORT") {
+        Ok(value) => value
+            .parse::<u16>()
+            .context("NVR_ZLM_RTMP_PORT must be a TCP port number")?,
+        Err(std::env::VarError::NotPresent) => 8555,
+        Err(error) => return Err(error.into()),
+    };
+    anyhow::ensure!(port != 0, "NVR_ZLM_RTMP_PORT must not be zero");
+    Ok(port)
+}
+
+pub(crate) fn start_zlm_server(
+    cancel: CancellationToken,
+    ready_tx: oneshot::Sender<()>,
+) -> anyhow::Result<()> {
+    let rtsp_port = rtsp_port()?;
+    let rtmp_port = rtmp_port()?;
     tokio::spawn(async move {
         let cancel_clone = cancel.clone();
         let runtime = tokio::runtime::Handle::current();
@@ -59,7 +77,7 @@ pub(crate) fn start_zlm_server(
 
             http_server_start(8553, false);
             rtsp_server_start(rtsp_port, false);
-            rtmp_server_start(8555, false);
+            rtmp_server_start(rtmp_port, false);
 
             {
                 let mut events = rszlm::event::EVENTS.write().unwrap();

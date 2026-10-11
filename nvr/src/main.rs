@@ -12,6 +12,7 @@ mod compositor;
 mod config;
 mod db;
 mod detect;
+mod device_output;
 mod gb;
 mod handler;
 mod init;

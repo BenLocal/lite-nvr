@@ -298,3 +298,30 @@ fn test_rockchip_format_negotiation_avoids_hardware_frames() {
         unsafe { super::rockchip_software_format(std::ptr::null_mut(), formats.as_ptr()) };
     assert_eq!(selected, AV_PIX_FMT_NONE);
 }
+
+#[test]
+fn sdp_parameter_sets_are_prepended_without_losing_packet_properties() -> anyhow::Result<()> {
+    use crate::packet::RawPacket;
+    let original = [0, 0, 0, 1, 0x65, 1, 2];
+    let mut packet = ffmpeg_next::Packet::copy(&original);
+    packet.set_pts(Some(90));
+    packet.set_dts(Some(80));
+    packet.set_duration(30);
+    packet.set_stream(2);
+    packet.set_flags(ffmpeg_next::packet::Flags::KEY);
+    let mut packet = RawPacket::from((packet, ffmpeg_next::Rational(1, 90000)));
+    let shared = packet.clone();
+    let sets = [0, 0, 0, 1, 0x67, 3];
+    super::prepend_parameter_sets(&mut packet, &sets)?;
+    assert_eq!(
+        packet.packet().data().unwrap(),
+        [sets.as_slice(), original.as_slice()].concat()
+    );
+    assert_eq!(shared.packet().data().unwrap(), original);
+    assert_eq!(packet.pts(), Some(90));
+    assert_eq!(packet.dts(), Some(80));
+    assert_eq!(packet.packet().duration(), 30);
+    assert_eq!(packet.index(), 2);
+    assert!(packet.is_key());
+    Ok(())
+}

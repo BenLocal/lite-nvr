@@ -2191,3 +2191,101 @@ async fn test_encoded_output_lossless_on_file_source() -> anyhow::Result<()> {
     assert_eq!(packets.len(), 100, "every frame of the file is encoded");
     Ok(())
 }
+
+#[tokio::test]
+async fn metrics_does_not_start_input_and_counts_only_consumed_output() -> anyhow::Result<()> {
+    crate::init()?;
+    let bus = Bus::new_deferred("metrics-test");
+    bus.add_input(
+        InputConfig::File {
+            path: test_mp4_path().to_string_lossy().into_owned(),
+        },
+        None,
+    )
+    .await?;
+    let unopened = bus.metrics().await?;
+    assert!(!unopened.running);
+    assert!(unopened.input.is_empty());
+    assert!(unopened.decoders.is_empty());
+    assert!(unopened.encoders.is_empty());
+    let (_, mut stream) = bus
+        .add_output(OutputConfig::new(
+            "video".into(),
+            OutputAvType::Video,
+            OutputDest::Demuxed,
+        ))
+        .await?;
+    let prepared = bus.metrics().await?;
+    assert!(!prepared.running);
+    assert!(prepared.input.iter().any(|s| s.kind == "audio"));
+    assert_eq!(prepared.output[0].stream.codec, "h264");
+    assert_eq!(prepared.output[0].stream.traffic.packets_total, 0);
+    bus.start().await?;
+    for _ in 0..5 {
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+                .await?
+                .flatten()
+                .is_some()
+        );
+    }
+    let snapshot = bus.metrics().await?;
+    assert!(
+        snapshot
+            .input
+            .iter()
+            .any(|s| s.kind == "video" && s.traffic.bytes_total > 0)
+    );
+    assert_eq!(snapshot.output[0].stream.traffic.packets_total, 5);
+    assert!(snapshot.decoders.is_empty());
+    assert!(snapshot.encoders.is_empty());
+    assert_eq!(
+        bus.metrics().await?.output[0].stream.traffic.bytes_total,
+        snapshot.output[0].stream.traffic.bytes_total
+    );
+    bus.remove_input().await?;
+    let removed = bus.metrics().await?;
+    assert!(!removed.running);
+    assert!(removed.input.is_empty());
+    assert!(removed.output.is_empty());
+    bus.stop();
+    Ok(())
+}
+
+#[test]
+fn metrics_omit_non_media_input_streams() {
+    let mut state = super::BusState::new();
+    state.input_streams.push(crate::stream::AvStream::new(
+        0,
+        ffmpeg_next::codec::Parameters::new(),
+        ffmpeg_next::Rational(1, 1000),
+        ffmpeg_next::Rational(0, 0),
+    ));
+    assert!(super::Bus::snapshot(&state).input.is_empty());
+    assert_eq!(state.input_streams.len(), 1);
+}
+
+#[test]
+fn test_output_limits_force_encoding_and_only_downscale() {
+    use ffmpeg_next::codec::Id;
+    let cfg = EncodeConfig {
+        fps: Some(15),
+        max_bitrate: Some(500_000),
+        width: Some(1280),
+        height: Some(720),
+        downscale_only: true,
+        ..Default::default()
+    };
+    assert!(Bus::encode_needed_params(
+        Id::H264,
+        true,
+        1280,
+        720,
+        0,
+        0,
+        &cfg
+    ));
+    assert_eq!(Bus::encoder_size(Some(&cfg), 640, 360), (640, 360));
+    assert_eq!(Bus::encoder_size(Some(&cfg), 1920, 1080), (1280, 720));
+    assert_eq!(Bus::encoder_size(Some(&cfg), 1920, 1200), (1152, 720));
+}

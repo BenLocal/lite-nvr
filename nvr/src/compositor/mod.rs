@@ -20,7 +20,6 @@ use nvr_compositor::{Compositor, CompositorConfig, Layout, Region, Source, Sourc
 const PERSIST_KEY: &str = "compositor_programs";
 
 /// ZLM RTMP publish endpoint (see `zlm::server`: `rtmp_server_start(8555)`).
-const ZLM_RTMP: &str = "rtmp://127.0.0.1:8555";
 
 /// Grace period before the first restore attempt, letting device pipelines
 /// publish their ZLM streams.
@@ -117,7 +116,13 @@ static COMPOSITORS: LazyLock<RwLock<HashMap<String, Arc<CompositorEntry>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Create and start a compositor, publishing it to ZLM.
-pub async fn create(params: CreateParams) -> Result<Arc<CompositorEntry>> {
+pub async fn create(mut params: CreateParams) -> Result<Arc<CompositorEntry>> {
+    for source in &mut params.sources {
+        source.url = local_source_url(&source.url)?;
+    }
+    if let Some(url) = params.publish_url.as_mut() {
+        *url = local_source_url(url)?;
+    }
     let id = params.id.trim().to_string();
     if id.is_empty() {
         anyhow::bail!("compositor id is required");
@@ -207,7 +212,12 @@ pub async fn create(params: CreateParams) -> Result<Arc<CompositorEntry>> {
         .publish_url
         .clone()
         .filter(|u| !u.trim().is_empty())
-        .unwrap_or_else(|| format!("{ZLM_RTMP}/switcher/{id}"));
+        .unwrap_or_else(|| {
+            format!(
+                "rtmp://127.0.0.1:{}/switcher/{id}",
+                crate::zlm::server::rtmp_port().unwrap_or(8555)
+            )
+        });
     let cfg = CompositorConfig {
         publish_url: publish_url.clone(),
         format: "flv".to_string(),
@@ -327,7 +337,8 @@ pub async fn relayout(id: &str, regions: Vec<Region>) -> Result<()> {
 /// flowing; the source becomes switchable at once (its picture appears once it
 /// decodes a frame). Errors if the program is missing or `src.id` already
 /// exists in the program.
-pub async fn add_source(program_id: &str, src: SourceInfo) -> Result<()> {
+pub async fn add_source(program_id: &str, mut src: SourceInfo) -> Result<()> {
+    src.url = local_source_url(&src.url)?;
     let entry = COMPOSITORS
         .read()
         .await
@@ -455,7 +466,10 @@ impl CompositorEntry {
             sources: self
                 .source_infos()
                 .into_iter()
-                .map(|s| PersistedSource { id: s.id, url: s.url })
+                .map(|s| PersistedSource {
+                    id: s.id,
+                    url: s.url,
+                })
                 .collect(),
             width: self.layout.width,
             height: self.layout.height,
@@ -485,7 +499,10 @@ impl PersistedCompositor {
             sources: self
                 .sources
                 .into_iter()
-                .map(|s| SourceInfo { id: s.id, url: migrate_url(&s.url) })
+                .map(|s| SourceInfo {
+                    id: s.id,
+                    url: migrate_url(&s.url),
+                })
                 .collect(),
             width: self.width,
             height: self.height,
@@ -585,3 +602,32 @@ pub async fn restore_all() {
         }
     }
 }
+
+/// Older dashboards used the default port for server-local device pulls.
+/// Resolve only our local device/GB streams; external source URLs stay intact.
+fn local_source_url(value: &str) -> Result<String> {
+    let Ok(mut url) = reqwest::Url::parse(value) else {
+        return Ok(value.to_owned());
+    };
+    if url.scheme() == "rtsp"
+        && matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
+        && url.port() == Some(8554)
+        && (url.path().starts_with("/device/") || url.path().starts_with("/rtp/"))
+    {
+        url.set_port(Some(crate::zlm::server::rtsp_port()?))
+            .map_err(|_| anyhow::anyhow!("invalid local RTSP URL"))?;
+    }
+    if url.scheme() == "rtmp"
+        && matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
+        && url.port() == Some(8555)
+        && url.path().starts_with("/switcher/")
+    {
+        url.set_port(Some(crate::zlm::server::rtmp_port()?))
+            .map_err(|_| anyhow::anyhow!("invalid local RTMP URL"))?;
+    }
+    Ok(url.into())
+}
+
+#[cfg(test)]
+#[path = "mod_test.rs"]
+mod mod_test;

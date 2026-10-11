@@ -7,6 +7,7 @@
 
 use std::sync::{Arc, Mutex as SyncMutex};
 
+use ffmpeg_bus::bsf::aac_adts_header;
 use ffmpeg_bus::bus::{OutputAvType, VideoRawFrameStream};
 use ffmpeg_bus::stream::AvStream;
 use futures::StreamExt;
@@ -185,28 +186,26 @@ fn zlm_codec_id(id: ffmpeg_next::codec::Id) -> Option<CodecId> {
     })
 }
 
-/// Video payload for ZLM: AVCC (MP4) input is converted to Annex B, and its
-/// keyframes get the extradata parameter sets prepended, since MP4 keeps
-/// SPS/PPS only in extradata and ZLM needs them in-band to make the track
-/// ready. Annex B input (RTSP cameras) passes through unchanged.
+/// ZLM needs parameter sets in-band even when RTSP carries them only in SDP.
 fn video_payload<'a>(
     data: &'a [u8],
     is_key: bool,
     avcc: bool,
     parameter_sets: Option<&[u8]>,
 ) -> std::borrow::Cow<'a, [u8]> {
-    if !avcc {
-        return std::borrow::Cow::Borrowed(data);
-    }
-    let annexb = ffmpeg_bus::bsf::convert_avcc_to_annexb(data);
+    let payload = if avcc {
+        std::borrow::Cow::Owned(ffmpeg_bus::bsf::convert_avcc_to_annexb(data).to_vec())
+    } else {
+        std::borrow::Cow::Borrowed(data)
+    };
     match parameter_sets.filter(|_| is_key) {
         Some(sets) => {
-            let mut out = Vec::with_capacity(sets.len() + annexb.len());
+            let mut out = Vec::with_capacity(sets.len() + payload.len());
             out.extend_from_slice(sets);
-            out.extend_from_slice(&annexb);
+            out.extend_from_slice(&payload);
             std::borrow::Cow::Owned(out)
         }
-        None => std::borrow::Cow::Owned(annexb.to_vec()),
+        None => payload,
     }
 }
 
@@ -253,6 +252,7 @@ async fn forward_raw_packet_stream_to_zlm(
     let default_fps = av.fps();
     let audio_sample_rate = av.sample_rate();
     let audio_channels = av.channels();
+    let mut invalid_aac_reported = false;
     let mut track_initialized = false;
     let mut needs_conversion = false;
     let mut conversion_checked = false;
@@ -349,6 +349,21 @@ async fn forward_raw_packet_stream_to_zlm(
             parameter_sets.as_deref(),
         );
 
+        if source_codec == ffmpeg_next::codec::Id::AAC
+            && !(data.len() >= 7 && data[0] == 0xff && data[1] & 0xf6 == 0xf0)
+        {
+            let header = ffmpeg_bus::bsf::get_extradata(av.parameters())
+                .and_then(|config| aac_adts_header(config, data.len()));
+            if let Some(header) = header {
+                if !media.input_aac(data.as_ref(), dts_ms.max(0.0) as u64, Some(&header)) {
+                    log::warn!("ZLM: AAC input failed (dts_ms={dts_ms})");
+                }
+            } else if !invalid_aac_reported {
+                log::warn!("ZLM: raw AAC requires a supported AudioSpecificConfig; frame skipped");
+                invalid_aac_reported = true;
+            }
+            continue;
+        }
         let zlm_frame = ZlmFrame::new(make_codec_id(), dts_ms as u64, pts_ms as u64, data.as_ref());
         if !media.input_frame(&zlm_frame) {
             log::warn!(

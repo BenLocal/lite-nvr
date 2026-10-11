@@ -85,6 +85,7 @@ struct RegionDto {
 
 #[derive(Serialize)]
 struct CompositorDto {
+    rtsp_port: u16,
     id: String,
     sources: Vec<SourceDto>,
     width: u32,
@@ -96,6 +97,7 @@ struct CompositorDto {
 
 fn to_dto(entry: &CompositorEntry) -> CompositorDto {
     CompositorDto {
+        rtsp_port: crate::zlm::server::rtsp_port().unwrap_or(8554),
         id: entry.id.clone(),
         sources: entry
             .source_infos()

@@ -423,8 +423,75 @@ impl Bus {
         }
     }
 
+    pub async fn metrics(&self) -> anyhow::Result<crate::metrics::BusMetrics> {
+        let (result, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(BusCommand::Metrics { result })
+            .await
+            .map_err(|_| anyhow::anyhow!("bus stopped"))?;
+        rx.await.map_err(|_| anyhow::anyhow!("bus stopped"))
+    }
+
+    fn snapshot(state: &BusState) -> crate::metrics::BusMetrics {
+        let mut input: Vec<_> = state
+            .input_streams
+            .iter()
+            .filter(|stream| stream.is_video() || stream.is_audio())
+            .map(|stream| {
+                crate::metrics::StreamMetrics::from_stream(
+                    stream,
+                    state
+                        .input_task
+                        .as_ref()
+                        .map(|task| task.traffic(stream.index()))
+                        .unwrap_or_default(),
+                )
+            })
+            .collect();
+        input.sort_by_key(|s| s.index);
+        let mut decoders: Vec<_> = state
+            .decoder_tasks
+            .values()
+            .map(|task| task.metrics())
+            .collect();
+        decoders.sort_by_key(|c| c.stream_index);
+        let mut encoders: Vec<_> = state
+            .encoder_tasks
+            .values()
+            .map(|task| task.metrics())
+            .collect();
+        encoders.sort_by(|a, b| {
+            a.stream_index
+                .cmp(&b.stream_index)
+                .then(a.codec.cmp(&b.codec))
+        });
+        let mut output: Vec<_> = state
+            .output_metrics
+            .iter()
+            .map(
+                |(id, (destination, stream, traffic))| crate::metrics::OutputMetrics {
+                    id: id.clone(),
+                    destination: destination.clone(),
+                    traffic_available: destination != "file" && destination != "network",
+                    stream: crate::metrics::StreamMetrics::from_stream(stream, traffic.snapshot()),
+                },
+            )
+            .collect();
+        output.sort_by(|a, b| a.id.cmp(&b.id));
+        crate::metrics::BusMetrics {
+            running: state.pending_input.is_none() && Self::input_running(state),
+            input,
+            decoders,
+            encoders,
+            output,
+        }
+    }
+
     async fn inner_command_handler(state: &mut BusState, cmd: BusCommand) -> anyhow::Result<()> {
         match cmd {
+            BusCommand::Metrics { result } => {
+                let _ = result.send(Self::snapshot(state));
+            }
             BusCommand::AddInput {
                 input,
                 options,
@@ -450,6 +517,7 @@ impl Bus {
                 state.encoder_output_streams.clear();
                 state.input_streams.clear();
                 state.output_config.clear();
+                state.output_metrics.clear();
                 // A deferred bus waits for `start()` again on its next input.
                 state.started = false;
                 result
@@ -499,10 +567,29 @@ impl Bus {
         let decoders_before: HashSet<usize> = state.decoder_tasks.keys().copied().collect();
         let encoders_before: HashSet<EncoderKey> = state.encoder_tasks.keys().cloned().collect();
         match Self::build_output(state, &output).await {
-            Ok(built) => {
+            Ok((av, stream)) => {
+                let traffic = Arc::new(crate::metrics::Traffic::default());
+                let destination = match &output.dest {
+                    OutputDest::Raw => "raw",
+                    OutputDest::Encoded => "encoded",
+                    OutputDest::Demuxed => "demuxed",
+                    OutputDest::Mux { .. } => "mux",
+                    OutputDest::File { .. } => "file",
+                    OutputDest::Net { .. } => "network",
+                };
+                state.output_metrics.insert(
+                    output.id.clone(),
+                    (destination.into(), av.clone(), traffic.clone()),
+                );
+                let stream = stream.map(move |item| {
+                    if let Some(frame) = &item {
+                        traffic.record(frame.data.len());
+                    }
+                    item
+                });
                 state.output_config.insert(output.id.clone(), output);
                 Self::auto_start_input(state).await?;
-                Ok(built)
+                Ok((av, Box::pin(stream)))
             }
             Err(e) => {
                 state
@@ -800,7 +887,10 @@ impl Bus {
             _ => return true,
         }
         if is_video {
-            encode.width.is_some_and(|w| w != width) || encode.height.is_some_and(|h| h != height)
+            encode.width.is_some_and(|w| w != width)
+                || encode.height.is_some_and(|h| h != height)
+                || encode.fps.is_some()
+                || encode.max_bitrate.is_some()
         } else {
             encode.sample_rate.is_some_and(|sr| sr != sample_rate)
                 || encode.channels.is_some_and(|c| c != channels)
@@ -1393,10 +1483,18 @@ impl Bus {
     /// Encoder frame size: an explicit `encode` width/height, else the source
     /// size. Frames keep the source size; the encoder's scaler resizes them.
     fn encoder_size(encode: Option<&EncodeConfig>, source_w: u32, source_h: u32) -> (u32, u32) {
-        Self::ensure_video_dimensions(
-            encode.and_then(|e| e.width).unwrap_or(source_w),
-            encode.and_then(|e| e.height).unwrap_or(source_h),
-        )
+        let target_w = encode.and_then(|e| e.width).unwrap_or(source_w);
+        let target_h = encode.and_then(|e| e.height).unwrap_or(source_h);
+        if encode.is_some_and(|e| e.downscale_only) {
+            let scale = (target_w as f64 / source_w.max(1) as f64)
+                .min(target_h as f64 / source_h.max(1) as f64)
+                .min(1.0);
+            return Self::ensure_video_dimensions(
+                ((source_w as f64 * scale) as u32 / 2 * 2).max(2),
+                ((source_h as f64 * scale) as u32 / 2 * 2).max(2),
+            );
+        }
+        Self::ensure_video_dimensions(target_w, target_h)
     }
 
     /// Build encoder options from EncodeConfig for faster encoding (preset, bitrate).
@@ -1408,6 +1506,11 @@ impl Bus {
         if let Some(b) = encode.bitrate {
             opts.set("b", b.to_string().as_str());
         }
+        if let Some(max) = encode.max_bitrate {
+            opts.set("b", &max.to_string());
+            opts.set("maxrate", &max.to_string());
+            opts.set("bufsize", &max.to_string());
+        }
         Some(opts)
     }
 
@@ -1415,9 +1518,20 @@ impl Bus {
     /// can be slow). Options are built inside: `Dictionary` is not `Send`.
     async fn open_video_encoder(
         stream: &AvStream,
-        settings: Settings,
+        mut settings: Settings,
         encode: Option<&EncodeConfig>,
     ) -> anyhow::Result<Encoder> {
+        settings.fps = encode.and_then(|e| e.fps);
+        let rate = stream.rate();
+        if rate.numerator() > 0
+            && rate.denominator() > 0
+            && settings
+                .fps
+                .is_some_and(|fps| f64::from(fps) >= f64::from(rate))
+        {
+            // An upper limit cannot create frames absent from the input.
+            settings.fps = None;
+        }
         let stream = stream.clone();
         let encode = encode.cloned();
         open_blocking(move || {
@@ -1823,6 +1937,7 @@ struct BusState {
     input_config: Option<InputConfig>,
     input_options: Option<HashMap<String, String>>,
     output_config: HashMap<String, OutputConfig>,
+    output_metrics: HashMap<String, (String, AvStream, Arc<crate::metrics::Traffic>)>,
     input_task: Option<AvInputTask>,
     pending_input: Option<AvInput>,
     input_streams: Vec<AvStream>,
@@ -1847,6 +1962,7 @@ impl BusState {
         Self {
             input_config: None,
             output_config: HashMap::new(),
+            output_metrics: HashMap::new(),
             input_task: None,
             pending_input: None,
             input_streams: Vec::new(),
@@ -1865,6 +1981,9 @@ impl BusState {
 pub type VideoRawFrameStream = Pin<Box<dyn Stream<Item = Option<VideoFrame>> + Send + Sync>>;
 
 pub enum BusCommand {
+    Metrics {
+        result: tokio::sync::oneshot::Sender<crate::metrics::BusMetrics>,
+    },
     AddInput {
         input: InputConfig,
         options: Option<HashMap<String, String>>,
@@ -1983,6 +2102,9 @@ pub struct EncodeConfig {
     pub height: Option<u32>,
     // bps (video bitrate)
     pub bitrate: Option<u64>,
+    pub fps: Option<u32>,
+    pub max_bitrate: Option<u64>,
+    pub downscale_only: bool,
     // "ultrafast", "medium", etc.
     pub preset: Option<String>,
     // "yuv420p", "rgb24", etc.
@@ -2002,6 +2124,9 @@ impl Default for EncodeConfig {
             width: None,
             height: None,
             bitrate: None,
+            fps: None,
+            max_bitrate: None,
+            downscale_only: false,
             preset: None,
             pixel_format: None,
             sample_rate: None,
@@ -2017,6 +2142,9 @@ impl PartialEq for EncodeConfig {
             && self.width == other.width
             && self.height == other.height
             && self.bitrate == other.bitrate
+            && self.fps == other.fps
+            && self.max_bitrate == other.max_bitrate
+            && self.downscale_only == other.downscale_only
             && self.preset == other.preset
             && self.pixel_format == other.pixel_format
             && self.sample_rate == other.sample_rate
@@ -2033,6 +2161,9 @@ impl std::hash::Hash for EncodeConfig {
         self.width.hash(state);
         self.height.hash(state);
         self.bitrate.hash(state);
+        self.fps.hash(state);
+        self.max_bitrate.hash(state);
+        self.downscale_only.hash(state);
         self.preset.hash(state);
         self.pixel_format.hash(state);
         self.sample_rate.hash(state);

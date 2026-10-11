@@ -155,8 +155,31 @@ fn input_options(input: &InputConfig) -> Option<HashMap<String, String>> {
             ("rtsp_transport".to_string(), "tcp".to_string()),
             ("stimeout".to_string(), "5000000".to_string()),
         ])),
+        #[cfg(feature = "rockchip")]
+        InputConfig::Device { display, format } if format == "v4l2" => {
+            let node = std::path::Path::new(display).file_name()?;
+            let name = std::fs::read_to_string(
+                std::path::Path::new("/sys/class/video4linux")
+                    .join(node)
+                    .join("name"),
+            )
+            .ok()?;
+            rockchip_capture_options(name.trim())
+        }
         _ => None,
     }
+}
+
+#[cfg(feature = "rockchip")]
+fn rockchip_capture_options(name: &str) -> Option<HashMap<String, String>> {
+    // rkcif accepts FFmpeg's default YU12 but returns an incompatible buffer
+    // size. Its advertised NV12 format is compatible with hardware encoding.
+    name.starts_with("stream_cif_mipi_id").then(|| {
+        HashMap::from([
+            ("input_format".to_owned(), "nv12".to_owned()),
+            ("framerate".to_owned(), "60".to_owned()),
+        ])
+    })
 }
 
 async fn upsert_pipe(id: &str, config: PipeConfig, update_if_exists: bool) -> anyhow::Result<()> {
@@ -227,11 +250,13 @@ fn spawn_network_device(
                 device.record,
                 false,
             ));
+            let mut outputs = media_pipe_zlm::zlm_outputs(media, device.include_audio);
+            crate::device_output::apply(&mut outputs, device.config.output.as_ref());
             let config = PipeConfig {
                 input: InputConfig::Network {
                     url: device.input_value.clone(),
                 },
-                outputs: media_pipe_zlm::zlm_outputs(media, device.include_audio),
+                outputs,
             };
             let options = input_options(&config.input);
             let pipe = Arc::new(Pipe::new(config));
@@ -300,6 +325,7 @@ pub(crate) async fn upsert_stream(
     media: Arc<rszlm::media::Media>,
     page_url: String,
     include_audio: bool,
+    output: Option<nvr_db::device::OutputConfig>,
     update_if_exists: bool,
 ) -> anyhow::Result<()> {
     let device_id = id.to_string();
@@ -312,6 +338,7 @@ pub(crate) async fn upsert_stream(
                 page_url,
                 media,
                 include_audio,
+                output,
                 cancel.clone(),
             );
             Entry::Task { cancel, handle }
@@ -331,6 +358,7 @@ pub(crate) async fn upsert_onvif(
     media: Arc<rszlm::media::Media>,
     cfg: nvr_onvif::OnvifConfig,
     include_audio: bool,
+    output: Option<nvr_db::device::OutputConfig>,
     update_if_exists: bool,
 ) -> anyhow::Result<()> {
     let device_id = id.to_string();
@@ -343,6 +371,7 @@ pub(crate) async fn upsert_onvif(
                 cfg,
                 media,
                 include_audio,
+                output,
                 cancel.clone(),
             );
             Entry::Task { cancel, handle }
@@ -385,6 +414,26 @@ pub(crate) async fn shutdown() {
 /// started), `Some(true)` for a worker, `None` if absent.
 pub(crate) async fn status(id: &str) -> Option<bool> {
     PIPE_MANAGER.read().await.get(id).map(|e| e.is_started())
+}
+
+/// Clone current session handles under one registry lock; callers query them
+/// after releasing it so a slow metrics request cannot block device lifecycle.
+pub(crate) async fn device_pipes() -> HashMap<String, Option<Arc<Pipe>>> {
+    PIPE_MANAGER
+        .read()
+        .await
+        .iter()
+        .map(|(id, entry)| {
+            let pipe = match entry {
+                Entry::Pipe { pipe, .. } => Some(Arc::clone(pipe)),
+                Entry::ReconnectingPipe { pipe, .. } => {
+                    pipe.read().unwrap_or_else(|e| e.into_inner()).clone()
+                }
+                Entry::Worker { .. } | Entry::Task { .. } => None,
+            };
+            (id.clone(), pipe)
+        })
+        .collect()
 }
 
 pub(crate) async fn list_pipe_ids() -> Vec<String> {

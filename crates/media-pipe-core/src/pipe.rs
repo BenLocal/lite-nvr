@@ -61,6 +61,20 @@ impl Pipe {
         bus.subscribe_video().await
     }
 
+    /// Passive snapshot: never subscribes to a stream or starts a codec.
+    pub async fn metrics(&self) -> anyhow::Result<Option<ffmpeg_bus::metrics::BusMetrics>> {
+        let bus = self
+            .bus
+            .lock()
+            .map_err(|_| anyhow::anyhow!("pipe bus lock poisoned"))?
+            .clone();
+        let Some(bus) = bus else { return Ok(None) };
+        tokio::time::timeout(std::time::Duration::from_millis(500), bus.metrics())
+            .await
+            .map_err(|_| anyhow::anyhow!("media metrics not ready"))?
+            .map(Some)
+    }
+
     pub fn cancel(&self) {
         self.cancel.cancel();
         // Opening/probing can block before start reaches its cancellation wait.

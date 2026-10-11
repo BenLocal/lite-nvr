@@ -148,3 +148,17 @@
   font-size: 0.8125rem;
   color: #94a3b8;
 }
+
+:global(#device-actions-menu .device-menu-delete .p-menu-item-content) {
+  background: var(--p-red-600);
+}
+
+:global(#device-actions-menu .device-menu-delete .p-menu-item-link),
+:global(#device-actions-menu .device-menu-delete .p-menu-item-icon) {
+  color: white;
+}
+
+:global(#device-actions-menu .device-menu-delete .p-menu-item-content:hover),
+:global(#device-actions-menu .device-menu-delete.p-focus .p-menu-item-content) {
+  background: var(--p-red-700);
+}

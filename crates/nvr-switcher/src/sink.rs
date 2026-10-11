@@ -54,6 +54,7 @@ impl ProgramSink {
             keyframe_interval: cfg.fps.max(1) as u64,
             codec: Some("h264".to_string()),
             pixel_format: Pixel::YUV420P,
+            fps: None,
         };
         let mut opts = ffmpeg_next::Dictionary::new();
         opts.set("preset", "ultrafast");
@@ -61,16 +62,18 @@ impl ProgramSink {
         if let Some(b) = cfg.bitrate {
             opts.set("b", &b.to_string());
         }
-        let encoder = Encoder::new(template, settings, Some(opts))?;
+        // Program frames use a synthetic microsecond CFR clock, independently
+        // of the source's packet time base and frame rate.
+        let fps = i32::try_from(cfg.fps.max(1))?;
+        let clock = AvStream::new(
+            template.index(),
+            template.parameters().clone(),
+            ffmpeg_next::util::mathematics::rescale::TIME_BASE,
+            ffmpeg_next::Rational(fps, 1),
+        );
+        let encoder = Encoder::new(&clock, settings, Some(opts))?;
 
-        // `for_encoder_output` copies the template's (source) dimensions;
-        // overwrite them with the canvas size so the muxed stream is honest.
-        let out_stream = AvStream::for_encoder_output(template, ffmpeg_next::codec::Id::H264);
-        unsafe {
-            let p = out_stream.parameters().as_ptr() as *mut ffmpeg_next::ffi::AVCodecParameters;
-            (*p).width = cfg.width as i32;
-            (*p).height = cfg.height as i32;
-        }
+        let out_stream = encoder.output_stream(0);
         let mut output = AvOutput::new(&cfg.publish_url, Some(&cfg.format), None)?;
         output.add_stream(&out_stream)?;
 
@@ -148,3 +151,7 @@ impl ScalerCache {
         Ok(dst)
     }
 }
+
+#[cfg(test)]
+#[path = "sink_test.rs"]
+mod sink_test;

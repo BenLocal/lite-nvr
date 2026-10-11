@@ -280,3 +280,85 @@ async fn unavailable_x11_is_rejected_before_persistence() {
     crate::manager::remove_pipe(id).await.unwrap();
     nvr_db::device::delete(id, &conn).await.unwrap();
 }
+
+#[tokio::test]
+async fn metrics_lists_idle_devices_and_single_lookup_rejects_unknown_id() {
+    let _db = crate::auth::auth_test::ensure_test_db().await;
+    let conn = crate::db::app_db_conn().expect("test db");
+    let hub = Box::leak(Box::new(DetectHub::new_for_test(
+        vec![],
+        PathBuf::new(),
+        500,
+    )));
+    let device = nvr_db::device::DeviceInfo {
+        id: "metrics-idle-device".into(),
+        name: "Metrics idle".into(),
+        input_type: "gb28181".into(),
+        input_value: r#"{"device_id":"platform","channel_id":"channel"}"#.into(),
+        description: String::new(),
+        include_audio: false,
+        record: false,
+        config: Default::default(),
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+    nvr_db::device::upsert(&device, &conn)
+        .await
+        .expect("save device");
+    let response = device_router(hub)
+        .oneshot(Request::get("/list").body(Body::empty()).expect("request"))
+        .await
+        .expect("response");
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+    let listed = json["data"]
+        .as_array()
+        .expect("list")
+        .iter()
+        .find(|item| item["id"] == device.id)
+        .expect("device");
+    assert_eq!(listed["state"], "idle");
+    for path in ["/metrics", "/metrics/metrics-idle-device"] {
+        let response = device_router(hub)
+            .oneshot(Request::get(path).body(Body::empty()).expect("request"))
+            .await
+            .expect("response");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        let data = if path == "/metrics" {
+            json["data"]
+                .as_array()
+                .expect("list")
+                .iter()
+                .find(|item| item["id"] == device.id)
+                .expect("device")
+        } else {
+            &json["data"]
+        };
+        assert_eq!(data["state"], "idle");
+        assert!(data["pipeline"].is_null());
+        assert!(data["distribution"].is_null());
+        assert!(data.get("input_value").is_none());
+        assert!(data["sampled_at_ms"].as_i64().expect("timestamp") > 0);
+    }
+    let response = device_router(hub)
+        .oneshot(
+            Request::get("/metrics/metrics-no-such-device")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    );
+    nvr_db::device::delete(&device.id, &conn)
+        .await
+        .expect("cleanup");
+}

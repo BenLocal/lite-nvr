@@ -209,6 +209,7 @@ pub struct Decoder {
     is_hw: bool,
     /// Name of the selected codec (to blacklist a failing hardware one).
     codec_name: String,
+    parameter_sets: Option<bytes::Bytes>,
 }
 
 impl Decoder {
@@ -295,6 +296,12 @@ impl Decoder {
             }
             let (video_decoder, decoder_time_base) =
                 opened.ok_or_else(|| anyhow::anyhow!("unable to open video decoder"))?;
+            if selected_name == "default" {
+                selected_name = video_decoder
+                    .codec()
+                    .map(|codec| codec.name().to_owned())
+                    .unwrap_or(selected_name);
+            }
             if selected_is_hw {
                 log::info!(
                     "video decoder selected: {} (hardware), stream_index={}",
@@ -321,6 +328,7 @@ impl Decoder {
                 decoder_time_base,
                 is_hw: selected_is_hw,
                 codec_name: selected_name,
+                parameter_sets: crate::bsf::parameter_sets_annexb(stream.parameters()),
             }
         } else if stream.is_audio() {
             let mut decoder_ctx = ffmpeg_next::codec::Context::new();
@@ -330,12 +338,17 @@ impl Decoder {
             decoder_ctx.set_parameters(stream.parameters().clone())?;
             let audio_decoder = decoder_ctx.decoder().audio()?;
             let decoder_time_base = audio_decoder.time_base();
+            let codec_name = audio_decoder
+                .codec()
+                .map(|codec| codec.name().to_owned())
+                .unwrap_or_else(|| "unknown".into());
             Self {
                 stream: stream.clone(),
                 inner: DecoderType::Audio(audio_decoder),
                 decoder_time_base,
                 is_hw: false,
-                codec_name: "default".to_string(),
+                codec_name,
+                parameter_sets: None,
             }
         } else {
             return Err(anyhow::anyhow!("unsupported stream type"));
@@ -344,7 +357,17 @@ impl Decoder {
         Ok(s)
     }
 
-    pub fn send_packet(&mut self, packet: RawPacket) -> anyhow::Result<()> {
+    pub fn send_packet(&mut self, mut packet: RawPacket) -> anyhow::Result<()> {
+        if self.codec_name.ends_with("_rkmpp")
+            && packet.is_key()
+            && packet
+                .packet()
+                .data()
+                .is_some_and(crate::bsf::is_annexb_packet)
+            && let Some(sets) = self.parameter_sets.as_deref()
+        {
+            prepend_parameter_sets(&mut packet, sets)?;
+        }
         // Keep a handle (Arc clone, no data copy) while on hardware so the
         // packet can be replayed into the software decoder after a downgrade.
         let retry = self.is_hw.then(|| packet.clone());
@@ -363,6 +386,10 @@ impl Decoder {
                 );
                 hw::mark_runtime_failure(&self.codec_name);
                 let (video_decoder, time_base) = Self::open_software_video(&self.stream)?;
+                self.codec_name = video_decoder
+                    .codec()
+                    .map(|codec| codec.name().to_owned())
+                    .unwrap_or_else(|| "unknown".into());
                 self.inner = DecoderType::Video(video_decoder);
                 self.decoder_time_base = time_base;
                 self.is_hw = false;
@@ -386,6 +413,25 @@ impl Decoder {
     pub fn stream_index(&self) -> usize {
         self.stream.index()
     }
+}
+
+/// Retain packet timestamps, flags and side data while supplying SDP headers
+/// in-band to Rockchip's Annex B decoder.
+fn prepend_parameter_sets(packet: &mut RawPacket, sets: &[u8]) -> anyhow::Result<()> {
+    let size = packet.size();
+    let total = size
+        .checked_add(sets.len())
+        .ok_or_else(|| anyhow::anyhow!("decoder packet too large"))?;
+    i32::try_from(total)?;
+    let packet = packet.get_mut();
+    packet.grow(sets.len());
+    let data = packet
+        .data_mut()
+        .ok_or_else(|| anyhow::anyhow!("decoder packet has no data"))?;
+    anyhow::ensure!(data.len() == total, "could not grow decoder packet");
+    data.copy_within(..size, sets.len());
+    data[..sets.len()].copy_from_slice(sets);
+    Ok(())
 }
 
 /// The source pixel format from the stream parameters, `Pixel::None` when
@@ -422,6 +468,7 @@ unsafe extern "C" fn rockchip_software_format(
 }
 
 pub struct DecoderTask {
+    probe: crate::metrics::CodecProbe,
     cancel: CancellationToken,
     subscribers: FrameSubscribers,
     /// Stop once the last subscriber leaves (bus-managed decoders). Off for
@@ -432,6 +479,7 @@ pub struct DecoderTask {
 impl DecoderTask {
     pub fn new() -> Self {
         Self {
+            probe: crate::metrics::CodecProbe::default(),
             cancel: CancellationToken::new(),
             subscribers: FrameSubscribers::default(),
             auto_stop: false,
@@ -464,6 +512,10 @@ impl DecoderTask {
         !self.cancel.is_cancelled() && !self.subscribers.is_closed()
     }
 
+    pub(crate) fn metrics(&self) -> crate::metrics::CodecMetrics {
+        self.probe.snapshot(self.is_running())
+    }
+
     pub fn stop(&self) {
         self.cancel.cancel();
     }
@@ -473,6 +525,9 @@ impl DecoderTask {
             "decoder loop started, stream index: {}",
             decoder.stream_index()
         );
+        self.probe
+            .update(&decoder.stream, &decoder.codec_name, decoder.is_hw);
+        let probe = self.probe.clone();
         let cancel_clone = self.cancel.clone();
         let subscribers = self.subscribers.clone();
         let auto_stop = self.auto_stop;
@@ -485,7 +540,14 @@ impl DecoderTask {
 
             let handle_cancel = cancel_clone.clone();
             let handle = tokio::task::spawn_blocking(move || {
-                Self::decoder_loop(decoder, handle_cancel, packet_rx, subscribers, auto_stop)
+                Self::decoder_loop(
+                    decoder,
+                    handle_cancel,
+                    packet_rx,
+                    subscribers,
+                    auto_stop,
+                    probe,
+                )
             });
             loop {
                 tokio::select! {
@@ -570,6 +632,7 @@ impl DecoderTask {
         packet_rx: std::sync::mpsc::Receiver<RawPacketCmd>,
         subscribers: FrameSubscribers,
         auto_stop: bool,
+        probe: crate::metrics::CodecProbe,
     ) {
         loop {
             if cancel.is_cancelled() {
@@ -580,7 +643,9 @@ impl DecoderTask {
                 Ok(packet) => {
                     match packet {
                         RawPacketCmd::Data(packet) => {
-                            if let Err(e) = decoder.send_packet(packet) {
+                            let sent = decoder.send_packet(packet);
+                            probe.update(&decoder.stream, &decoder.codec_name, decoder.is_hw);
+                            if let Err(e) = sent {
                                 log::error!(
                                     "send packet error: {}\nbacktrace:\n{}",
                                     e,
@@ -604,6 +669,8 @@ impl DecoderTask {
                     'outer: loop {
                         match decoder.receive_frame() {
                             Ok(Some(frame)) => {
+                                probe.record(0);
+                                probe.update(&decoder.stream, &decoder.codec_name, decoder.is_hw);
                                 subscribers.publish(&cancel, auto_stop, RawFrameCmd::Data(frame));
                             }
                             Ok(None) => break 'outer,

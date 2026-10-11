@@ -98,3 +98,35 @@ fn test_parameter_sets_from_test_mp4() -> anyhow::Result<()> {
     assert_eq!(nal_types, vec![7, 8], "SPS then PPS");
     Ok(())
 }
+
+#[test]
+fn test_parameter_sets_from_annexb_input() -> anyhow::Result<()> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/dummy-camera/assets/sample.h264");
+    let input = crate::input::AvInput::new(path.to_str().unwrap_or_default(), None, None)?;
+    let video = input
+        .streams()
+        .values()
+        .find(|s| s.is_video())
+        .ok_or_else(|| anyhow::anyhow!("no video"))?;
+    let original = get_extradata(video.parameters()).expect("Annex B extradata");
+    assert!(is_annexb_packet(original));
+    assert_eq!(
+        parameter_sets_annexb(video.parameters())
+            .expect("sets")
+            .as_ref(),
+        original
+    );
+    Ok(())
+}
+
+#[test]
+fn test_aac_adts_header_uses_audio_specific_config_and_checks_limits() {
+    let header = aac_adts_header(&[0x11, 0x88], 100).expect("AAC-LC 48kHz mono");
+    assert_eq!(header, [0xff, 0xf1, 0x4c, 0x40, 0x0d, 0x7f, 0xfc]);
+    assert!(aac_adts_header(&[], 100).is_none());
+    assert!(aac_adts_header(&[0x11], 100).is_none());
+    assert!(aac_adts_header(&[0x11, 0x88], 8185).is_none());
+    assert!(aac_adts_header(&[0x11, 0x88], usize::MAX).is_none());
+    assert!(aac_adts_header(&[0x2b, 0x88], 100).is_none());
+}

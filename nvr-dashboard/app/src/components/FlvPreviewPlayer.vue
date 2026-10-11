@@ -27,7 +27,7 @@ const retryCount = ref(0)
 let retryTimer: ReturnType<typeof setTimeout> | undefined
 const previewMediaInfo = ref<Record<string, unknown>>({})
 const previewStats = ref<Record<string, unknown>>({})
-const previewInfoVisible = ref(true)
+const previewInfoVisible = ref(false)
 const previewInfoPosition = ref({ x: 20, y: 20 })
 const previewInfoDrag = ref<{ startX: number; startY: number; originX: number; originY: number } | null>(null)
 
@@ -36,7 +36,7 @@ watch(
   async (url) => {
     stopPreview()
     retryCount.value = 0
-    previewInfoVisible.value = true
+    previewInfoVisible.value = false
     previewInfoPosition.value = { x: 20, y: 20 }
     if (!url) {
       return

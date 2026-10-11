@@ -85,11 +85,50 @@ pub fn packet_to_raw_video_frame(
     if pixel_format == ffmpeg_next::format::Pixel::None {
         anyhow::bail!("invalid pixel format for raw video");
     }
+    let width_i = i32::try_from(width)?;
+    let height_i = i32::try_from(height)?;
+    // SAFETY: this call only computes the size for validated integer dimensions.
+    let required = unsafe {
+        ffmpeg_next::ffi::av_image_get_buffer_size(pixel_format.into(), width_i, height_i, 1)
+    };
+    anyhow::ensure!(required > 0, "invalid raw video image layout");
+    let packet_data = packet.packet().data().unwrap_or_default();
+    anyhow::ensure!(
+        packet_data.len() >= usize::try_from(required)?,
+        "truncated raw video packet"
+    );
+    let mut source = [std::ptr::null_mut(); 4];
+    let mut strides = [0; 4];
+    // SAFETY: the source buffer contains the complete, tightly packed image.
+    // fill_arrays only creates pointers; the packet stays borrowed through copy.
+    let ret = unsafe {
+        ffmpeg_next::ffi::av_image_fill_arrays(
+            source.as_mut_ptr(),
+            strides.as_mut_ptr(),
+            packet_data.as_ptr(),
+            pixel_format.into(),
+            width_i,
+            height_i,
+            1,
+        )
+    };
+    anyhow::ensure!(ret >= 0, "invalid raw video plane layout");
+    let source = source.map(|p| p.cast_const());
     let mut frame = Video::new(pixel_format, width, height);
-    let packet_data = packet.data();
-    let frame_buf = frame.data_mut(0);
-    let copy_len = packet_data.len().min(frame_buf.len());
-    frame_buf[..copy_len].copy_from_slice(&packet_data[..copy_len]);
+    // SAFETY: the allocated destination owns all writable planes. Source and
+    // destination have matching formats/dimensions and disjoint valid buffers.
+    unsafe {
+        let destination = &mut *frame.as_mut_ptr();
+        ffmpeg_next::ffi::av_image_copy(
+            destination.data.as_ptr(),
+            destination.linesize.as_ptr(),
+            source.as_ptr(),
+            strides.as_ptr(),
+            pixel_format.into(),
+            width_i,
+            height_i,
+        );
+    }
     frame.set_pts(packet.pts());
     Ok(RawFrame::Video(RawVideoFrame::from(frame)))
 }

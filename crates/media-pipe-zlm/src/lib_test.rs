@@ -20,10 +20,14 @@ fn test_zlm_codec_id_rejects_unsupported() {
 }
 
 #[test]
-fn test_video_payload_annexb_passthrough() {
+fn test_video_payload_annexb_keyframe_gets_parameter_sets() {
     let annexb = [0, 0, 0, 1, 0x65, 0x88];
     let out = video_payload(&annexb, true, false, Some(&[0, 0, 0, 1, 0x67]));
-    assert_eq!(out.as_ref(), &annexb, "Annex B input is not touched");
+    assert_eq!(out.as_ref(), &[0, 0, 0, 1, 0x67, 0, 0, 0, 1, 0x65, 0x88]);
+    assert_eq!(
+        video_payload(&annexb, false, false, Some(&[0, 0, 0, 1, 0x67])).as_ref(),
+        &annexb
+    );
 }
 
 #[test]

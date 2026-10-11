@@ -5,7 +5,7 @@
         <p class="page-subtitle">实时监控和管理接入的 NVR 设备</p>
       </div>
       <div class="page-actions">
-        <Button icon="pi pi-refresh" severity="secondary" outlined aria-label="刷新" @click="loadDevices" />
+        <Button icon="pi pi-refresh" severity="secondary" outlined aria-label="刷新" @click="loadDevices()" />
         <Button icon="pi pi-plus" label="添加设备" @click="openCreatePage" />
       </div>
     </div>
@@ -19,6 +19,7 @@
     <Card v-else class="data-card">
       <template #content>
         <DataTable
+          data-key="id"
           :value="devices"
           :loading="loading"
           striped-rows
@@ -80,12 +81,11 @@
               {{ formatTime(data.updated_at) }}
             </template>
           </Column>
-          <Column header="状态" style="width: 6rem">
+          <Column header="状态" style="width: 7rem; min-width: 7rem">
             <template #body="{ data }">
               <Tag
-                v-if="data.input_type === 'gb28181'"
-                :value="gbStreamStatus[data.id]?.live ? '拉流中' : '空闲'"
-                :severity="gbStreamStatus[data.id]?.live ? 'success' : 'secondary'"
+                :value="data.state === 'running' ? '运行中' : data.state === 'starting' ? '连接中' : data.state === 'idle' ? '空闲' : '未知'"
+                :severity="data.state === 'running' ? 'success' : data.state === 'starting' ? 'warn' : 'secondary'"
               />
             </template>
           </Column>
@@ -97,53 +97,31 @@
           >
             <template #body="{ data }">
               <div class="row-actions">
-                <Button
-                  icon="pi pi-play"
-                  text
-                  rounded
-                  severity="success"
-                  aria-label="预览"
-                  @click="openPreview(data)"
-                />
-                <Button
-                  v-if="data.input_type === 'gb28181'"
-                  icon="pi pi-compass"
-                  text
-                  rounded
-                  aria-label="云台"
-                  title="云台控制"
-                  @click="openPtzDialog(data)"
-                />
-                <Button
-                  v-if="data.input_type === 'onvif'"
-                  icon="pi pi-compass"
-                  text
-                  rounded
-                  aria-label="云台"
-                  title="云台控制"
-                  @click="openOnvifPtzDialog(data)"
-                />
-                <Button
-                  icon="pi pi-pencil"
-                  text
-                  rounded
-                  aria-label="编辑"
-                  @click="openEditPage(data)"
-                />
-                <Button
-                  icon="pi pi-trash"
-                  text
-                  rounded
-                  severity="danger"
-                  aria-label="删除"
-                  @click="confirmDelete(data)"
-                />
+                <Button icon="pi pi-play" text rounded severity="success" aria-label="预览" title="播放" @click="openPreview(data)" />
+                <Button icon="pi pi-ellipsis-v" text rounded aria-label="更多操作" title="更多操作" aria-haspopup="menu" aria-controls="device-actions-menu" @click="openActions($event, data)" />
               </div>
             </template>
           </Column>
         </DataTable>
       </template>
     </Card>
+
+    <Menu id="device-actions-menu" ref="actionsMenu" :model="actionItems" popup />
+
+    <Dialog
+      v-model:visible="metricsVisible"
+      modal
+      :header="`流拓扑 · ${metricsDevice?.name ?? ''}`"
+      :style="{ width: 'min(76rem, calc(100vw - 2rem))' }"
+      :content-style="{ overflowY: 'auto', overflowX: 'hidden' }"
+    >
+      <Message v-if="metricsError" severity="warn" class="metrics-warning">{{ metricsError }}，正在重试；保留上次采样。</Message>
+      <DeviceFlowTopology
+        v-if="metricsVisible && metricsDevice"
+        :metrics="deviceMetrics[metricsDevice.id]"
+        :stale="metricsError !== null"
+      />
+    </Dialog>
 
     <Dialog
       v-model:visible="previewVisible"
@@ -262,97 +240,5 @@
       </div>
     </Dialog>
 
-    <Dialog
-      v-model:visible="onvifPtzDialogVisible"
-      modal
-      header="云台控制"
-      :style="{ width: 'min(22rem, calc(100vw - 2rem))' }"
-      @hide="onvifPtzRelease"
-    >
-      <div class="ptz-pad">
-        <span />
-        <Button
-          icon="pi pi-arrow-up"
-          aria-label="上"
-          @pointerdown="onvifPtzPress('up')"
-          @pointerup="onvifPtzRelease"
-          @pointerleave="onvifPtzRelease"
-          @pointercancel="onvifPtzRelease"
-        />
-        <span />
-        <Button
-          icon="pi pi-arrow-left"
-          aria-label="左"
-          @pointerdown="onvifPtzPress('left')"
-          @pointerup="onvifPtzRelease"
-          @pointerleave="onvifPtzRelease"
-          @pointercancel="onvifPtzRelease"
-        />
-        <Button icon="pi pi-stop" severity="secondary" aria-label="停止" @click="sendOnvifPtz('stop')" />
-        <Button
-          icon="pi pi-arrow-right"
-          aria-label="右"
-          @pointerdown="onvifPtzPress('right')"
-          @pointerup="onvifPtzRelease"
-          @pointerleave="onvifPtzRelease"
-          @pointercancel="onvifPtzRelease"
-        />
-        <span />
-        <Button
-          icon="pi pi-arrow-down"
-          aria-label="下"
-          @pointerdown="onvifPtzPress('down')"
-          @pointerup="onvifPtzRelease"
-          @pointerleave="onvifPtzRelease"
-          @pointercancel="onvifPtzRelease"
-        />
-        <span />
-      </div>
 
-      <div class="ptz-row">
-        <Button
-          label="放大"
-          size="small"
-          icon="pi pi-search-plus"
-          @pointerdown="onvifPtzPress('zoom_in')"
-          @pointerup="onvifPtzRelease"
-          @pointerleave="onvifPtzRelease"
-          @pointercancel="onvifPtzRelease"
-        />
-        <Button
-          label="缩小"
-          size="small"
-          icon="pi pi-search-minus"
-          @pointerdown="onvifPtzPress('zoom_out')"
-          @pointerup="onvifPtzRelease"
-          @pointerleave="onvifPtzRelease"
-          @pointercancel="onvifPtzRelease"
-        />
-      </div>
-
-      <div class="ptz-row">
-        <label class="ptz-label">速度</label>
-        <Slider v-model="onvifPtzSpeed" :min="1" :max="255" class="ptz-slider" />
-        <span class="ptz-value">{{ onvifPtzSpeed }}</span>
-      </div>
-
-      <div class="ptz-row">
-        <label class="ptz-label">预置位</label>
-        <Select
-          v-model="onvifPtzPresetToken"
-          class="field-input"
-          :options="onvifPtzPresets"
-          option-label="name"
-          option-value="token"
-          placeholder="选择预置位"
-          @before-show="loadOnvifPtzPresets"
-        />
-        <Button
-          label="调用"
-          size="small"
-          :disabled="!onvifPtzPresetToken"
-          @click="sendOnvifPtz('preset_call', onvifPtzPresetToken)"
-        />
-      </div>
-    </Dialog>
   </div>

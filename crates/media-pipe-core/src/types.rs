@@ -40,6 +40,9 @@ pub struct EncodeConfig {
     pub height: Option<u32>,
     // bps
     pub bitrate: Option<u64>,
+    pub fps: Option<u32>,
+    pub max_bitrate: Option<u64>,
+    pub downscale_only: bool,
     // "ultrafast", "medium", etc.
     pub preset: Option<String>,
     // "yuv420p", "rgb24", etc.
@@ -59,6 +62,9 @@ impl Default for EncodeConfig {
             width: None,
             height: None,
             bitrate: None,
+            fps: None,
+            max_bitrate: None,
+            downscale_only: false,
             preset: None,
             pixel_format: None,
             sample_rate: None,
@@ -74,6 +80,9 @@ impl PartialEq for EncodeConfig {
             && self.width == other.width
             && self.height == other.height
             && self.bitrate == other.bitrate
+            && self.fps == other.fps
+            && self.max_bitrate == other.max_bitrate
+            && self.downscale_only == other.downscale_only
             && self.preset == other.preset
             && self.pixel_format == other.pixel_format
             && self.sample_rate == other.sample_rate
@@ -90,6 +99,9 @@ impl Hash for EncodeConfig {
         self.width.hash(state);
         self.height.hash(state);
         self.bitrate.hash(state);
+        self.fps.hash(state);
+        self.max_bitrate.hash(state);
+        self.downscale_only.hash(state);
         self.preset.hash(state);
         self.pixel_format.hash(state);
         self.sample_rate.hash(state);
@@ -307,6 +319,9 @@ fn to_fb_encode_config(e: &EncodeConfig) -> ffmpeg_bus::bus::EncodeConfig {
         width: e.width,
         height: e.height,
         bitrate: e.bitrate,
+        fps: e.fps,
+        max_bitrate: e.max_bitrate,
+        downscale_only: e.downscale_only,
         preset: e.preset.clone(),
         pixel_format: e.pixel_format.clone(),
         sample_rate: e.sample_rate,

@@ -35,6 +35,8 @@ pub fn device_router(hub: &'static crate::detect::hub::DetectHub) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/list", get(list_devices))
+        .route("/metrics", get(metrics))
+        .route("/metrics/{id}", get(device_metrics))
         .route("/add", post(add_device))
         .route("/update/{id}", post(update_device))
         .route("/remove/{id}", post(remove_device))
@@ -65,6 +67,7 @@ struct DeviceListItem {
     #[serde(flatten)]
     device: DeviceInfo,
     flv_url: String,
+    state: &'static str,
 }
 
 async fn index() -> &'static str {
@@ -75,10 +78,29 @@ async fn list_devices() -> ApiJsonResult<Vec<DeviceListItem>> {
     let conn = app_db_conn()?;
     let mut devices = nvr_db::device::list(&conn).await?;
     devices.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
+    let pipes = manager::device_pipes().await;
+    let sources =
+        tokio::task::spawn_blocking(|| crate::zlm::media_cache::MediaCache.device_sources())
+            .await?;
     Ok(ok_json(
         devices
             .into_iter()
             .map(|device| DeviceListItem {
+                state: if sources.contains_key(&(
+                    if device.input_type == "gb28181" {
+                        "rtp"
+                    } else {
+                        "device"
+                    }
+                    .into(),
+                    device.id.clone(),
+                )) {
+                    "running"
+                } else if pipes.contains_key(&device.id) && device.input_type != "gb28181" {
+                    "starting"
+                } else {
+                    "idle"
+                },
                 // GB28181 streams are published by ZLM's RtpServer under the
                 // `rtp` app, so they need a different FLV url than pipe streams.
                 flv_url: if device.input_type == "gb28181" {
@@ -90,6 +112,83 @@ async fn list_devices() -> ApiJsonResult<Vec<DeviceListItem>> {
             })
             .collect(),
     ))
+}
+
+#[derive(Serialize)]
+struct DeviceMetrics {
+    id: String,
+    input_type: String,
+    state: &'static str,
+    message: Option<String>,
+    pipeline: Option<ffmpeg_bus::metrics::BusMetrics>,
+    distribution: Option<crate::zlm::media_cache::MediaInfo>,
+    sampled_at_ms: i64,
+}
+
+async fn collect_metrics(devices: Vec<DeviceInfo>) -> anyhow::Result<Vec<DeviceMetrics>> {
+    let pipes = manager::device_pipes().await;
+    let sources =
+        tokio::task::spawn_blocking(|| crate::zlm::media_cache::MediaCache.device_sources())
+            .await?;
+    // Poll sessions concurrently, with a bounded timeout in Pipe::metrics; no
+    // registry lock or per-device database/network query is held in this loop.
+    let snapshots = futures::future::join_all(devices.into_iter().map(|device| {
+        let pipe = pipes.get(&device.id).and_then(|p| p.clone());
+        let registered = pipes.contains_key(&device.id);
+        let app = if device.input_type == "gb28181" {
+            "rtp"
+        } else {
+            "device"
+        };
+        let distribution = sources.get(&(app.into(), device.id.clone())).cloned();
+        async move {
+            let (pipeline, message) = match pipe {
+                Some(pipe) => match pipe.metrics().await {
+                    Ok(metrics) => (metrics, None),
+                    Err(_) => (None, Some("管线正在连接或切换，等待下一次采样".into())),
+                },
+                None => (None, None),
+            };
+            let state = if pipeline.as_ref().is_some_and(|p| p.running) || distribution.is_some() {
+                "running"
+            } else if registered && pipeline.is_none() && device.input_type != "gb28181" {
+                "starting"
+            } else {
+                "idle"
+            };
+            DeviceMetrics {
+                id: device.id,
+                input_type: device.input_type,
+                state,
+                message,
+                pipeline,
+                distribution,
+                sampled_at_ms: Utc::now().timestamp_millis(),
+            }
+        }
+    }))
+    .await;
+    Ok(snapshots)
+}
+
+async fn metrics() -> ApiJsonResult<Vec<DeviceMetrics>> {
+    let conn = app_db_conn()?;
+    let mut devices = nvr_db::device::list(&conn).await?;
+    devices.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
+    Ok(ok_json(collect_metrics(devices).await?))
+}
+
+async fn device_metrics(Path(id): Path<String>) -> ApiJsonResult<DeviceMetrics> {
+    let conn = app_db_conn()?;
+    let device = nvr_db::device::get(&id, &conn)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("device not found"))?;
+    let metric = collect_metrics(vec![device])
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("device metrics unavailable"))?;
+    Ok(ok_json(metric))
 }
 
 async fn add_device(
@@ -248,6 +347,10 @@ fn validate_device(device: &DeviceInfo) -> anyhow::Result<()> {
 fn normalize_device_config(config: &DeviceConfig) -> anyhow::Result<DeviceConfig> {
     Ok(DeviceConfig {
         detect: crate::detect::control::normalize_detect_config(config.detect.as_ref())?,
+        output: config
+            .output
+            .clone()
+            .filter(|output| output != &Default::default()),
     })
 }
 

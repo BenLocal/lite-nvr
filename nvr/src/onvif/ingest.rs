@@ -32,6 +32,7 @@ pub(crate) fn spawn_onvif_device(
     cfg: OnvifConfig,
     media: Arc<rszlm::media::Media>,
     include_audio: bool,
+    output: Option<nvr_db::device::OutputConfig>,
     cancel: CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -52,6 +53,7 @@ pub(crate) fn spawn_onvif_device(
                         &resolved,
                         Arc::clone(&media),
                         include_audio,
+                        output.as_ref(),
                         &cancel,
                     )
                     .await;

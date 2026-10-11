@@ -31,6 +31,43 @@ fn default_record() -> bool {
 pub struct DeviceConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detect: Option<DetectConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<OutputConfig>,
+}
+
+/// Persisted output settings. None keeps the existing output policy.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OutputConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video_codec: Option<VideoCodec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fps: Option<u32>,
+    /// Maximum video bitrate, in bits per second.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_bitrate: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_codec: Option<AudioCodec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample_rate: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VideoCodec {
+    H264,
+    H265,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AudioCodec {
+    Aac,
+    Opus,
 }
 
 /// Per-device object-detection settings.

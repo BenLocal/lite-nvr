@@ -148,7 +148,10 @@ fn device(detect: Option<DetectConfig>) -> DeviceInfo {
         description: String::new(),
         include_audio: false,
         record: true,
-        config: DeviceConfig { detect },
+        config: DeviceConfig {
+            detect,
+            ..DeviceConfig::default()
+        },
         created_at: now,
         updated_at: now,
     }

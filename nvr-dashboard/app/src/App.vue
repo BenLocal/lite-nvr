@@ -26,6 +26,12 @@ body {
   width: 100%;
 }
 
+.p-inputtext-sm,
+.p-select-sm .p-select-label,
+.p-multiselect-sm .p-multiselect-label {
+  line-height: 1.125rem;
+}
+
 .p-password.field-input,
 .p-inputnumber.field-input,
 .p-datepicker.field-input,

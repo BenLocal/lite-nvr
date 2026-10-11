@@ -113,3 +113,31 @@ fn test_pixel_write_after_property_copy_keeps_original_unchanged() {
     assert_eq!(original.as_video().data(0)[0], 11);
     assert_eq!(shared.as_video().data(0)[0], 99);
 }
+
+#[test]
+fn raw_packet_preserves_all_planes_and_row_padding() {
+    for format in [
+        ffmpeg_next::format::Pixel::NV12,
+        ffmpeg_next::format::Pixel::YUV420P,
+        ffmpeg_next::format::Pixel::RGB24,
+    ] {
+        let size = match format {
+            ffmpeg_next::format::Pixel::RGB24 => 72,
+            _ => 36,
+        };
+        let data: Vec<u8> = (0..size).collect();
+        let mut packet = ffmpeg_next::codec::packet::Packet::copy(&data);
+        packet.set_pts(Some(123));
+        let raw = RawPacket::from((packet, Rational(1, 1000)));
+        let RawFrame::Video(frame) = packet_to_raw_video_frame(raw, 6, 4, format).unwrap() else {
+            panic!("expected video")
+        };
+        assert_eq!(frame.pts(), Some(123));
+        assert_eq!(frame.packed_data().unwrap().as_ref(), data.as_slice());
+        let short = ffmpeg_next::codec::packet::Packet::copy(&data[..data.len() - 1]);
+        assert!(
+            packet_to_raw_video_frame(RawPacket::from((short, Rational(1, 1000))), 6, 4, format)
+                .is_err()
+        );
+    }
+}

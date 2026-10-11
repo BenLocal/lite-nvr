@@ -16,6 +16,7 @@ members = [
     "crates/nvr-yt-dlp",
     "crates/nvr-recorder",
     "crates/nvr-onvif",
+    "crates/nvr-hdmiout",
     "examples/dummy-camera",
     "examples/dummy-rtsp-camera",
     "examples/dummy-onvif-camera",
@@ -23,6 +24,7 @@ members = [
 resolver = "1"
 
 [workspace.dependencies]
+tempfile = "3"
 # Media
 ffmpeg-next = { version = "8" }
 rszlm = { git = "https://github.com/BenLocal/rszlm.git" }
@@ -47,6 +49,8 @@ rust-embed = "8"
 turso = "0.6.1"
 # Platform (Linux only)
 tokio-linux-video = "0.1.1"
+drm = "0.15"
+rustix = { version = "1", features = ["event"] }
 # Utilities
 anyhow = "1"
 log = "0.4"

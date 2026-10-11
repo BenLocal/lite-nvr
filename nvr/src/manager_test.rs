@@ -254,3 +254,19 @@ async fn network_device_reconnects_and_remove_stops_retries() {
 async fn network_device_retries_after_failed_initial_open() {
     check_network_device_recovery(true).await;
 }
+
+#[cfg(feature = "rockchip")]
+#[test]
+fn rockchip_mipi_uses_nv12_without_changing_other_capture_devices() {
+    for name in ["stream_cif_mipi_id0", "stream_cif_mipi_id1"] {
+        let options = rockchip_capture_options(name).unwrap();
+        assert_eq!(
+            options.get("input_format").map(String::as_str),
+            Some("nv12")
+        );
+        assert_eq!(options.get("framerate").map(String::as_str), Some("60"));
+    }
+    for name in ["stream_hdmirx", "USB Camera", "rkcif_tools_id0", ""] {
+        assert!(rockchip_capture_options(name).is_none());
+    }
+}

@@ -18,6 +18,7 @@ pub struct AvInputTask {
     /// Set once a lossless (File/Net) output exists: the reader then waits for
     /// its slowest subscriber instead of overwriting unread packets.
     lossless: Arc<AtomicBool>,
+    traffic: std::sync::Mutex<HashMap<usize, Arc<crate::metrics::Traffic>>>,
 }
 
 impl AvInputTask {
@@ -31,6 +32,7 @@ impl AvInputTask {
             cancel,
             raw_chan: sender,
             lossless: Arc::new(AtomicBool::new(false)),
+            traffic: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -41,6 +43,12 @@ impl AvInputTask {
     }
 
     pub async fn start(&self, mut input: AvInput) {
+        let traffic: HashMap<_, _> = input
+            .streams()
+            .keys()
+            .map(|index| (*index, Arc::new(crate::metrics::Traffic::default())))
+            .collect();
+        *self.traffic.lock().unwrap_or_else(|e| e.into_inner()) = traffic.clone();
         let interrupter = input.interrupter();
         let cancel_clone = self.cancel.clone();
         let sender_clone = self.raw_chan.clone();
@@ -54,6 +62,9 @@ impl AvInputTask {
                     }
                     match input.read() {
                         ReadOutcome::Packet(packet) => {
+                            if let Some(counter) = traffic.get(&packet.index()) {
+                                counter.record(packet.packet().size());
+                            }
                             Self::send_packet(
                                 &sender_clone,
                                 &lossless,
@@ -131,6 +142,15 @@ impl AvInputTask {
         }
     }
 
+    pub(crate) fn traffic(&self, index: usize) -> crate::metrics::TrafficMetrics {
+        self.traffic
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&index)
+            .map(|t| t.snapshot())
+            .unwrap_or_default()
+    }
+
     pub fn subscribe(&self) -> RawPacketReceiver {
         self.raw_chan.subscribe()
     }
@@ -206,6 +226,40 @@ impl Interrupter {
     }
 }
 
+#[cfg(feature = "rockchip")]
+fn parse_capture_frame_rate(value: &str) -> Option<ffmpeg_next::Rational> {
+    if let Some((num, den)) = value.split_once('/') {
+        let num = num.parse::<i32>().ok()?;
+        let den = den.parse::<i32>().ok()?;
+        return (num > 0 && den > 0).then_some(ffmpeg_next::Rational(num, den));
+    }
+    let value = value.parse::<f64>().ok()?;
+    if !value.is_finite() || value <= 0.0 || value > f64::from(i32::MAX) {
+        return None;
+    }
+    let rate = ffmpeg_next::Rational::from(value);
+    (rate.numerator() > 0 && rate.denominator() > 0).then_some(rate)
+}
+
+#[cfg(feature = "rockchip")]
+fn capture_frame_rate(
+    detected: ffmpeg_next::Rational,
+    time_base: ffmpeg_next::Rational,
+    requested: ffmpeg_next::Rational,
+) -> ffmpeg_next::Rational {
+    // Some Rockchip demuxers invert the requested rate when G_PARM fails;
+    // with no rate they may infer the timestamp clock (1 MHz) as the FPS.
+    if detected.numerator() <= 0
+        || detected.denominator() <= 0
+        || detected == requested.invert()
+        || (time_base == ffmpeg_next::Rational(1, 1_000_000) && detected == time_base.invert())
+    {
+        requested
+    } else {
+        detected
+    }
+}
+
 pub struct AvInput {
     // Field order matters: `inner` (the format context, which may call the
     // interrupt callback) must drop before `interrupt`.
@@ -247,6 +301,11 @@ impl AvInput {
             local: AtomicBool::new(false),
             external,
         });
+        #[cfg(feature = "rockchip")]
+        let capture_rate = options
+            .as_ref()
+            .and_then(|o| o.get("framerate"))
+            .and_then(parse_capture_frame_rate);
         let fmt = format.map(Self::find_input_format).transpose()?;
         let url_c =
             CString::new(url).map_err(|e| anyhow::anyhow!("invalid url {:?}: {}", url, e))?;
@@ -291,7 +350,24 @@ impl AvInput {
 
         let mut streams = HashMap::new();
         for stream in input.streams() {
-            streams.insert(stream.index(), AvStream::from(stream));
+            let description = AvStream::from(stream);
+            #[cfg(feature = "rockchip")]
+            let description = if matches!(format, Some("v4l2" | "video4linux2"))
+                && description.is_video()
+                && let Some(requested) = capture_rate
+            {
+                let rate =
+                    capture_frame_rate(description.rate(), description.time_base(), requested);
+                AvStream::new(
+                    description.index(),
+                    description.parameters().clone(),
+                    description.time_base(),
+                    rate,
+                )
+            } else {
+                description
+            };
+            streams.insert(description.index(), description);
         }
 
         Ok(Self {

@@ -1,3 +1,4 @@
+import { outputFormValues, validateOutputValues, buildOutputConfig } from './outputForm'
 import type { DeviceItem, DevicePayload } from '../api/device'
 import {
   detectionFormValues,
@@ -127,6 +128,7 @@ const DEFAULT_FORM_VALUES: DeviceFormValues = {
   include_audio: false,
   record: true,
   ...detectionFormValues(),
+  ...outputFormValues(),
   xm_user_id: '',
   xm_token: '',
   xm_region: '',
@@ -153,6 +155,7 @@ export function deviceFormInitialValues(device: DeviceItem | null): DeviceFormVa
     include_audio: device.include_audio,
     record: device.record,
     ...detectionFormValues(device.config?.detect),
+    ...outputFormValues(device.config?.output),
   }
   if (device.input_type === 'xiaomi') return withXiaomiInitialValues(base)
   if (device.input_type === 'onvif') return withOnvifInitialValues(base)
@@ -210,8 +213,8 @@ export function resolveDeviceForm(
     ? validateDetectionValues(values, options.maxDetectionSampleIntervalMs)
     : {}
   return {
-    values: { ...base.values, ...input.values },
-    errors: { ...base.errors, ...detectionErrors, ...input.errors },
+    values: { ...values, ...base.values, ...input.values },
+    errors: { ...base.errors, ...detectionErrors, ...input.errors, ...validateOutputValues(values) },
   }
 }
 
@@ -338,11 +341,9 @@ export function buildDevicePayload(
     include_audio: Boolean(values.include_audio),
     record: values.record === undefined ? true : Boolean(values.record),
   }
-  return withDetectionConfig(
-    basePayload,
-    values,
-    options.supportedDetectionInputTypes,
-  )
+  const payload = withDetectionConfig(basePayload, values, options.supportedDetectionInputTypes)
+  const output = buildOutputConfig(values)
+  return output ? { ...payload, config: { ...payload.config, output } } : payload
 }
 
 function serializeInputValue(

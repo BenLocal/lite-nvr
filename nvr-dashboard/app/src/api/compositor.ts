@@ -19,6 +19,7 @@ export interface CompositorSource {
 }
 
 export interface CompositorProgram {
+  rtsp_port?: number
   id: string
   sources: CompositorSource[]
   width: number
@@ -41,12 +42,12 @@ export interface CreateCompositorPayload {
   publish_url?: string
 }
 
-export function createCompositor(payload: CreateCompositorPayload) {
-  return request<CompositorProgram>('/compositor/create', { method: 'POST', body: payload })
+export async function createCompositor(payload: CreateCompositorPayload): Promise<CompositorProgram> {
+  return validateProgram(await request<CompositorProgram>('/compositor/create', { method: 'POST', body: payload }))
 }
 
-export function listCompositors() {
-  return request<CompositorProgram[]>('/compositor/list')
+export async function listCompositors(): Promise<CompositorProgram[]> {
+  return (await request<CompositorProgram[]>('/compositor/list')).map(validateProgram)
 }
 
 /** Live-switch region `region` of program `id` to source `to`. */
@@ -94,4 +95,12 @@ export function removeCompositorSource(id: string, source_id: string) {
     method: 'POST',
     body: { source_id },
   })
+}
+
+function validateProgram(program: CompositorProgram): CompositorProgram {
+  const port = program.rtsp_port
+  if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535)) {
+    throw new Error('合成输出端口格式不正确')
+  }
+  return program
 }

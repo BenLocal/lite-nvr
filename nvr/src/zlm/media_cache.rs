@@ -19,6 +19,7 @@ pub struct MediaInfo {
     pub reader_count: i32,
     pub total_reader_count: i32,
     pub tracks: Vec<TrackInfo>,
+    pub bytes_per_second: i32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,6 +71,45 @@ impl TrackInfo {
 }
 
 impl MediaCache {
+    /// One registry traversal for all devices; prefer RTSP to avoid counting
+    /// the same published stream again under FLV/HLS/RTMP schemas.
+    pub fn device_sources(&self) -> std::collections::HashMap<(String, String), MediaInfo> {
+        let mut sources = std::collections::HashMap::new();
+        MediaSource::for_each(
+            |src| {
+                let app = src.app();
+                if app != "device" && app != "rtp" {
+                    return;
+                }
+                let key = (app.clone(), src.stream());
+                if sources.contains_key(&key) && src.schema() != "rtsp" {
+                    return;
+                }
+                let tracks = (0..src.track_count())
+                    .filter_map(|i| src.get_track(i))
+                    .map(|track| TrackInfo::from_track(&track))
+                    .collect();
+                sources.insert(
+                    key,
+                    MediaInfo {
+                        schema: src.schema(),
+                        app,
+                        stream: src.stream(),
+                        reader_count: src.reader_count(),
+                        total_reader_count: src.total_reader_count(),
+                        tracks,
+                        bytes_per_second: src.bytes_speed(),
+                    },
+                );
+            },
+            None,
+            None,
+            None,
+            None,
+        );
+        sources
+    }
+
     /// Whether ZLM currently has a source registered for `(app, stream)`.
     /// Schema/vhost agnostic — matches on app+stream like the old cache key.
     pub fn is_live(&self, app: &str, stream: &str) -> bool {
@@ -108,6 +148,7 @@ impl MediaCache {
                     reader_count: src.reader_count(),
                     total_reader_count: src.total_reader_count(),
                     tracks,
+                    bytes_per_second: src.bytes_speed(),
                 });
             },
             None, // any schema

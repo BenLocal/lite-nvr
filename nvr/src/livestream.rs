@@ -30,6 +30,7 @@ pub(crate) fn spawn_stream_device(
     page_url: String,
     media: Arc<rszlm::media::Media>,
     include_audio: bool,
+    output: Option<nvr_db::device::OutputConfig>,
     cancel: CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -47,7 +48,14 @@ pub(crate) fn spawn_stream_device(
                         resolved.protocol
                     );
                     let started = Instant::now();
-                    run_session(&resolved, Arc::clone(&media), include_audio, &cancel).await;
+                    run_session(
+                        &resolved,
+                        Arc::clone(&media),
+                        include_audio,
+                        output.as_ref(),
+                        &cancel,
+                    )
+                    .await;
                     if cancel.is_cancelled() {
                         break;
                     }
@@ -86,14 +94,17 @@ pub(crate) async fn run_session(
     resolved: &ResolvedStream,
     media: Arc<rszlm::media::Media>,
     include_audio: bool,
+    output: Option<&nvr_db::device::OutputConfig>,
     cancel: &CancellationToken,
 ) {
     let options = input_options(resolved);
+    let mut outputs = media_pipe_zlm::zlm_outputs(media, include_audio);
+    crate::device_output::apply(&mut outputs, output);
     let config = PipeConfig {
         input: InputConfig::Network {
             url: resolved.url.clone(),
         },
-        outputs: media_pipe_zlm::zlm_outputs(media, include_audio),
+        outputs,
     };
     let pipe = Arc::new(Pipe::new(config));
     let pipe_for_task = Arc::clone(&pipe);

@@ -132,6 +132,7 @@ pub struct Settings {
     /// Frames between keyframes (GOP). `0` = automatic: about
     /// [`AUTO_GOP_SECS`] of video at the stream's frame rate.
     pub keyframe_interval: u64,
+    pub fps: Option<u32>,
     pub codec: Option<String>,
     pub pixel_format: ffmpeg_next::format::Pixel,
 }
@@ -142,6 +143,7 @@ impl Default for Settings {
             width: 1920,
             height: 1080,
             keyframe_interval: 0,
+            fps: None,
             codec: Some("h264".to_string()),
             pixel_format: ffmpeg_next::format::Pixel::YUV420P,
         }
@@ -491,6 +493,8 @@ pub struct Encoder {
     interleaved: bool,
     frame_index: i64,
     scaler: Option<Scaler>,
+    video_fps: Option<u32>,
+    next_video_pts: Option<i64>,
     /// Input (format, width, height) the current `scaler` was built for.
     scaler_input: Option<(ffmpeg_next::format::Pixel, u32, u32)>,
     audio_resampler: Option<AudioResampler>,
@@ -522,10 +526,14 @@ impl Encoder {
         encoder.set_width(settings.width);
         encoder.set_height(settings.height);
         encoder.set_format(settings.pixel_format);
-        encoder.set_frame_rate(Some(stream.rate()));
+        let rate = settings
+            .fps
+            .map(|fps| Rational(fps as i32, 1))
+            .unwrap_or(stream.rate());
+        encoder.set_frame_rate(Some(rate));
         encoder.set_time_base(ffmpeg_next::util::mathematics::rescale::TIME_BASE);
         // Bounded GOP so live viewers can start decoding within one interval.
-        encoder.set_gop(gop_frames(settings.keyframe_interval, stream.rate()));
+        encoder.set_gop(gop_frames(settings.keyframe_interval, rate));
 
         let need_defaults = options.is_none();
         let mut opts = options.unwrap_or_default();
@@ -618,6 +626,8 @@ impl Encoder {
             interleaved: false,
             frame_index: 0,
             scaler: None,
+            video_fps: settings.fps,
+            next_video_pts: None,
             scaler_input: None,
             audio_resampler: None,
             pending_packets: VecDeque::new(),
@@ -730,6 +740,8 @@ impl Encoder {
             interleaved: false,
             frame_index: 0,
             scaler: None,
+            video_fps: None,
+            next_video_pts: None,
             scaler_input: None,
             audio_resampler: None,
             pending_packets: VecDeque::new(),
@@ -763,6 +775,15 @@ impl Encoder {
                     && let Some(pts) = vf.pts()
                 {
                     vf.set_pts(Some(pts.rescale(src_tb, self.encoder_time_base)));
+                }
+                if let (Some(fps), Some(pts)) = (self.video_fps, vf.pts()) {
+                    if self.next_video_pts.is_some_and(|next| pts < next) {
+                        return Ok(());
+                    }
+                    let interval = (1_000_000 / i64::from(fps.max(1))).max(1);
+                    let next = self.next_video_pts.unwrap_or(pts);
+                    let steps = pts.saturating_sub(next) / interval + 1;
+                    self.next_video_pts = Some(next.saturating_add(steps.saturating_mul(interval)));
                 }
                 let (ef, ew, eh) = match &self.inner {
                     EncoderType::Video(e) => (e.format(), e.width(), e.height()),
@@ -944,7 +965,14 @@ impl Encoder {
             EncoderType::Video(e) => ffmpeg_next::codec::Parameters::from(e),
             EncoderType::Audio(e) => ffmpeg_next::codec::Parameters::from(e),
         };
-        AvStream::new(index, params, self.encoder_time_base, self.stream.rate())
+        AvStream::new(
+            index,
+            params,
+            self.encoder_time_base,
+            self.video_fps
+                .map(|fps| Rational(fps as i32, 1))
+                .unwrap_or(self.stream.rate()),
+        )
     }
 
     pub fn encoder_receive_packet(&mut self) -> anyhow::Result<Option<RawPacket>> {
@@ -1020,6 +1048,7 @@ fn lock_state(state: &SharedOutputState) -> std::sync::MutexGuard<'_, OutputStat
 }
 
 pub struct EncoderTask {
+    probe: crate::metrics::CodecProbe,
     cancel: CancellationToken,
     raw_chan: RawPacketSender,
     state: SharedOutputState,
@@ -1033,6 +1062,7 @@ impl EncoderTask {
         let (sender, _) = tokio::sync::broadcast::channel(PACKET_CHAN_CAP);
 
         Self {
+            probe: crate::metrics::CodecProbe::default(),
             cancel,
             raw_chan: sender,
             state: SharedOutputState::default(),
@@ -1071,6 +1101,10 @@ impl EncoderTask {
         !self.cancel.is_cancelled() && !lock_state(&self.state).closed
     }
 
+    pub(crate) fn metrics(&self) -> crate::metrics::CodecMetrics {
+        self.probe.snapshot(self.is_running())
+    }
+
     pub fn stop(&self) {
         self.cancel.cancel();
     }
@@ -1081,6 +1115,9 @@ impl EncoderTask {
         mut encoder_receiver: RawFrameReceiver,
         lossless: bool,
     ) {
+        self.probe
+            .update(&encoder.stream, &encoder.codec_name, encoder.is_hw);
+        let probe = self.probe.clone();
         let cancel_clone = self.cancel.clone();
         let sender_clone = self.raw_chan.clone();
         let state = self.state.clone();
@@ -1103,6 +1140,7 @@ impl EncoderTask {
                     sender_clone,
                     lossless,
                     (state, auto_stop),
+                    probe,
                 )
             });
             let mut dropped_count: u64 = 0;
@@ -1188,6 +1226,7 @@ impl EncoderTask {
         out: RawPacketSender,
         lossless: bool,
         (state, auto_stop): (SharedOutputState, bool),
+        probe: crate::metrics::CodecProbe,
     ) {
         loop {
             if cancel.is_cancelled() {
@@ -1209,7 +1248,9 @@ impl EncoderTask {
                     }
                     match frame {
                         RawFrameCmd::Data(frame) => {
-                            if let Err(e) = encoder.send_frame(frame) {
+                            let sent = encoder.send_frame(frame);
+                            probe.update(&encoder.stream, &encoder.codec_name, encoder.is_hw);
+                            if let Err(e) = sent {
                                 log::error!("send packet error: {}", e);
                                 continue;
                             }
@@ -1223,8 +1264,12 @@ impl EncoderTask {
                     };
 
                     'outer: loop {
-                        match encoder.encoder_receive_packet() {
+                        let received = encoder.encoder_receive_packet();
+                        probe.update(&encoder.stream, &encoder.codec_name, encoder.is_hw);
+                        match received {
                             Ok(Some(packet)) => {
+                                probe.record(packet.packet().size());
+                                probe.update(&encoder.stream, &encoder.codec_name, encoder.is_hw);
                                 Self::send_packet_backpressure(
                                     &out,
                                     &cancel,

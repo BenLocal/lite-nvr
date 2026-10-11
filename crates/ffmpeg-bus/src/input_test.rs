@@ -129,3 +129,32 @@ async fn test_lossless_eof_does_not_evict_last_full_queue() -> anyhow::Result<()
     assert_eq!(count, 4096);
     Ok(())
 }
+
+#[cfg(feature = "rockchip")]
+#[test]
+fn v4l2_capture_rate_rejects_clock_and_inverted_fallbacks() {
+    use super::{capture_frame_rate, parse_capture_frame_rate};
+    use ffmpeg_next::Rational;
+    let requested = Rational(60, 1);
+    let clock = Rational(1, 1_000_000);
+    for detected in [Rational(1_000_000, 1), Rational(1, 60), Rational(0, 0)] {
+        assert_eq!(capture_frame_rate(detected, clock, requested), requested);
+    }
+    // A driver's legitimate adjustment to 30 FPS takes precedence.
+    assert_eq!(
+        capture_frame_rate(Rational(30, 1), clock, requested),
+        Rational(30, 1)
+    );
+    assert_eq!(
+        capture_frame_rate(Rational(30, 1), Rational(1, 30), requested),
+        Rational(30, 1)
+    );
+    assert_eq!(parse_capture_frame_rate("60"), Some(requested));
+    assert_eq!(
+        parse_capture_frame_rate("30000/1001"),
+        Some(Rational(30000, 1001))
+    );
+    for value in ["0", "-1", "NaN", "inf", "60/0", "2147483648", "1e-100"] {
+        assert!(parse_capture_frame_rate(value).is_none());
+    }
+}
