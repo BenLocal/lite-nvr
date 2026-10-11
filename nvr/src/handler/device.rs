@@ -73,7 +73,8 @@ async fn index() -> &'static str {
 
 async fn list_devices() -> ApiJsonResult<Vec<DeviceListItem>> {
     let conn = app_db_conn()?;
-    let devices = nvr_db::device::list(&conn).await?;
+    let mut devices = nvr_db::device::list(&conn).await?;
+    devices.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
     Ok(ok_json(
         devices
             .into_iter()

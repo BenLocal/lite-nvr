@@ -105,6 +105,10 @@ const currentSegment = computed(() =>
   todaySegments.value.find((segment) => segment.id === currentSegmentId.value) ?? null,
 )
 
+const currentSegmentIndex = computed(() =>
+  todaySegments.value.findIndex((segment) => segment.id === currentSegmentId.value) + 1,
+)
+
 const activeSegments = computed(() => {
   if (!activeDevice.value) {
     return []
@@ -466,14 +470,15 @@ async function attachPlayerSource() {
   // playlist (the whole .ts, no byte-range split): hls.js reads the duration
   // from EXTINF so the seekbar is a proper VOD bar, and one contiguous segment
   // means no mid-GOP boundaries to stutter on. Daily playback is the multi-entry
-  // playlist. Safari plays m3u8 natively; everyone else goes through hls.js.
-  if (player.canPlayType('application/vnd.apple.mpegurl')) {
-    player.src = currentPlayerUrl.value
-    player.load()
-    return
-  }
+  // playlist. Prefer hls.js: Chromium can advertise native HLS yet stall at
+  // discontinuities in recorded playlists. Native HLS remains the fallback.
   const Hls = await ensureHlsJs()
   if (!Hls?.isSupported()) {
+    if (player.canPlayType('application/vnd.apple.mpegurl')) {
+      player.src = currentPlayerUrl.value
+      player.load()
+      return
+    }
     throw new Error('当前浏览器不支持 HLS 播放')
   }
   // Player URLs already carry `?token=`; the Authorization header is a
@@ -663,6 +668,12 @@ function findClosestSegment(targetSecond: number) {
 }
 
 async function playSegment(segment: PlaybackSegmentItem, offsetSecond = 0, autoplay = true) {
+  // Ended events resolve the next recording from the full daily timeline.
+  const deviceId = activeDeviceId.value
+  await ensureTodayDeviceSegments(deviceId)
+  if (activeDeviceId.value !== deviceId) {
+    return
+  }
   playbackMode.value = 'segment'
   const nextUrl = buildPlaybackSegmentPlaylistUrl(segment.id)
   pendingSeekSecond.value = Math.max(0, Math.min(offsetSecond, Math.max(segment.duration - 0.1, 0)))
@@ -829,7 +840,7 @@ function timelineByPlaylistSecond(playlistSecond: number) {
   let total = 0
   for (const segment of todaySegments.value) {
     const nextTotal = total + segment.duration
-    if (playlistSecond <= nextTotal) {
+    if (playlistSecond < nextTotal) {
       const segmentSecond = Math.max(0, playlistSecond - total)
       return {
         segment,
@@ -1094,7 +1105,7 @@ function formatDaySecond(second: number) {
               </div>
             </div>
             <div class="timeline-stats">
-              <Tag severity="info" :value="`${todaySegments.length} 个片段`" />
+              <Tag severity="info" :value="`${currentSegmentIndex} / ${todaySegments.length}`" />
               <Tag severity="contrast" :value="currentSegmentElapsed" />
             </div>
           </div>
@@ -1725,12 +1736,12 @@ function formatDaySecond(second: number) {
 .timeline-scroll {
   padding-bottom: 0.35rem;
   overflow: auto hidden;
-  scrollbar-width: thin;
-  scrollbar-color: rgb(96 165 250 / 55%) transparent;
+  scrollbar-width: auto;
+  scrollbar-color: auto;
 }
 
 .timeline-scroll::-webkit-scrollbar {
-  height: 0.4rem;
+  height: 1.2rem;
 }
 
 .timeline-scroll::-webkit-scrollbar-thumb {

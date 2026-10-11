@@ -2,6 +2,9 @@
 
 > media-pipe / ZLM sink、ffmpeg-bus 输出、nvr-recorder 重连，以及默认账号相关的非显然问题；设计见 `design-media-pipe.md`、`design-recorder.md`、`design-auth.md`。
 
+- 2026-10-10：Chrome/Chromium 不能只凭 `canPlayType('application/vnd.apple.mpegurl')` 选择原生 HLS → Linux Chromium 154 返回 `maybe`，12 段录像原生回放在 667.194 秒停止（readyState=2、paused=false），同一列表经 hls.js 能完整播放 → 回放优先 hls.js，MSE 不支持时才回退原生 HLS；验证浏览器时必须记录实际播放路径（证据：`PlaybackView.vue` 的 `attachPlayerSource`，回归：`PlaybackView.test.ts`）。
+- 2026-10-10：从片段卡片启动后不自动播放下一段 → `onVideoEnded` 查的是完整当天列表，而卡片入口只加载分页片段 → `playSegment` 先加载当天列表再启动，下一段按时间排序选择，即使不在当前分页中也能续播（回归：`PlaybackView.test.ts`）。
+
 - 2026-10-03：同设备并发更新遗留源任务 → 等待旧 Entry join 时释放 map 锁，另一更新可先插入再被覆盖，丢弃 JoinHandle 不会停止任务 → 用按 id 的异步操作门串行化替换与删除，关停等待操作完成并阻止新插入；同步注册表锁不跨 await（回归：`manager_test.rs`、`lifecycle_test.rs`）。
 - 2026-10-03：同名新增覆盖原设备、无效协议更新返回错误但已写库 → 名称生成固定 id，add 直接 upsert，协议解析发生在保存之后 → add 在设备操作门内拒绝已有 id，保存前校验协议形状，应用失败回滚；离线摄像头仍允许保存（回归：`handler/device_test.rs`）。
 - 2026-10-03：录像保留遗漏截止日当天已过期分片 → RFC3339 的 T 分隔符与 SQLite datetime 的空格不能直接按字符串比较 → 使用 julianday 归一化两侧；文件删除失败保留行、跳过释放空间计数，手动删除与自动清理共用逻辑（回归：`record_segment_test.rs`、`cleanup_test.rs`、`handler/playback_test.rs`）。
