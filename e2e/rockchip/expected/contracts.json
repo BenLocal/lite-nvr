@@ -1,0 +1,20 @@
+{
+  "states": ["running", "starting", "idle"],
+  "errors": [
+    [{"width":1280}, "输出宽度和高度必须同时设置"],
+    [{"width":3,"height":720}, "输出分辨率必须是 2～8192 的偶数"],
+    [{"width":8194,"height":720}, "输出分辨率必须是 2～8192 的偶数"],
+    [{"fps":0}, "FPS 必须是 1～120"],
+    [{"fps":121}, "FPS 必须是 1～120"],
+    [{"max_bitrate":31999}, "最大码率必须是 32～100000 Kbps"],
+    [{"max_bitrate":100000001}, "最大码率必须是 32～100000 Kbps"],
+    [{"sample_rate":12345}, "不支持所选音频采样率"],
+    [{"audio_codec":"opus","sample_rate":44100}, "不支持所选音频采样率"]
+  ],
+  "sample_rates": {
+    "opus": [8000,12000,16000,24000,48000],
+    "other": [8000,11025,12000,16000,22050,24000,32000,44100,48000,64000,88200,96000]
+  },
+  "pipeline_fields": ["input","decoders","encoders","output"],
+  "metrics_fields": ["id","input_type","state","message","pipeline","distribution","sampled_at_ms"]
+}

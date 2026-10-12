@@ -241,3 +241,8 @@ clean:
 
 clean-frontend:
 	rm -rf $(DASHBOARD_DIR)/dist
+
+.PHONY: rockchip-e2e-hdmi
+rockchip-e2e-hdmi:
+	test ! -d .cache/rockchip-build.lock
+	CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc CARGO_BUILD_JOBS=$${CARGO_BUILD_JOBS:-1} CROSS_CONTAINER_OPTS="$${CROSS_CONTAINER_OPTS:---cpus=2 --memory=4g}" cross build --release --locked -p nvr-hdmiout --example hdmiout --example dual_hdmiout --target aarch64-unknown-linux-gnu

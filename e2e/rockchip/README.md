@@ -1,0 +1,135 @@
+# Rockchip 真机 e2e
+
+从当前源码重新构建 Rockchip 包，部署到板端独立 `/userdata` 目录，串行验证 API、真实媒体、录像浏览器回放及硬件。每次输出 TAP 和 `report.json`，FAIL 非零退出，SKIP 单独统计。测试结束停止本次实例；保留实例目录和证据，便于定位失败。不会管理旧实例或板端既有服务。
+
+## 运行
+
+主机侧入口、HTTP 检查、部署与变异流程均为 Python 脚本。开发机需要 Python 3.9+、FFmpeg/ffprobe、readelf、OpenSSH，以及项目 `make package` 所需 Docker/Cross/npm/Rust/Bash；复用包时不执行构建。Cross/Rustup 缓存需要可写。板上需要 BusyBox sh、wget、timeout、netstat、ldd、gzip/tar；FFmpeg 来自安装包。
+
+从 git-ignored `dev-env.local.md` 获取板端地址和认证。不要把密码写进命令历史或脚本。SSH 也可使用密钥或指定配置文件；首次连接默认 `StrictHostKeyChecking=accept-new`，主机公钥保存在 `.cache/rockchip-e2e-known_hosts`。
+
+```bash
+export RK_HOST=<board-address> RK_USER=<ssh-user>
+export RK_PASSWORD_FILE=<0600-password-file>     # 使用密钥时省略
+python3 e2e/rockchip/run.py --baseline
+python3 e2e/rockchip/run.py                            # T0 → T1 → T2 → T3
+python3 e2e/rockchip/run.py T1                         # 每组先跑 T0，基线失败立即停止
+python3 e2e/rockchip/run.py T2.6                       # 单项检查，仍先验证 T0
+python3 e2e/rockchip/run.py --mutate drop-state-field
+python3 e2e/rockchip/run.py --mutate drop-output-normalize
+```
+
+`run.sh` 仅作为兼容入口转交给 Python。默认每次重新打包。可以明确复用本套脚本生成的包：
+
+```bash
+RK_PACKAGE="$PWD/dist/lite-nvr-0.1.0-linux-arm64-rockchip.tar.gz" python3 e2e/rockchip/run.py T2
+```
+
+必须同时存在 `<包名>.build.json`，其 commit、源码摘要、包 SHA256 和 rockchip feature 与当前源码一致。未附构建证据的旧包会被拒绝。构建日志在本轮证据目录；构建期间不得运行其他 Cargo 命令（Rockchip wrapper 临时改 Cargo.lock 和 .cargo/config.toml）。HDMI 两个 examples 在包构建结束后单独通过 `make rockchip-e2e-hdmi` 构建，不需要动态 libdrm。
+
+真实浏览器跨分段检查使用 Python Playwright 和 Chromium。可在本机可写缓存中安装，避免修改系统 Python：
+
+```bash
+pip install --target .cache/rockchip-e2e-python --cache-dir .cache/pip playwright
+export PYTHONPATH="$PWD/.cache/rockchip-e2e-python"
+export PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/rockchip-e2e-browsers"
+python3 -m playwright install chromium
+```
+
+## 配置
+
+| 环境变量 | 默认 / 用途 |
+|---|---|
+| `RK_HOST`, `RK_USER` | 必填，不在代码中存板端地址/认证 |
+| `RK_PASSWORD_FILE` | 可选，传给 sshpass -f；应设置为 0600 |
+| `RK_SSH_CONFIG` | `/dev/null`；需要 SSH 跳板/密钥选项时传自己的配置 |
+| `RK_API_USER`, `RK_API_PASSWORD` | 独立新库的默认 admin 账号；非默认时显式配置 |
+| `RK_RTSP_PORT`, `RK_RTMP_PORT` | 8554 / 8555；API 18080 和 HTTP 8553 固定，占用时部署中止 |
+| `RK_VIDEO_DEVICE` | 可选的已确认空闲且有信号的 V4L2 节点；默认用 Rust HDMI OUT→video11 回环 |
+| `RK_NO_SIGNAL_DEVICE` | 已确认空闲且无信号的节点；未提供则 T2.7 SKIP |
+| `RK_HDMI_LOOPBACK` | 默认 1，HDMI OUT→HDMI IN 回环接线；设 0 禁用回环 |
+| `RK_DRM_CARD`, `RK_HDMI_CONNECTOR` | `/dev/dri/card0` / HDMI-A-2；双输出 example 使用 card0 的 HDMI-A-1/2 |
+| `RK_RECORD_TIMEOUT` | 210 秒；ZLM 分段 60 秒，需要至少两个真正分段 |
+| `RK_RESOURCE_SECONDS` | 每档 20 秒，最少 10；1/2/4 路 1080p 资源观察 |
+| `RK_PYTHON` | python3；可指定装了 Playwright 的 Python |
+| `RK_ARTIFACT_DIR` | `third_party/rockchip-e2e/<UTC时间>-<随机ID>`，包括报告和失败日志；指定目录必须为空 |
+| `RK_PACKAGE` | 显式复用有匹配构建证据的包；默认重新构建 |
+
+HTTP 与 RTSP 分别探测；任何一路不通就为两者建立 SSH 隧道，绑定主机 loopback 的空闲端口并等待 readiness。FLV 使用同源 `/media/device/<id>.live.flv`，RTSP 是 `/device/<id>`，强制 TCP。每项检查前后对比板端 boot_id，变化即 FAIL 并中止后续。
+
+## 覆盖和断言
+
+| 组 | 主要断言 | 对应改动 |
+|---|---|---|
+| T0.1–6 | 实例 PID/路径、所有端口、管理页、动态库、ELF GLIBC 需求、正反登录、OS/版本、硬编硬解注册 | 部署基线 / f27cbc7 |
+| T0.7–8 | 无 X11 环境查询快速返回，添加和更新明确拒绝且不持久化 | b33e7d7 |
+| T1.1–8 | CRUD；state/flv_url；空 output 省略；非法值精确文案；原生转发拒绝非空 output；拒绝更新不改旧配置；metrics；不存在设备 | 23217e1 |
+| T2.1–4 | lavfi raw→H.264 真解码；1080p 缩至 720p@25；预编码 RTSP 音视频源不设 output 时编码/尺寸保持；H.265 真出流 | b33e7d7 / 23217e1 |
+| T2.5–7 | FLV、HLS 分片真解码；V4L2 有信号 H.264；无信号旧管线更新和删除各 <15 秒 | b33e7d7 |
+| T2.8 | 至少两个真实录像分段可解码；分段卡片自然 ended 后请求第二段并继续播放；日回放跨过真实分段边界、索引变化 | 01f3d31 |
+| T2.9–11 | 合成响应 RTSP 端口等于实际配置、合成出帧；无关更新保留 detect；AAC 32kHz / Opus 48kHz 真解码 | 23217e1 |
+| T3.1–2 | 显式 h264_rkmpp 编码、解码（不能以软件回退冒充） | RKMPP 基线 |
+| T3.3–4 | Rust HDMI connector 枚举、present、回环视频模式和上半部彩条内容；双输出关闭隔离 | 23217e1 |
+| T3.5 | 1/2/4 路 1080p 转码，RSS/load/meminfo、进程存活、各流真解码和 OOM 错误 | 资源观察 |
+
+业务错误沿用当前 HTTP 500 和 `{code,message,data}` 包装；鉴权失败是 401。`config.output=None` 在 JSON 中省略，空对象不是其回显。T1.6 覆盖保存前拒绝更新，不声称覆盖写库后的回滚分支。output 保持比例、只缩小；lavfi 属于 raw 采集，不作为编码透传基线。
+
+TAP 的每项包含 ID 和所守 commit；报告包含耗时、期望/实际错误信息、原始响应截断 500 字符和 nvr.log 尾部 20 行。响应和日志中的当前会话 token、JSON password/token 字段脱敏。浏览器证据只用于本次新库；不保存 storage_state。
+
+## SKIP 和实际限制
+
+- HDMI 没连接或无可用模式：T3.3 SKIP，报告 EDID 字节数和 modes 数量；这不证明物理 sink 不存在，也不是 Rust HDMI 库已通过。回环禁用时仅执行输出，回环验收 SKIP。T2.6 默认也使用同一 Rust 彩条输出提供 HDMI IN 信号；OUT 无模式时它同样 SKIP。
+- 双 HDMI 必须两路都有模式；不使用无模式的 connected 状态冒充通过。
+- V4L2 节点存在不能证明有信号，也不能证明没被既有服务使用；显式节点由环境变量选定；默认回环从 OUT 产生信号，连续三次确认 IN 四个通道锁定且时序与 OUT 一致，再建 video11 采集设备。OUT 已 present 而 IN 未稳定锁定时，回环验收 SKIP 并保留输入状态和输出日志。
+- 有残留 DISPLAY/socket 候选时不适用 2 秒无候选快速路径，X11 添加/更新仍单独检查。
+- Playwright/浏览器缺失时，录像文件已经校验后，将浏览器验收记 SKIP。浏览器能启动但真实回放失败应 FAIL。
+- 资源观察是有限时长观测，不等于长期容量或无 OOM 保证。
+- 普通 HEAD 测试不改生产代码的回滚行为；T1.9 仅在 `--mutate drop-rollback` 的受控应用失败注入模式验证写库后的配置和出流恢复，不验证实际目标检测推理（只守配置保留）。
+
+## 变异验证
+
+`--mutate` 先构建并验证原版目标组，然后临时修改指定源码、重新构建和独立部署。目标断言必须由 PASS 变 FAIL，部署基线仍 PASS，非预期 FAIL 会拒绝验收。结束或收到信号恢复原始文件内容，停止本次实例与隧道；报告保留 baseline/mutant 两份和 `mutation.json`。变异不用于日常循环，不与其他 Cargo/编辑器修改同一源文件并行。
+
+默认建议使用 `drop-state-field`→T1.2、`drop-output-normalize`→T1.3，不依赖现场 HDMI/V4L2 信号。还支持 `drop-raw-encode`→T2.1（及依赖 raw 采集的项目）、`drop-x11-guard`→T0.8（API 接受并持久化不可用 X11 输入）。`drop-rollback`→T1.9 先在两个版本中注入相同的写库后应用失败，原版必须恢复旧配置并保持可解码出流，变异版删除持久化恢复后必须被发现；注入代码随原文件一起恢复，不加入生产构建。无信号 fixture 和共享 raw 路径会引起合理的多项失败，不能要求恰好只有一项失败。
+
+“已验证抓到的 bug”只依据真实 `mutation.json` 记录；静态自检和 mock 自检不能充当板端变异证据。
+
+2026-10-12，HEAD `23217e12296441067729d02bc927aac20cf7bf8a` 的真机配对记录（证据保留在本机、未入库）：
+
+| 变异 | 原版目标 | 变异目标 | 证据目录（`third_party/rockchip-e2e/` 下） |
+|---|---|---|---|
+| drop-state-field | T1.2 PASS | T1.2 FAIL，其他适用项 PASS | `20261012T043049Z-14484d77/` |
+| drop-output-normalize | T1.3 PASS | T1.3 FAIL，其他适用项 PASS | `20261012T043905Z-889e1b23/` |
+| drop-rollback（两版注入相同应用失败） | T1.9 PASS，旧配置/出流恢复 | T1.9 FAIL，其他项 PASS | `20261012T044718Z-7acf7f5d/` |
+
+## 脚本自检
+
+```bash
+python3 e2e/rockchip/run.py --help
+for file in e2e/rockchip/board/*.sh; do sh -n "$file"; done
+shellcheck e2e/rockchip/run.sh e2e/rockchip/board/*.sh
+PYTHONDONTWRITEBYTECODE=1 python3 e2e/rockchip/host/suite_test.py
+PYTHONDONTWRITEBYTECODE=1 python3 e2e/rockchip/lib/deploy_test.py
+PYTHONDONTWRITEBYTECODE=1 python3 e2e/rockchip/lib/provenance_test.py
+PYTHONDONTWRITEBYTECODE=1 python3 e2e/rockchip/lib/lifecycle_report_test.py
+```
+
+自检只验证报告、脱敏、SKIP 和重启失败边界。真正结果以板端运行报告为准。
+
+主机上的 lavfi 图案带 `realtime` 过滤器，避免最快生成导致队列丢帧/时间戳提前跨过采样窗口；连续采样保持 10 秒至少 200 帧的门槛。预编码源同时断言没有 encoder，防止相同 H.264 编码掩盖意外重编码。
+
+音频转码用例用 FFmpeg 单独映射视频，从首帧起计时解码 10 秒、至少 200 帧；`-vsync 0` 不补帧。音频另用 ffprobe 检查 codec、采样率和真实解码帧，保存 `audio-<codec>.json`。混合音视频的 ffprobe `read_intervals` 可能先被音频时间戳结束，不能把该窗口直接当成视频持续时间。
+
+## 真机验收记录
+
+2026-10-12，HEAD `23217e12296441067729d02bc927aac20cf7bf8a`，默认重新构建原版后执行全量：**29 PASS / 1 FAIL / 4 SKIP**，证据为本机 `third_party/rockchip-e2e/20261012T045621Z-a6fd839c/report.json`。
+
+- T2.11 的 Opus 转码路径未通过视频连续性断言：从首帧计时解码 10 秒、不补帧，实测 166 帧，要求至少 200。根因待定位，保留 FAIL，不计为环境 SKIP；AAC 32kHz 分支通过。
+- 补充单项复验 `20261012T050918Z-b37789f8/`：9 PASS / 1 FAIL / 0 SKIP。`audio-aac.json` 为视频 248 帧、AAC 32kHz 音频 313 帧；`audio-opus.json` 为视频 157 帧、Opus 48kHz 音频 500 帧。音频编码和真实解码通过，失败仍是 Opus 转码时的视频连续性。
+- T2.6 / T3.3：Rust HDMI OUT 已 present 1080p60 彩条，IN 四通道未稳定锁定且时序为 640x480，回环验收 SKIP。T3.4：第二路输出无可用显示模式，SKIP。
+- 普通全量的 T1.9 未注入故障而 SKIP；写库后回滚已通过上面的独立配对验证，并成功捕获删除回滚的变异。
+- 部署与 API、其他媒体路径、真实录像及浏览器两种跨段播放、RKMPP 硬编硬解、1/2/4 路资源观察和清理均通过；未观测到板端重启。
+- 10 项 Python 自检、ShellCheck、Rockchip 包和 HDMI examples 交叉构建通过。全仓 `cargo fmt --all --check` 发现既有 Rust 格式差异；本次没有 Rust 源码差异。
+- 提交前 `make test`：工作区 Rust 测试 451 项通过、9 项忽略、0 失败；Python 提交检查编译通过，因未安装 black/ruff/flake8 而跳过格式化与 lint。
+
+本轮已完成脚本实现和三项变异验证，尚未通过全部媒体验收。以上记录不声称长期容量或无 OOM 保证。
