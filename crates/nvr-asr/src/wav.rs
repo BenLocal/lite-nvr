@@ -24,8 +24,8 @@ impl WavAudio {
     /// Integer PCM (8/16/24/32-bit) and float WAVs are both supported.
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref();
-        let mut reader = hound::WavReader::open(path)
-            .with_context(|| format!("open wav {}", path.display()))?;
+        let mut reader =
+            hound::WavReader::open(path).with_context(|| format!("open wav {}", path.display()))?;
         let spec = reader.spec();
 
         let interleaved: Vec<f32> = match spec.sample_format {

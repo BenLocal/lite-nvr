@@ -247,7 +247,10 @@ pub async fn restore_all() {
                     backoff = (backoff * 2).min(RESTORE_RETRY_MAX);
                 }
                 Err(e) => {
-                    log::error!("audio mixer restore: '{id}' gave up after ~{}s: {e:#}", elapsed.as_secs());
+                    log::error!(
+                        "audio mixer restore: '{id}' gave up after ~{}s: {e:#}",
+                        elapsed.as_secs()
+                    );
                     break;
                 }
             }

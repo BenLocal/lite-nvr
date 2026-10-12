@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use super::{Director, LayoutState, LatestFrame, Region, geoms_of, slots_of};
+use super::{Director, LatestFrame, LayoutState, Region, geoms_of, slots_of};
 
 /// Build a `Director` over the given regions with the given source ids in the
 /// pool (each with an empty frame cell), bypassing the compositor run loop.

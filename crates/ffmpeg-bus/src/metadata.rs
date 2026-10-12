@@ -116,7 +116,9 @@ pub fn probe(path: &str) -> anyhow::Result<MediaInfo> {
 
     let mut streams = Vec::with_capacity(nb_streams as usize);
     for i in 0..nb_streams as usize {
-        let stream = input.stream(i).ok_or_else(|| anyhow::anyhow!("stream {} not found", i))?;
+        let stream = input
+            .stream(i)
+            .ok_or_else(|| anyhow::anyhow!("stream {} not found", i))?;
         let duration_ts = {
             let d = stream.duration();
             if d == ffmpeg_next::ffi::AV_NOPTS_VALUE as i64 || d < 0 {

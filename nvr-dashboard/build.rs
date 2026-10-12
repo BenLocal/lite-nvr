@@ -29,11 +29,9 @@ fn main() {
         let node_modules = Path::new("app/node_modules");
         let lock_file = Path::new("app/package-lock.json");
         let need_install = !node_modules.exists()
-            || newest_mtime(lock_file)
-                .is_some_and(|lock_mtime| {
-                    newest_mtime(node_modules)
-                        .is_none_or(|nm_mtime| lock_mtime > nm_mtime)
-                });
+            || newest_mtime(lock_file).is_some_and(|lock_mtime| {
+                newest_mtime(node_modules).is_none_or(|nm_mtime| lock_mtime > nm_mtime)
+            });
         if need_install {
             println!("cargo:warning=Installing npm dependencies...");
             let npm_install = Command::new("npm")

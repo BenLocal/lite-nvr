@@ -196,8 +196,9 @@ impl Compositor {
         let canvas_h = even(layout.height).max(2);
         // The pool is shared (and mutable) between the run loop and the Director,
         // so sources can be added/removed live without restarting the stream.
-        let pool_map: Arc<Mutex<HashMap<String, LatestFrame>>> =
-            Arc::new(Mutex::new(pool.into_iter().map(|f| (f.id, f.latest)).collect()));
+        let pool_map: Arc<Mutex<HashMap<String, LatestFrame>>> = Arc::new(Mutex::new(
+            pool.into_iter().map(|f| (f.id, f.latest)).collect(),
+        ));
 
         let state = Arc::new(Mutex::new(LayoutState {
             geoms: geoms_of(&layout.regions),
@@ -211,7 +212,15 @@ impl Compositor {
         let cancel = CancellationToken::new();
         let loop_cancel = cancel.clone();
         let handle = tokio::task::spawn_blocking(move || {
-            let r = run(cfg, canvas_w, canvas_h, state, pool_map, template, loop_cancel);
+            let r = run(
+                cfg,
+                canvas_w,
+                canvas_h,
+                state,
+                pool_map,
+                template,
+                loop_cancel,
+            );
             if let Err(ref e) = r {
                 log::error!("compositor exited: {e:#}");
             }

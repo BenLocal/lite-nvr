@@ -1,7 +1,10 @@
 //! REST API for the audio mixing console. GET/POST only. URLs are
 //! credential-redacted in responses.
 
-use axum::{Json, Router, routing::{get, post}};
+use axum::{
+    Json, Router,
+    routing::{get, post},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::audiomixer;
@@ -172,7 +175,12 @@ async fn remove_bus(Json(req): Json<BusRef>) -> ApiJsonResult<()> {
 }
 
 async fn add_input(Json(req): Json<AddInputReq>) -> ApiJsonResult<()> {
-    audiomixer::add_input(&req.bus_id, &req.source_id, req.volume.unwrap_or(DEFAULT_VOLUME)).await?;
+    audiomixer::add_input(
+        &req.bus_id,
+        &req.source_id,
+        req.volume.unwrap_or(DEFAULT_VOLUME),
+    )
+    .await?;
     Ok(ok_empty())
 }
 
