@@ -1,18 +1,15 @@
 """Hardware checks never accept software fallback as hardware success."""
-import json
+
 import os
-import re
 import shlex
 import subprocess
 import time
 
-from suite import Skip
+from suite import CommandFailure, Skip
 
 
 def hardware_cases(s):
     out = s.remote + '/results'
-    card = os.environ.get('RK_DRM_CARD', '/dev/dri/card0')
-    connector = os.environ.get('RK_HDMI_CONNECTOR', 'HDMI-A-2')
 
     def encode():
         output = s.script('hwcodec', out, 'encode', timeout=90)
@@ -26,40 +23,108 @@ def hardware_cases(s):
         assert 'h264_rkmpp' in output and 'frame=' in output, output
 
     def hdmi():
-        from hdmi import require_mode
+        from hdmi import RGB_SAMPLE_FILTER, matches_color_bars, output_config, require_mode
+
+        card, connector = output_config()
+        if os.environ.get('RK_HDMI_LOOPBACK', '1') == '1' and not os.environ.get(
+            'RK_HDMI_CAPTURE_DEVICE'
+        ):
+            raise Skip('Set RK_HDMI_CAPTURE_DEVICE from the actual loopback wiring')
         require_mode(s, card, connector)
         s.script('hdmi', out, card, connector, 'pattern', timeout=40)
         if os.environ.get('RK_HDMI_LOOPBACK', '1') != '1':
-            raise Skip('DRM output presented; HDMI OUT->IN physical loopback not declared (RK_HDMI_LOOPBACK=1)')
+            raise Skip(
+                'DRM output presented; HDMI OUT->IN physical loopback not declared (RK_HDMI_LOOPBACK=1)'
+            )
         from hdmi import loopback_signal
-        with loopback_signal(s) as mode:
-            s.script('hdmi', out, card, connector, 'grab', timeout=25)
-        expected = mode
+
         local = s.artifacts / 'loop.mp4'
-        s.execute(json.loads(os.environ['E2E_SCP_JSON']) + [os.environ['RK_DEST'] + ':' + out + '/loop.mp4', str(local)], timeout=120)
+        with loopback_signal(s) as mode:
+            p = s.payload(
+                'hdmi-capture', input_type='v4l2', input_value=os.environ['RK_HDMI_CAPTURE_DEVICE']
+            )
+            s.add(p)
+            try:
+                s.wait_running(p['id'], seconds=15)
+                s.execute(
+                    [
+                        'ffmpeg',
+                        '-nostdin',
+                        '-v',
+                        'error',
+                        '-rtsp_transport',
+                        'tcp',
+                        '-i',
+                        s.rtsp(p['id']),
+                        '-frames:v',
+                        '50',
+                        '-an',
+                        '-c:v',
+                        'copy',
+                        '-y',
+                        str(local),
+                    ],
+                    timeout=20,
+                )
+            finally:
+                s.remove(p['id'])
+        expected = mode
         video = s.probe(str(local), rtsp=False, seconds=2)
         assert (video['width'], video['height']) == expected[:2], video
         numerator, denominator = map(int, video['r_frame_rate'].split('/'))
         assert abs(numerator / denominator - expected[2]) <= 1, video
         # Content must match the generated upper-half color bars, not an unrelated signal.
-        pixels = subprocess.run(['ffmpeg', '-v', 'error', '-i', str(local), '-frames:v', '1',
-                                 '-vf', 'crop=iw:ih/2:0:0,scale=8:1', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'],
-                                capture_output=True, timeout=30, check=True).stdout
-        expected_rgb = [(255,255,255), (255,255,0), (0,255,255), (0,255,0), (255,0,255), (255,0,0), (0,0,255), (0,0,0)]
-        assert len(pixels) == 24
-        assert all(abs(pixels[i * 3 + channel] - rgb[channel]) < 65 for i, rgb in enumerate(expected_rgb) for channel in range(3)), f'loopback does not match color bars: {list(pixels)}'
+        pixels = subprocess.run(
+            [
+                'ffmpeg',
+                '-v',
+                'error',
+                '-i',
+                str(local),
+                '-frames:v',
+                '1',
+                '-vf',
+                RGB_SAMPLE_FILTER,
+                '-pix_fmt',
+                'rgb24',
+                '-f',
+                'rawvideo',
+                '-',
+            ],
+            capture_output=True,
+            timeout=30,
+            check=True,
+        ).stdout
+        assert matches_color_bars(pixels), f'loopback does not match color bars: {list(pixels)}'
 
     def dual():
-        if card != '/dev/dri/card0':
-            raise Skip('dual_hdmiout example uses card0; configured card differs')
-        from hdmi import build_examples
-        build_examples(s)
-        for name in ['HDMI-A-1', 'HDMI-A-2']:
-            condition = s.script('hdmi', out, card, name, 'conditions').splitlines()
-            if condition[0] != 'connected' or int(condition[2]) == 0:
-                raise Skip(f'{name} has no connected sink with a usable mode')
-        text = s.script('hdmi', out, card, connector, 'dual')
-        assert 'Presented' in text, text
+        from hdmi import output_config, require_modes
+
+        card, connector = output_config()
+        second = os.environ.get('RK_HDMI_SECOND_CONNECTOR')
+        if not second:
+            raise Skip('Set RK_HDMI_SECOND_CONNECTOR from the actual second output wiring')
+        assert second != connector, 'Two distinct HDMI output connectors are required'
+        attempts = []
+        for attempt in range(3):
+            require_modes(s, card, [connector, second])
+            try:
+                text = s.script('hdmi', out, card, connector, 'dual', second)
+                break
+            except CommandFailure as error:
+                attempts.append(str(error))
+                (s.artifacts / 'dual-startup-attempts.log').write_text('\n'.join(attempts))
+                # Both connectors are opened before the example presents any
+                # frames. Wait only for an HPD race at that startup boundary.
+                missing = any(
+                    f'NoConnector(Some("{name}"))' in str(error) for name in [connector, second]
+                )
+                if not missing or attempt == 2:
+                    raise
+                time.sleep(2)
+        assert (
+            'Presented' in text and 'Second output presented after first output closed' in text
+        ), text
 
     def resources():
         # Remove prior cases' encoders so 1/2/4 means exactly these fixtures.
@@ -81,7 +146,9 @@ def hardware_cases(s):
                 s.probe(s.rtsp(p['id']), seconds=2)
                 s.remove(p['id'])
             log = s.board('tail -n 200 ' + shlex.quote(s.root + '/nvr.log'))
-            assert 'Cannot allocate memory' not in log and 'out of memory' not in log.lower(), 'OOM in NVR log'
+            assert 'Cannot allocate memory' not in log and 'out of memory' not in log.lower(), (
+                'OOM in NVR log'
+            )
 
     for i, fn in enumerate([encode, decode, hdmi, dual, resources], 1):
-        s.test(f'T3.{i}', '23217e1' if i in (3,4) else 'baseline', fn)
+        s.test(f'T3.{i}', '23217e1' if i in (3, 4) else 'baseline', fn)

@@ -29,8 +29,10 @@ Docker 中运行需映射 `/dev/dri/card0`，并具备节点权限；HDMI OUT→
 
 双输出示例（OUT 1 红色、OUT 2 蓝色，均带移动白条）：
 
+先按实际接线设置 `DRM_CARD`、`FIRST_CONNECTOR` 和 `SECOND_CONNECTOR`，两路 connector 须不同且属于同一 DRM 卡。
+
 ```bash
-cargo run -p nvr-hdmiout --example dual_hdmiout -- 300
+cargo run -p nvr-hdmiout --example dual_hdmiout -- 300 "$DRM_CARD" "$FIRST_CONNECTOR" "$SECOND_CONNECTOR"
 ```
 
 硬件测试另设 `NVR_HDMI_TEST_SIBLING=HDMI-A-2` 可验证双输出，以及关闭一路后另一路继续输出。

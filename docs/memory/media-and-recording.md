@@ -2,6 +2,8 @@
 
 > media-pipe / ZLM sink、ffmpeg-bus 输出、nvr-recorder 重连，以及默认账号相关的非显然问题；设计见 `design-media-pipe.md`、`design-recorder.md`、`design-auth.md`。
 
+- 2026-10-12：E2E Opus 输出的 `ffmpeg -t 10` 少帧（157～196），固定解码 250 帧却约 8 秒完成且视频包 PTS 连续 → FFmpeg 8.0.1 自动调整 RTSP 输入起始时间，使采样窗口计入额外偏移；仅 `setpts=PTS-STARTPTS` 不足 → 采样加 `-copyts` 保留输入时间戳，再以 `setpts` 归零，保留 `-vsync 0` 和 10 秒至少 200 帧门槛。真机 Opus 250 帧、AAC 229 帧，T2.11 通过；证据 `third_party/rockchip-e2e/20261012T060129Z-e2d9e5f6/`，本地同源对照 `opus-diagnose-native/`。
+
 - 2026-10-10：Chrome/Chromium 不能只凭 `canPlayType('application/vnd.apple.mpegurl')` 选择原生 HLS → Linux Chromium 154 返回 `maybe`，12 段录像原生回放在 667.194 秒停止（readyState=2、paused=false），同一列表经 hls.js 能完整播放 → 回放优先 hls.js，MSE 不支持时才回退原生 HLS；验证浏览器时必须记录实际播放路径（证据：`PlaybackView.vue` 的 `attachPlayerSource`，回归：`PlaybackView.test.ts`）。
 - 2026-10-10：从片段卡片启动后不自动播放下一段 → `onVideoEnded` 查的是完整当天列表，而卡片入口只加载分页片段 → `playSegment` 先加载当天列表再启动，下一段按时间排序选择，即使不在当前分页中也能续播（回归：`PlaybackView.test.ts`）。
 
@@ -78,4 +80,5 @@
 - 2026-10-11：192.168.31.241 本地 dummy 服务为 `lite-nvr-dummy-rtsp`（独立 go2rtc，RTSP :9554，管理端仅 127.0.0.1:1985）与 `lite-nvr-dummy-publisher`（复用主机 Jellyfin 镜像中的 FFmpeg，testsrc2 1280×720/30 + 440Hz AAC 音频），均 Docker unless-stopped 自动恢复。源地址 `rtsp://192.168.31.241:9554/dummy`，NVR 设备 `RAlOlNZLgZvA` 名为 Dummy RTSP 测试，录像关闭；它不依赖公网或开发机，不设自动到期时间。
 - 2026-10-11：RK3588 上 RTSP 的 H.264 参数头只存在 SDP extradata 时，`h264_rkmpp` 可成功打开却一直没有解码帧；同一输入经 `dump_extra` 写入参数头后硬解正常 → `Decoder` 对 Rockchip 的 Annex B 关键帧补入参数头，并保留包时间戳、标志与共享分支原数据；设备输出 H.264/H.265 + AAC/Opus 已实机验证。
 - 2026-10-11：导播合成报 `no source could be started` → 页面写死本机 RTSP 8554，测试主机实际 NVR 为 8556；RTMP 8555 还被 go2rtc 占用 → 合成本机取流按 `NVR_ZLM_RTSP_PORT` 解析，推流使用 `NVR_ZLM_RTMP_PORT`（该主机 8557），外部地址保持原样。
+- 2026-10-12：HDMI 回环录像画面色条正确，但 `crop=iw:ih/2:0:0,scale=8:1` 得到蓝色偏移并误报 → 解码后的 YUV420P 在单行缩放时色度采样失真；相同录像先 `format=rgb24` 再缩放，原 RGB 阈值通过 → 色条取样先转换 RGB 再降采样，已有合成 YUV 回归及真机 `20261012T065239Z-be769d9b` 证据。
 - 2026-10-11：合成帧的 PTS 使用微秒，但编码器沿用输入 RTSP 的 1/90000 时间基，输出还复制了源编码参数 → 合成编码使用独立微秒时钟，并由编码器生成输出参数；文件回归验证 50 帧/25 FPS 跨度 1.96 秒，主机浏览器合成画面正常播放。刚创建合成时 FLV 尚未发布会短暂 404（HEAD 仍返回 200，不能判定就绪），播放器需可取消的有限重试；主机“停止→更新”实测自动恢复，8 秒内收到 150 帧。

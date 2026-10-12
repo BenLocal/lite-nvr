@@ -3,16 +3,23 @@ use nvr_hdmiout::{HdmiOutput, OutputConfig, VideoFrame};
 use std::time::{Duration, Instant};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let seconds = std::env::args()
-        .nth(1)
-        .map(|s| s.parse::<u64>())
-        .transpose()?
-        .unwrap_or(300);
+    let mut args = std::env::args().skip(1);
+    let seconds = args
+        .next()
+        .ok_or("usage: dual_hdmiout <seconds> <card> <first-connector> <second-connector>")?
+        .parse::<u64>()?;
+    let card = args.next().ok_or("missing DRM card")?;
+    let first_connector = args.next().ok_or("missing first connector")?;
+    let second_connector = args.next().ok_or("missing second connector")?;
+    if args.next().is_some() || first_connector == second_connector {
+        return Err("provide exactly two distinct connectors".into());
+    }
     let mut first = HdmiOutput::open(&OutputConfig {
-        connector: Some("HDMI-A-1".into()),
+        card: card.into(),
+        connector: Some(first_connector),
         ..Default::default()
     })?;
-    let mut second = first.open_sibling("HDMI-A-2", None)?;
+    let mut second = first.open_sibling(&second_connector, None)?;
     let mut frames = Vec::new();
     for output in [&first, &second] {
         let mode = output.mode();
@@ -65,6 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         stride: *stride,
         data: pixels,
     })?;
+    eprintln!("Second output presented after first output closed");
     second.close()?;
     eprintln!("Presented {count} frames on each HDMI output");
     Ok(())

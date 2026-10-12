@@ -1,4 +1,5 @@
 """Source ownership and interruption matter more than successful command mocks."""
+
 import os
 import pathlib
 import subprocess

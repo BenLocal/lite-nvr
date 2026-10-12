@@ -11,6 +11,10 @@
 ```bash
 export RK_HOST=<board-address> RK_USER=<ssh-user>
 export RK_PASSWORD_FILE=<0600-password-file>     # 使用密钥时省略
+export RK_DRM_CARD=<actual-drm-card>
+export RK_HDMI_CONNECTOR=<wired-output-connector>
+export RK_HDMI_CAPTURE_DEVICE=<wired-capture-node>
+export RK_HDMI_SECOND_CONNECTOR=<actual-second-output> # T3.4
 python3 e2e/rockchip/run.py --baseline
 python3 e2e/rockchip/run.py                            # T0 → T1 → T2 → T3
 python3 e2e/rockchip/run.py T1                         # 每组先跑 T0，基线失败立即停止
@@ -45,10 +49,12 @@ python3 -m playwright install chromium
 | `RK_SSH_CONFIG` | `/dev/null`；需要 SSH 跳板/密钥选项时传自己的配置 |
 | `RK_API_USER`, `RK_API_PASSWORD` | 独立新库的默认 admin 账号；非默认时显式配置 |
 | `RK_RTSP_PORT`, `RK_RTMP_PORT` | 8554 / 8555；API 18080 和 HTTP 8553 固定，占用时部署中止 |
-| `RK_VIDEO_DEVICE` | 可选的已确认空闲且有信号的 V4L2 节点；默认用 Rust HDMI OUT→video11 回环 |
+| `RK_VIDEO_DEVICE` | 可选的已确认空闲且有信号的 V4L2 节点；未设置时使用显式配置的 HDMI 回环 |
 | `RK_NO_SIGNAL_DEVICE` | 已确认空闲且无信号的节点；未提供则 T2.7 SKIP |
 | `RK_HDMI_LOOPBACK` | 默认 1，HDMI OUT→HDMI IN 回环接线；设 0 禁用回环 |
-| `RK_DRM_CARD`, `RK_HDMI_CONNECTOR` | `/dev/dri/card0` / HDMI-A-2；双输出 example 使用 card0 的 HDMI-A-1/2 |
+| `RK_DRM_CARD`, `RK_HDMI_CONNECTOR` | HDMI 测试必填：按实际板端 DRM 卡和接线填写输出口，无默认值 |
+| `RK_HDMI_CAPTURE_DEVICE` | 回环测试必填：实际接到所选输出口的 V4L2 采集节点，无默认值；未配置时 T2.6 / T3.3 SKIP |
+| `RK_HDMI_SECOND_CONNECTOR` | T3.4 必填：同一 DRM 卡上的第二路输出口，须与第一路不同，无默认值 |
 | `RK_RECORD_TIMEOUT` | 210 秒；ZLM 分段 60 秒，需要至少两个真正分段 |
 | `RK_RESOURCE_SECONDS` | 每档 20 秒，最少 10；1/2/4 路 1080p 资源观察 |
 | `RK_PYTHON` | python3；可指定装了 Playwright 的 Python |
@@ -78,9 +84,9 @@ TAP 的每项包含 ID 和所守 commit；报告包含耗时、期望/实际错�
 
 ## SKIP 和实际限制
 
-- HDMI 没连接或无可用模式：T3.3 SKIP，报告 EDID 字节数和 modes 数量；这不证明物理 sink 不存在，也不是 Rust HDMI 库已通过。回环禁用时仅执行输出，回环验收 SKIP。T2.6 默认也使用同一 Rust 彩条输出提供 HDMI IN 信号；OUT 无模式时它同样 SKIP。
+- HDMI 没连接或无可用模式：T3.3 SKIP，报告 EDID 字节数和 modes 数量；这不证明物理 sink 不存在，也不是 Rust HDMI 库已通过。模式就绪会强制 DRM 探测并等待连续两次有效模式，最多 12 秒，以处理接收端 HPD 切换后的空缓存。回环禁用时仅执行输出，回环验收 SKIP。T2.6 默认也使用同一 Rust 彩条输出提供 HDMI IN 信号；OUT 无模式时它同样 SKIP。
 - 双 HDMI 必须两路都有模式；不使用无模式的 connected 状态冒充通过。
-- V4L2 节点存在不能证明有信号，也不能证明没被既有服务使用；显式节点由环境变量选定；默认回环从 OUT 产生信号，连续三次确认 IN 四个通道锁定且时序与 OUT 一致，再建 video11 采集设备。OUT 已 present 而 IN 未稳定锁定时，回环验收 SKIP 并保留输入状态和输出日志。
+- V4L2 节点存在不能证明有信号，也不能证明没被既有服务使用。回环输出口与采集节点按实际接线分别配置，不根据端口编号猜测映射；OUT 产生彩条后，连续三次从所选输入抓到对应彩条才启动 NVR 采集。输入未捕获到生成的图案时 SKIP，保留实际采样和输出日志。
 - 有残留 DISPLAY/socket 候选时不适用 2 秒无候选快速路径，X11 添加/更新仍单独检查。
 - Playwright/浏览器缺失时，录像文件已经校验后，将浏览器验收记 SKIP。浏览器能启动但真实回放失败应 FAIL。
 - 资源观察是有限时长观测，不等于长期容量或无 OOM 保证。
@@ -104,27 +110,43 @@ TAP 的每项包含 ID 和所守 commit；报告包含耗时、期望/实际错�
 
 ## 脚本自检
 
+固定版本的开发检查工具安装到独立缓存；`make rockchip-e2e-check` 在工具缺失时直接失败，不跳过 lint。Ruff 配置见 [配置说明](https://docs.astral.sh/ruff/configuration/)，本套脚本使用 Python 3.9 目标版本。
+
+```bash
+pip install --upgrade --target .cache/rockchip-e2e-tools --cache-dir .cache/pip -r e2e/rockchip/requirements-dev.txt
+export PYTHONPATH="$PWD/.cache/rockchip-e2e-tools${PYTHONPATH:+:$PYTHONPATH}"
+export PATH="$PWD/.cache/rockchip-e2e-tools/bin:$PATH"
+make rockchip-e2e-check
+```
+
 ```bash
 python3 e2e/rockchip/run.py --help
 for file in e2e/rockchip/board/*.sh; do sh -n "$file"; done
 shellcheck e2e/rockchip/run.sh e2e/rockchip/board/*.sh
 PYTHONDONTWRITEBYTECODE=1 python3 e2e/rockchip/host/suite_test.py
+PYTHONDONTWRITEBYTECODE=1 python3 e2e/rockchip/host/hdmi_test.py
 PYTHONDONTWRITEBYTECODE=1 python3 e2e/rockchip/lib/deploy_test.py
 PYTHONDONTWRITEBYTECODE=1 python3 e2e/rockchip/lib/provenance_test.py
 PYTHONDONTWRITEBYTECODE=1 python3 e2e/rockchip/lib/lifecycle_report_test.py
 ```
 
-自检只验证报告、脱敏、SKIP 和重启失败边界。真正结果以板端运行报告为准。
+自检验证报告、脱敏、SKIP 和重启失败边界，以及显式接线与 YUV 色条采样回归。真正硬件结果以板端运行报告为准。
 
 主机上的 lavfi 图案带 `realtime` 过滤器，避免最快生成导致队列丢帧/时间戳提前跨过采样窗口；连续采样保持 10 秒至少 200 帧的门槛。预编码源同时断言没有 encoder，防止相同 H.264 编码掩盖意外重编码。
 
-音频转码用例用 FFmpeg 单独映射视频，从首帧起计时解码 10 秒、至少 200 帧；`-vsync 0` 不补帧。音频另用 ffprobe 检查 codec、采样率和真实解码帧，保存 `audio-<codec>.json`。混合音视频的 ffprobe `read_intervals` 可能先被音频时间戳结束，不能把该窗口直接当成视频持续时间。
+音频转码用例用 FFmpeg `-copyts` 保留输入时间戳，单独映射视频并以 `setpts=PTS-STARTPTS` 从首帧计时解码 10 秒、至少 200 帧；`-vsync 0` 不补帧。音频另用 ffprobe 检查 codec、采样率和真实解码帧，保存 `audio-<codec>.json`。采样时间戳的注意事项见 [媒体踩坑记录](../../docs/memory/media-and-recording.md)。
 
 ## 真机验收记录
 
+2026-10-12 最终全量回归（HEAD `9493697`，包含本轮工作区修复，具体源码摘要在 `build.json`）：**33 PASS / 0 FAIL / 1 SKIP**，本机证据 `third_party/rockchip-e2e/20261012T072216Z-e028187b/report.json`。部署/API、全部媒体用例、真实录像及浏览器跨段、HDMI 回环颜色/模式/帧率、双输出关闭隔离和 1/2/4 路资源观察均通过；无板端重启，清理通过。唯一 SKIP 为普通运行未注入回滚故障的 T1.9，独立配对验证记录见上文。AAC 视频 228 帧 / 32kHz 音频 313 帧，Opus 视频 242 帧 / 48kHz 音频 500 帧，视频门槛仍为 10 秒至少 200 帧。
+
+补正实际 sysfs 名称 `stream_hdmirx` 的无信号识别后，T2.7 专项 **10 PASS / 0 FAIL / 0 SKIP**（`20261012T073635Z-f8c36368/`）。`no-signal-precondition.txt` 保存所选节点名称和四通道 Unlock 状态；随后管线更新和删除均在 15 秒内完成。不按 `/dev/video*` 编号推断驱动或接线。
+
+以下保留此前排查记录，旧失败已由后续专项与上述全量复验关闭。
+
 2026-10-12，HEAD `23217e12296441067729d02bc927aac20cf7bf8a`，默认重新构建原版后执行全量：**29 PASS / 1 FAIL / 4 SKIP**，证据为本机 `third_party/rockchip-e2e/20261012T045621Z-a6fd839c/report.json`。
 
-- T2.11 的 Opus 转码路径未通过视频连续性断言：从首帧计时解码 10 秒、不补帧，实测 166 帧，要求至少 200。根因待定位，保留 FAIL，不计为环境 SKIP；AAC 32kHz 分支通过。
+- 旧采样命令的 T2.11 Opus 分支未通过视频连续性断言：实测 166 帧，要求至少 200。后续定位为采样时的时间戳调整问题，修复及最新复验见下文；AAC 32kHz 分支通过。
 - 补充单项复验 `20261012T050918Z-b37789f8/`：9 PASS / 1 FAIL / 0 SKIP。`audio-aac.json` 为视频 248 帧、AAC 32kHz 音频 313 帧；`audio-opus.json` 为视频 157 帧、Opus 48kHz 音频 500 帧。音频编码和真实解码通过，失败仍是 Opus 转码时的视频连续性。
 - T2.6 / T3.3：Rust HDMI OUT 已 present 1080p60 彩条，IN 四通道未稳定锁定且时序为 640x480，回环验收 SKIP。T3.4：第二路输出无可用显示模式，SKIP。
 - 普通全量的 T1.9 未注入故障而 SKIP；写库后回滚已通过上面的独立配对验证，并成功捕获删除回滚的变异。
@@ -132,4 +154,14 @@ PYTHONDONTWRITEBYTECODE=1 python3 e2e/rockchip/lib/lifecycle_report_test.py
 - 10 项 Python 自检、ShellCheck、Rockchip 包和 HDMI examples 交叉构建通过。全仓 `cargo fmt --all --check` 发现既有 Rust 格式差异；本次没有 Rust 源码差异。
 - 提交前 `make test`：工作区 Rust 测试 451 项通过、9 项忽略、0 失败；Python 提交检查编译通过，因未安装 black/ruff/flake8 而跳过格式化与 lint。
 
-本轮已完成脚本实现和三项变异验证，尚未通过全部媒体验收。以上记录不声称长期容量或无 OOM 保证。
+2026-10-12 后续修复：T2.11 采样保留输入时间戳后，真机专项 **10 PASS / 0 FAIL / 0 SKIP**（`20261012T060129Z-e2d9e5f6/`）。AAC 视频 229 帧、32kHz 音频 313 帧；Opus 视频 250 帧、48kHz 音频 500 帧。上述历史全量的 FAIL 已由此专项复验关闭，HDMI 验收仍需继续。以上记录不声称长期容量或无 OOM 保证。
+
+HDMI 采集定位：本轮现场验证了 A1→video11 的接线，并在打开前等待模式恢复。T2.6 真机专项 **10 PASS / 0 FAIL / 0 SKIP**（`20261012T061627Z-8a8df0d9/`），验证 V4L2→H.264→RTSP 的实际解码；T3.3 模式、帧率和彩条专项也为 **10 PASS / 0 FAIL / 0 SKIP**（`20261012T062044Z-9b560f96/`）。这组现场接线不作为脚本默认映射，后续执行须显式提供实际接线配置。
+
+取消默认接口映射后，显式配置的 T2.6 为 **10 PASS / 0 FAIL / 0 SKIP**（`20261012T063833Z-1156353b/`）。T3.3 增加经 NVR 编码的回环颜色校验时，发现 YUV 直接缩为一行产生采样误报；改为先转 RGB 后缩放，原阈值不变，真机复验 **10 PASS / 0 FAIL / 0 SKIP**（`20261012T065239Z-be769d9b/`）。
+
+T3.4 取消卡和接口写死，两路模式同轮刷新并连续两次就绪；只对开始呈现前的 `NoConnector` 做最多三次等待，其他错误以及持续启动失败仍 FAIL，启动失败证据另存 `dual-startup-attempts.log`。真机专项 **10 PASS / 0 FAIL / 0 SKIP**（`20261012T070853Z-ef9180f7/`），验证双路呈现及关闭第一路后第二路仍可呈现。
+
+修复后的本地检查：`make rockchip-e2e-check` 通过 Ruff lint、格式检查、ShellCheck 和 15 项 Python 测试；所有 Python 文件通过 3.9 语法解析。整理既有 Rust 格式差异后，`cargo fmt --all --check`、工作区编译检查和 `make test` 均通过（451 PASS / 9 ignored / 0 FAIL）。
+
+本轮 `make test` 的 `nvr` 并发测试进程曾收到 SIGSEGV，首次日志为 `workspace-tests-after-fixes.log`，提交前又在 `commit-workspace-tests.log` 复现。串行 99 项、调试器下并发运行、原始并发重复运行及最新工作区全量复验均通过；专项 Memcheck 未发现内存错误。崩溃仍有间歇性，根因未确认，不宣称已修复；最新通过证据为本机 `third_party/rockchip-e2e/native-core-full-test.log`，排查日志保留在同目录。临时诊断源码已恢复。

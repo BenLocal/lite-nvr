@@ -246,3 +246,11 @@ clean-frontend:
 rockchip-e2e-hdmi:
 	test ! -d .cache/rockchip-build.lock
 	CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc CARGO_BUILD_JOBS=$${CARGO_BUILD_JOBS:-1} CROSS_CONTAINER_OPTS="$${CROSS_CONTAINER_OPTS:---cpus=2 --memory=4g}" cross build --release --locked -p nvr-hdmiout --example hdmiout --example dual_hdmiout --target aarch64-unknown-linux-gnu
+
+.PHONY: rockchip-e2e-check
+rockchip-e2e-check:
+	python3 -m ruff check e2e/rockchip
+	python3 -m ruff format --check e2e/rockchip
+	shellcheck e2e/rockchip/run.sh e2e/rockchip/board/*.sh
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s e2e/rockchip/host -p '*_test.py'
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s e2e/rockchip/lib -p '*_test.py'

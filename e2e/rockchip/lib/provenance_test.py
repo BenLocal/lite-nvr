@@ -1,4 +1,5 @@
 """A package cannot be reused after changing its bytes, source or commit."""
+
 import contextlib
 import io
 import pathlib
@@ -14,9 +15,14 @@ class ProvenanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             package = pathlib.Path(directory) / 'package.tar.gz'
             package.write_bytes(b'fresh-package')
+
             def run(action, commit='commit-a'):
-                with patch('sys.argv', ['provenance.py', action, str(package), directory, commit]), contextlib.redirect_stdout(io.StringIO()):
+                with (
+                    patch('sys.argv', ['provenance.py', action, str(package), directory, commit]),
+                    contextlib.redirect_stdout(io.StringIO()),
+                ):
                     provenance.main()
+
             with patch('provenance.source_digest', return_value='source-a'):
                 with self.assertRaisesRegex(AssertionError, 'lacks build provenance'):
                     run('verify')

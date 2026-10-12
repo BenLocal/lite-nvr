@@ -1,12 +1,13 @@
 """Test reporting and failure boundaries without treating mocks as board evidence."""
+
 import contextlib
 import io
 import json
 import pathlib
 import tempfile
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
 from suite import Restart, Skip, Suite
@@ -34,9 +35,11 @@ class HarnessTests(unittest.TestCase):
     def test_failure_redacts_response_and_log_and_exits_non_green(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict('os.environ', COMMIT='test'):
             suite = self.suite(directory)
+
             def failure():
                 suite.last = '{"token":"secret-test-session", "state":"idle"}'
                 raise AssertionError('expected running, actual idle')
+
             with contextlib.redirect_stdout(io.StringIO()) as output:
                 self.assertFalse(suite.test('T1.2', '23217e1', failure))
             report = (suite.artifacts / 'report.json').read_text()
@@ -47,8 +50,10 @@ class HarnessTests(unittest.TestCase):
     def test_skip_is_not_counted_as_pass(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict('os.environ', COMMIT='test'):
             suite = self.suite(directory)
+
             def absent_sink():
                 raise Skip('no HDMI mode')
+
             with contextlib.redirect_stdout(io.StringIO()):
                 suite.test('T3.3', '23217e1', absent_sink)
             summary = json.loads((suite.artifacts / 'report.json').read_text())['summary']
@@ -57,8 +62,10 @@ class HarnessTests(unittest.TestCase):
     def test_restart_stops_following_tests_and_records_failure(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict('os.environ', COMMIT='test'):
             suite = self.suite(directory)
+
             def reboot():
                 raise Restart('boot changed')
+
             suite.check_boot = reboot
             with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(Restart):
                 suite.test('T2.1', 'b33e7d7', lambda: None)
@@ -71,8 +78,10 @@ class HarnessTests(unittest.TestCase):
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(b'{"code":500,"message":"bad","data":null}')
+
             def log_message(self, *_):
                 pass
+
         with HTTPServer(('127.0.0.1', 0), WrongStatus) as server:
             worker = threading.Thread(target=server.handle_request)
             worker.start()
