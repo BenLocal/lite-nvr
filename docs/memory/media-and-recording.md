@@ -2,6 +2,9 @@
 
 > media-pipe / ZLM sink、ffmpeg-bus 输出、nvr-recorder 重连，以及默认账号相关的非显然问题；设计见 `design-media-pipe.md`、`design-recorder.md`、`design-auth.md`。
 
+- 2026-10-12：原生全量测试间歇 SIGSEGV → 设备列表 `media_cache.rs:88` 在 `MediaSource::for_each` 回调里读取轨道，同时另一线程释放媒体；回调保住源对象但不保住其 muxer，ZLM `getTracks()` 未检查 `getMuxer()` 返回值，`RAX=0` 时读取 `0x28` → 根因已确认、修复待实施：原生查询需持有 muxer 强引用并判空，不能用串行测试或 Rust `catch_unwind` 掩盖；同库独立 C 复现 5/5 段错误，仅去掉轨道查询的对照 20/20 通过（证据：`third_party/rockchip-e2e/rootcause-fast-backtrace.log`、`rootcause-backtrace.log`、`rootcause-minimal-verify.log`）。
+- 2026-10-12：核对 ZLM 当前 master `b91e75e516eba9a7e1210ed81638e0df3b62b653`（2026-10-10 提交）→ `getTracks()` 仍未检查 muxer，但默认 `getMuxer()` 从旧库返回空指针改成抛 `NotImplemented`，轨道查询 C API 又没有捕获 C++ 异常 → 不能只升级就认定并发释放问题已修复，修复须覆盖异常边界；仅完成最新版源码核查，未声称实测其仍 SIGSEGV（证据：该提交 `src/Common/MediaSource.cpp:133`、`MediaSource.h:99`、`api/source/mk_events_objects.cpp:212`；调查任务 [#2988](http://172.31.169.114:3456/tasks/2988)）。
+
 - 2026-10-12：E2E Opus 输出的 `ffmpeg -t 10` 少帧（157～196），固定解码 250 帧却约 8 秒完成且视频包 PTS 连续 → FFmpeg 8.0.1 自动调整 RTSP 输入起始时间，使采样窗口计入额外偏移；仅 `setpts=PTS-STARTPTS` 不足 → 采样加 `-copyts` 保留输入时间戳，再以 `setpts` 归零，保留 `-vsync 0` 和 10 秒至少 200 帧门槛。真机 Opus 250 帧、AAC 229 帧，T2.11 通过；证据 `third_party/rockchip-e2e/20261012T060129Z-e2d9e5f6/`，本地同源对照 `opus-diagnose-native/`。
 
 - 2026-10-10：Chrome/Chromium 不能只凭 `canPlayType('application/vnd.apple.mpegurl')` 选择原生 HLS → Linux Chromium 154 返回 `maybe`，12 段录像原生回放在 667.194 秒停止（readyState=2、paused=false），同一列表经 hls.js 能完整播放 → 回放优先 hls.js，MSE 不支持时才回退原生 HLS；验证浏览器时必须记录实际播放路径（证据：`PlaybackView.vue` 的 `attachPlayerSource`，回归：`PlaybackView.test.ts`）。
