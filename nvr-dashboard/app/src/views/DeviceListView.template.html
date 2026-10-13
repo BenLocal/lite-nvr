@@ -116,9 +116,16 @@
       :content-style="{ overflowY: 'auto', overflowX: 'hidden' }"
     >
       <Message v-if="metricsError" severity="warn" class="metrics-warning">{{ metricsError }}，正在重试；保留上次采样。</Message>
+      <Button label="刷新音频来源" icon="pi pi-refresh" size="small" severity="secondary" :loading="topologyAudioLoading" @click="refreshAudioOrigins" />
       <DeviceFlowTopology
         v-if="metricsVisible && metricsDevice"
         :metrics="deviceMetrics[metricsDevice.id]"
+        :device="topologyDevice ?? undefined"
+        :mixer="topologyMixer"
+        :audio-sources="topologySources"
+        :program="topologyProgram"
+        :audio-loading="topologyAudioLoading"
+        :audio-error="topologyAudioError"
         :stale="metricsError !== null"
       />
     </Dialog>

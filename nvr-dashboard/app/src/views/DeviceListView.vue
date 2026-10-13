@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /* eslint-disable @typescript-eslint/no-unused-vars -- bindings are consumed by the external SFC template. */
-import { onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import Button from "primevue/button";
 import Card from "primevue/card";
@@ -19,6 +19,7 @@ import DeviceFlowTopology from "../components/DeviceFlowTopology.vue";
 import Message from "primevue/message";
 import TranscriptPanel from "../components/TranscriptPanel.vue";
 import { listDevices, removeDevice, getDeviceMetrics, type DeviceItem, type DeviceMetrics } from "../api/device";
+import { getMixer, getAudioSources, getProgramConfig, type MixerState, type AudioSourceOption, type ProgramState } from "../api/audiomixer";
 import { ptzControl } from "../api/gb";
 import { useAppToast } from "../utils/toast";
 
@@ -44,6 +45,30 @@ const metricsVisible = ref(false);
 const metricsDevice = ref<DeviceItem | null>(null);
 const deviceMetrics = ref<Record<string, DeviceMetrics>>({});
 const metricsError = ref<string | null>(null);
+const topologyDevice = computed(() => devices.value.find(device => device.id === metricsDevice.value?.id) ?? metricsDevice.value);
+const topologyMixer = ref<MixerState>();
+const topologySources = ref<AudioSourceOption[]>([]);
+const topologyProgram = ref<ProgramState>();
+const topologyAudioLoading = ref(false);
+const topologyAudioError = ref<string | null>(null);
+let audioGeneration = 0;
+
+async function refreshAudioOrigins() {
+  const generation = ++audioGeneration;
+  topologyAudioLoading.value = true;
+  topologyAudioError.value = null;
+  try {
+    const [mixer, sources, program] = await Promise.all([getMixer(), getAudioSources(), getProgramConfig()]);
+    if (disposed || generation !== audioGeneration || !metricsVisible.value) return;
+    topologyMixer.value = mixer;
+    topologySources.value = sources;
+    topologyProgram.value = program;
+  } catch (error) {
+    if (!disposed && generation === audioGeneration && metricsVisible.value) topologyAudioError.value = error instanceof Error ? error.message : "音频来源获取失败";
+  } finally {
+    if (generation === audioGeneration) topologyAudioLoading.value = false;
+  }
+}
 let metricsTimer: ReturnType<typeof setTimeout> | undefined;
 let metricsController: AbortController | undefined;
 let disposed = false;
@@ -73,6 +98,10 @@ watch(metricsVisible, visible => {
   metricsController?.abort();
   metricsController = undefined;
   if (visible) {
+    topologyMixer.value = undefined;
+    topologyProgram.value = undefined;
+    topologySources.value = [];
+    void refreshAudioOrigins();
     metricsError.value = null;
     void pollMetrics();
   }

@@ -1,7 +1,8 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 import DeviceFlowTopology from './DeviceFlowTopology.vue'
-import { parseDeviceMetrics, type DeviceMetrics } from '../api/device'
+import type { MixerState } from '../api/audiomixer'
+import { parseDeviceMetrics, type DeviceMetrics, type DeviceItem } from '../api/device'
 
 const sample: DeviceMetrics = {
   id: 'capture', input_type: 'v4l2', state: 'running', message: null, distribution: null, sampled_at_ms: 123,
@@ -64,5 +65,65 @@ describe('device flow topology', () => {
     expect(() => parseDeviceMetrics([invalid])).toThrow('格式不正确')
     expect(() => parseDeviceMetrics([{ ...sample, state: ['running'] }])).toThrow('格式不正确')
     expect(() => parseDeviceMetrics([{ ...sample, pipeline: { ...sample.pipeline, encoders: [{ hardware: 'true' }] } }])).toThrow('格式不正确')
+  })
+})
+
+const device: DeviceItem = {
+  id: 'capture', name: 'HDMI 1', input_type: 'v4l2', input_value: '/dev/video0', description: '',
+  include_audio: false, record: false, created_at: '', updated_at: '',
+  config: { output: { audio_bus_id: 'first', audio_mode: 'program' } },
+}
+const mixer: MixerState = {
+  sources: [], buses: [{ id: 'first', enabled: true, publish_url: '', flv_url: '',
+    profile: { codec: 'aac', sample_rate: 48000, channels: 2, bitrate: 128000 },
+    inputs: [{ source_id: 'alsa:D6911codec', volume: 165, muted: false }, { source_id: 'alsa:rockchiphdmiin', volume: 174, muted: true }],
+  }],
+}
+function withAudio(): DeviceMetrics {
+  const metrics = structuredClone(sample)
+  if (!metrics.pipeline) throw new Error('fixture pipeline missing')
+  const video = metrics.pipeline.input[0]
+  if (!video) throw new Error('fixture video missing')
+  const audio = { ...video, index: 1, kind: 'audio', codec: 'aac', sample_rate: 48000, channels: 2 }
+  metrics.pipeline.input.push(audio)
+  metrics.pipeline.output.push({ id: 'audio', destination: 'encoded', traffic_available: true, stream: audio })
+  return metrics
+}
+
+describe('audio and video provenance', () => {
+  it('shows disabled original audio even when an input audio track exists, and traces hardware mixing', () => {
+    const wrapper = mount(DeviceFlowTopology, { props: { device, metrics: withAudio(), mixer,
+      audioSources: [{ id: 'alsa:D6911codec', name: 'HDMI 1 音频', kind: 'alsa' }, { id: 'alsa:rockchiphdmiin', name: 'HDMI 2 音频', kind: 'alsa' }],
+    } })
+    expect(wrapper.find('.flow-input').text()).toContain('原音频已禁用 · 不进入输出')
+    expect(wrapper.find('.flow-output').text()).toContain('来源：混音总线 first')
+    expect(wrapper.find('.flow-video-route').text()).toContain('HDMI 1 · /dev/video0 → 视频编码 → 视频输出')
+    expect(wrapper.find('.flow-mixer-path').text()).toContain('HDMI 1 音频165%')
+    expect(wrapper.find('.flow-mixer-path').text()).toContain('HDMI 2 音频174% · 已静音')
+    expect(wrapper.find('.flow-mixer-path .flow-disabled').exists()).toBe(true)
+  })
+  it('retains a disabled original-audio node when the input has no audio track', () => {
+    const wrapper = mount(DeviceFlowTopology, { props: { device, metrics: sample, mixer } })
+    expect(wrapper.find('.flow-original').text()).toContain('已禁用 · 不进入输出')
+    expect(wrapper.find('.flow-audio-route').text()).toContain('暂无音频输出')
+  })
+  it('identifies input audio without mixing and original-audio addition with mixing', async () => {
+    const wrapper = mount(DeviceFlowTopology, { props: { device: { ...device, include_audio: true, config: { output: { use_global_audio: false } } }, metrics: withAudio(), mixer } })
+    expect(wrapper.find('.flow-output').text()).toContain('输入原音频（HDMI 1 · /dev/video0）')
+    await wrapper.setProps({ device: { ...device, include_audio: true, config: { output: { audio_bus_id: 'first', audio_mode: 'add_original' } } } })
+    expect(wrapper.find('.flow-output').text()).toContain('混音总线 first + 输入原音频')
+  })
+  it('does not attribute silent audio or unknown audio to a stopped mixer', () => {
+    const metrics = structuredClone(sample)
+    metrics.distribution = { schema: 'rtsp', app: 'device', stream: 'capture', total_reader_count: 0, bytes_per_second: 1,
+      tracks: [{ codec_name: 'AAC', is_video: false, width: 0, height: 0, fps: 0, sample_rate: 8000, channels: 1, bit_rate: 0 }],
+    }
+    const stopped = { ...mixer, buses: mixer.buses.map(bus => ({ ...bus, enabled: false })) }
+    const wrapper = mount(DeviceFlowTopology, { props: { device, metrics, mixer: stopped } })
+    expect(wrapper.find('.flow-output').text()).toContain('来源：分发服务生成，无输入音频数据')
+    expect(wrapper.find('.flow-audio-route').text()).toContain('分发服务生成的静音音轨')
+    const unknown = mount(DeviceFlowTopology, { props: { device, metrics: withAudio(), mixer: stopped, audioError: '连接失败' } })
+    expect(unknown.find('.flow-output').text()).toContain('音频来源待确认')
+    expect(unknown.text()).toContain('连接失败，请刷新音频来源')
   })
 })
