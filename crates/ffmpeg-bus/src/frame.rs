@@ -264,6 +264,10 @@ pub struct VideoFrame {
 }
 
 impl VideoFrame {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Preserve the public frame constructor and its independent media fields"
+    )]
     pub fn new(
         data: Vec<u8>,
         width: u32,
@@ -289,9 +293,9 @@ impl VideoFrame {
     pub fn new_encoded(data: Vec<u8>, width: u32, height: u32, codec_id: i32) -> Self {
         Self {
             data: Bytes::from(data),
-            width: width,
-            height: height,
-            codec_id: codec_id,
+            width,
+            height,
+            codec_id,
             ..Default::default()
         }
     }

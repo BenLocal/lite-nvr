@@ -400,7 +400,7 @@ impl Bus {
             async move { Self::inner_loop(cancel_clone, rx, deferred, shutdown_clone).await },
         );
         Self {
-            id: id,
+            id,
             cancel,
             tx,
             shutdown,
@@ -620,10 +620,10 @@ impl Bus {
         output: &OutputConfig,
     ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
         if let Some(audio) = &output.external_audio {
-            if !state.live {
-                if let Some(input) = &state.input_task {
-                    input.set_paced();
-                }
+            if !state.live
+                && let Some(input) = &state.input_task
+            {
+                input.set_paced();
             }
             if output.av_type == OutputAvType::Audio
                 && matches!(output.dest, OutputDest::Demuxed | OutputDest::Encoded)
@@ -992,17 +992,17 @@ impl Bus {
         primary_index: usize,
         output: &OutputConfig,
     ) -> anyhow::Result<Vec<MuxPlanEntry>> {
-        if output.av_type == OutputAvType::Audio {
-            if let Some(audio) = &output.external_audio {
-                return Ok(vec![MuxPlanEntry {
-                    input_index: primary_index,
-                    transcode: false,
-                    encode: None,
-                    codec_id: audio.stream().parameters().id(),
-                    encoder_key: None,
-                    external_audio: Some(audio.clone()),
-                }]);
-            }
+        if output.av_type == OutputAvType::Audio
+            && let Some(audio) = &output.external_audio
+        {
+            return Ok(vec![MuxPlanEntry {
+                input_index: primary_index,
+                transcode: false,
+                encode: None,
+                codec_id: audio.stream().parameters().id(),
+                encoder_key: None,
+                external_audio: Some(audio.clone()),
+            }]);
         }
         let primary = state
             .input_streams
@@ -1450,10 +1450,10 @@ impl Bus {
             loop {
                 match input_receiver.recv().await {
                     Ok(RawPacketCmd::Data(packet)) => {
-                        if packet.index() == target_stream_index {
-                            if tx.send(Some(VideoFrame::from(packet))).await.is_err() {
-                                break;
-                            }
+                        if packet.index() == target_stream_index
+                            && tx.send(Some(VideoFrame::from(packet))).await.is_err()
+                        {
+                            break;
                         }
                     }
                     Ok(RawPacketCmd::EOF) => {
@@ -1600,7 +1600,7 @@ impl Bus {
         params: &ffmpeg_next::codec::Parameters,
     ) -> (u32, u32, ffmpeg_next::format::Pixel) {
         unsafe {
-            let ptr = params.as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
+            let ptr = params.as_ptr();
             let w = (*ptr).width.max(0) as u32;
             let h = (*ptr).height.max(0) as u32;
             let fmt = (*ptr).format;
@@ -2123,6 +2123,10 @@ impl BusState {
 
 pub type VideoRawFrameStream = Pin<Box<dyn Stream<Item = Option<VideoFrame>> + Send + Sync>>;
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Keep the existing public command payload API without adding allocation to each output command"
+)]
 pub enum BusCommand {
     Metrics {
         result: tokio::sync::oneshot::Sender<crate::metrics::BusMetrics>,
@@ -2223,10 +2227,10 @@ impl OutputConfig {
 }
 
 pub enum OutputDest {
-    ///! Mux to a network stream (no seekable), some times called live streaming
-    ///! eg: rtmp://localhost:1935/live/stream
-    ///! eg: rtsp://host:8554/path
-    ///! format: e.g. "rtsp", "flv" (required for URL-only outputs; None = guess from URL)
+    /// Mux to a network stream (no seekable), some times called live streaming
+    /// eg: rtmp://localhost:1935/live/stream
+    /// eg: rtsp://host:8554/path
+    /// format: e.g. "rtsp", "flv" (required for URL-only outputs; None = guess from URL)
     Net { url: String, format: Option<String> },
     /// Mux to a file (seekable). Produces standard MP4 that any player can open.
     File { path: String },

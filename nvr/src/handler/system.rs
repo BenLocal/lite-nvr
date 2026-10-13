@@ -319,6 +319,7 @@ fn has_cap(
 }
 
 /// Order nodes as video0, video1, ..., video10 instead of lexically.
+#[cfg(any(target_os = "linux", test))]
 fn sort_video_paths(paths: &mut [std::path::PathBuf]) {
     fn key(path: &std::path::Path) -> (String, u64) {
         let name = path.file_name().unwrap_or_default().to_string_lossy();

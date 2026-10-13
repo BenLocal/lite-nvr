@@ -622,7 +622,7 @@ impl Encoder {
         Ok(Self {
             stream: stream.clone(),
             inner: EncoderType::Video(encoder),
-            encoder_time_base: encoder_time_base,
+            encoder_time_base,
             interleaved: false,
             frame_index: 0,
             scaler: None,
@@ -653,7 +653,7 @@ impl Encoder {
 
         // Use settings or fall back to input stream parameters
         let sample_rate = settings.sample_rate.unwrap_or_else(|| unsafe {
-            let ptr = stream.parameters().as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
+            let ptr = stream.parameters().as_ptr();
             (*ptr).sample_rate.max(0) as u32
         });
         let sample_rate = if sample_rate == 0 { 44100 } else { sample_rate };
@@ -674,7 +674,7 @@ impl Encoder {
 
         // Set channel layout
         let channels = settings.channels.unwrap_or_else(|| unsafe {
-            let ptr = stream.parameters().as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
+            let ptr = stream.parameters().as_ptr();
             let ch = ffmpeg_next::ffi::AVChannelLayout { ..(*ptr).ch_layout };
             ch.nb_channels.max(0) as u32
         });
@@ -1055,6 +1055,12 @@ pub struct EncoderTask {
     /// Stop once the last output subscriber leaves (bus-managed encoders).
     auto_stop: bool,
     handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl Default for EncoderTask {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EncoderTask {

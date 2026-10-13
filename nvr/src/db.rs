@@ -16,9 +16,9 @@ pub(crate) async fn init_app_db(url: &str) -> anyhow::Result<&'static NvrDatabas
 }
 
 fn get_app_db() -> anyhow::Result<&'static NvrDatabase> {
-    Ok(APP_DB
+    APP_DB
         .get()
-        .ok_or(anyhow::anyhow!("APP_DB not initialized"))?)
+        .ok_or(anyhow::anyhow!("APP_DB not initialized"))
 }
 
 /// Returns a fresh `turso::Connection` for the current unit of work.

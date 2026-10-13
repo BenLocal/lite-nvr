@@ -215,6 +215,10 @@ async fn archive_record_file(
     Ok(target_path)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Arguments mirror the media server recording callback fields"
+)]
 async fn persist_record_ts(
     start_time: u64,
     duration: f32,

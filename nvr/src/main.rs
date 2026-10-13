@@ -78,10 +78,10 @@ async fn main() -> ! {
     zlm::server::start_zlm_server(cancel_clone, ready_tx).unwrap();
 
     // start the GB28181 platform (on-demand bridge) if configured
-    if let Some(gb_cfg) = config.gb().cloned() {
-        if let Err(e) = crate::gb::init(gb_cfg).await {
-            log::error!("Failed to init gb28181 bridge: {:#}", e);
-        }
+    if let Some(gb_cfg) = config.gb().cloned()
+        && let Err(e) = crate::gb::init(gb_cfg).await
+    {
+        log::error!("Failed to init gb28181 bridge: {:#}", e);
     }
 
     // init device pipes

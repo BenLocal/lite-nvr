@@ -271,10 +271,10 @@ impl GbBridge {
         let _operation = self.operations.lock(stream_id).await;
         let live = self.active.lock().unwrap().contains_key(stream_id);
         self.teardown(stream_id).await;
-        if live || crate::audiomixer::MIXER.has_source(stream_id) {
-            if let Some(mapping) = self.streams.get(stream_id) {
-                self.start_pull(stream_id, &mapping).await?;
-            }
+        if (live || crate::audiomixer::MIXER.has_source(stream_id))
+            && let Some(mapping) = self.streams.get(stream_id)
+        {
+            self.start_pull(stream_id, &mapping).await?;
         }
         Ok(())
     }

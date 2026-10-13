@@ -108,7 +108,7 @@ pub async fn list(conn: &Connection) -> anyhow::Result<Vec<DeviceInfo>> {
         .filter_map(|kv| kv.value)
         .map(|value| serde_json::from_str::<DeviceInfo>(&value))
         .collect::<Result<Vec<_>, _>>()?;
-    devices.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    devices.sort_by_key(|device| std::cmp::Reverse(device.updated_at));
     Ok(devices)
 }
 

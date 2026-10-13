@@ -11,7 +11,7 @@ pub fn get_extradata(codec_params: &Parameters) -> Option<&[u8]> {
     // the returned slice cannot outlive that shared borrow. Size/null are checked.
     unsafe {
         // AVCodecParameters has extradata (uint8_t*) and extradata_size (int)
-        let p = codec_params.as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
+        let p = codec_params.as_ptr();
         let extradata_ptr = (*p).extradata;
         if extradata_ptr.is_null() {
             return None;

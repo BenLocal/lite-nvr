@@ -114,13 +114,13 @@ fn base_path_of(target: &TransportTarget) -> String {
 pub fn redact_config(config: &str) -> String {
     match serde_json::from_str::<serde_json::Value>(config) {
         Ok(mut value) => {
-            if let Some(obj) = value.as_object_mut() {
-                if obj.contains_key("password") {
-                    obj.insert(
-                        "password".to_string(),
-                        serde_json::Value::String(String::new()),
-                    );
-                }
+            if let Some(obj) = value.as_object_mut()
+                && obj.contains_key("password")
+            {
+                obj.insert(
+                    "password".to_string(),
+                    serde_json::Value::String(String::new()),
+                );
             }
             value.to_string()
         }

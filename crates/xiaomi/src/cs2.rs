@@ -176,10 +176,10 @@ fn handshake(host: &str, transport: &str) -> Result<Transport> {
 }
 
 fn resolve_addr(host: &str, default_port: u16) -> Result<SocketAddr> {
-    if let Ok(mut it) = host.to_socket_addrs() {
-        if let Some(a) = it.next() {
-            return Ok(a);
-        }
+    if let Ok(mut it) = host.to_socket_addrs()
+        && let Some(a) = it.next()
+    {
+        return Ok(a);
     }
     let ip: Ipv4Addr = host
         .parse()
@@ -199,7 +199,7 @@ fn write_until(
     let mut last_send = Instant::now() - Duration::from_secs(2);
     loop {
         if last_send.elapsed() >= Duration::from_secs(1) {
-            sock.send_to(req, &*addr)?;
+            sock.send_to(req, *addr)?;
             last_send = Instant::now();
         }
         match sock.recv_from(&mut buf) {
@@ -542,7 +542,7 @@ mod tests {
         let mut ch = DataChannel::new(10);
         // one record "hello" split across two pushes
         ch.push(&[0, 0, 0, 5, b'h', b'e'], &tx).unwrap();
-        ch.push(&[b'l', b'l', b'o'], &tx).unwrap();
+        ch.push(b"llo", &tx).unwrap();
         assert_eq!(rx.recv().unwrap(), b"hello");
     }
 

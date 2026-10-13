@@ -1,5 +1,6 @@
 use serde::Serialize;
 
+#[cfg(test)]
 pub const TERMINAL_SOURCE: &str = "alsa:rockchipes8388";
 const PHYSICAL_INPUTS: [(&str, &str); 3] = [
     ("rockchipes8388", "端子音频（左右双声道）"),

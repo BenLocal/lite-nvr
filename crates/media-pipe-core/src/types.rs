@@ -212,9 +212,9 @@ pub enum InputConfig {
     Device { display: String, format: String },
 }
 
-impl Into<ffmpeg_bus::bus::InputConfig> for InputConfig {
-    fn into(self) -> ffmpeg_bus::bus::InputConfig {
-        match self {
+impl From<InputConfig> for ffmpeg_bus::bus::InputConfig {
+    fn from(val: InputConfig) -> Self {
+        match val {
             InputConfig::Network { url } => ffmpeg_bus::bus::InputConfig::Net { url },
             InputConfig::File { path } => ffmpeg_bus::bus::InputConfig::File { path },
             InputConfig::Device { display, format } => {
@@ -245,6 +245,10 @@ pub struct VideoRawFrame {
 }
 
 impl VideoRawFrame {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Preserve the public frame constructor and its independent media fields"
+    )]
     pub fn new(
         data: Vec<u8>,
         width: u32,
@@ -289,9 +293,9 @@ impl Clone for VideoRawFrame {
     }
 }
 
-impl Into<Option<FbOutputConfig>> for OutputConfig {
-    fn into(self) -> Option<FbOutputConfig> {
-        to_fb_output(&self)
+impl From<OutputConfig> for Option<FbOutputConfig> {
+    fn from(val: OutputConfig) -> Self {
+        to_fb_output(&val)
     }
 }
 

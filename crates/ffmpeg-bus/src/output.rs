@@ -152,7 +152,7 @@ impl AvOutput {
                 callback: Some(output_interrupt_callback),
                 opaque: Arc::as_ptr(&interrupt) as *mut std::ffi::c_void,
             };
-            let nofile = (*(*ps).oformat).flags & ffmpeg_next::ffi::AVFMT_NOFILE as i32 != 0;
+            let nofile = (*(*ps).oformat).flags & ffmpeg_next::ffi::AVFMT_NOFILE != 0;
             if nofile {
                 // RTSP & co: the muxer connects in write_header, with these.
                 if let Some(opts) = options {
@@ -546,7 +546,7 @@ impl AvOutputStream {
 /// Reads video width/height from codec parameters (not exposed by ffmpeg-next).
 fn video_size_from_parameters(params: &ffmpeg_next::codec::Parameters) -> (u32, u32) {
     unsafe {
-        let ptr = params.as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
+        let ptr = params.as_ptr();
         let w = (*ptr).width;
         let h = (*ptr).height;
         (w.max(0) as u32, h.max(0) as u32)
@@ -576,7 +576,7 @@ fn set_mp4_movflags(output: &mut Output) -> anyhow::Result<()> {
 /// Helper functions for raw output
 /// Copy from https://github.com/oddity-ai/video-rs/blob/main/src/ffi.rs
 /// ------------------------------------------------------------
-
+///
 /// This function is similar to the existing bindings in ffmpeg-next like `output` and `output_as`,
 /// but does not assume that it is opening a file-like context. Instead, it opens a raw output,
 /// without a file attached.

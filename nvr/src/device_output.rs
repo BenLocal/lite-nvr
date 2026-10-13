@@ -81,42 +81,40 @@ pub(crate) fn apply(outputs: &mut [OutputConfig], cfg: Option<&Settings>) {
     let Some(cfg) = cfg else {
         return;
     };
-    if cfg.video_codec.is_some()
+    if (cfg.video_codec.is_some()
         || cfg.width.is_some()
         || cfg.fps.is_some()
-        || cfg.max_bitrate.is_some()
+        || cfg.max_bitrate.is_some())
+        && let Some(video) = outputs.first_mut()
     {
-        if let Some(video) = outputs.first_mut() {
-            video.encode = Some(EncodeConfig {
-                codec: match cfg.video_codec {
-                    Some(VideoCodec::H265) => "hevc",
-                    _ => "h264",
-                }
-                .to_owned(),
-                width: cfg.width,
-                height: cfg.height,
-                fps: cfg.fps,
-                max_bitrate: cfg.max_bitrate,
-                downscale_only: true,
-                pixel_format: Some("yuv420p".to_owned()),
-                ..EncodeConfig::default()
-            });
-        }
+        video.encode = Some(EncodeConfig {
+            codec: match cfg.video_codec {
+                Some(VideoCodec::H265) => "hevc",
+                _ => "h264",
+            }
+            .to_owned(),
+            width: cfg.width,
+            height: cfg.height,
+            fps: cfg.fps,
+            max_bitrate: cfg.max_bitrate,
+            downscale_only: true,
+            pixel_format: Some("yuv420p".to_owned()),
+            ..EncodeConfig::default()
+        });
     }
     if (cfg.audio_codec.is_some() || cfg.sample_rate.is_some())
         && outputs.iter().all(|o| o.external_audio.is_none())
+        && let Some(audio) = outputs.get_mut(1)
     {
-        if let Some(audio) = outputs.get_mut(1) {
-            audio.encode = Some(EncodeConfig {
-                codec: match cfg.audio_codec {
-                    Some(AudioCodec::Opus) => "libopus",
-                    _ => "aac",
-                }
-                .to_owned(),
-                sample_rate: cfg.sample_rate,
-                ..EncodeConfig::default()
-            });
-        }
+        audio.encode = Some(EncodeConfig {
+            codec: match cfg.audio_codec {
+                Some(AudioCodec::Opus) => "libopus",
+                _ => "aac",
+            }
+            .to_owned(),
+            sample_rate: cfg.sample_rate,
+            ..EncodeConfig::default()
+        });
     }
 }
 

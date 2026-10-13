@@ -24,7 +24,6 @@ pub(crate) fn init_device_pipes(
          },
          _ = cancel.cancelled() => {
              log::info!("Cancel signal received");
-             return;
          },
         }
     });

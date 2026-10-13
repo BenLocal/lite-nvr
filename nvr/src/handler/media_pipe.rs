@@ -127,10 +127,7 @@ async fn add_pipe(Json(config): Json<PipeRequest>) -> ApiJsonResult<String> {
         _ => return Err(anyhow::anyhow!("input type is not supported").into()),
     };
 
-    let pipe_config = PipeConfig {
-        input: input,
-        outputs: outputs,
-    };
+    let pipe_config = PipeConfig { input, outputs };
     manager::add_pipe(&config.id, pipe_config).await?;
     Ok(ok_json("success".to_string()))
 }

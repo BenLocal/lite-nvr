@@ -415,7 +415,7 @@ async fn segment_playlist(
     // boundaries for it to stutter on. Byte-level seeking is still available
     // because /api/playback/segment/{id} honors Range requests.
     let target_duration = (segment.duration.ceil() as i32).max(1);
-    let lines = vec![
+    let lines = [
         "#EXTM3U".to_string(),
         "#EXT-X-VERSION:3".to_string(),
         format!("#EXT-X-TARGETDURATION:{}", target_duration),

@@ -167,12 +167,11 @@ fn merge_password(existing_config: &str, mut incoming: serde_json::Value) -> Str
             .and_then(|value| value.as_str())
             .map(str::is_empty)
             .unwrap_or(true);
-        if blank {
-            if let Ok(old) = serde_json::from_str::<serde_json::Value>(existing_config) {
-                if let Some(password) = old.get("password") {
-                    obj.insert("password".to_string(), password.clone());
-                }
-            }
+        if blank
+            && let Ok(old) = serde_json::from_str::<serde_json::Value>(existing_config)
+            && let Some(password) = old.get("password")
+        {
+            obj.insert("password".to_string(), password.clone());
         }
     }
     incoming.to_string()

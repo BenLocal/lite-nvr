@@ -107,7 +107,7 @@ pub fn probe(path: &str) -> anyhow::Result<MediaInfo> {
     // AV_TIME_BASE = 1_000_000; duration is in 1/AV_TIME_BASE seconds
     let duration_sec = {
         let d = input.duration();
-        if d == ffmpeg_next::ffi::AV_NOPTS_VALUE as i64 || d <= 0 {
+        if d == ffmpeg_next::ffi::AV_NOPTS_VALUE || d <= 0 {
             None
         } else {
             Some(d as f64 / 1_000_000.0)
@@ -121,7 +121,7 @@ pub fn probe(path: &str) -> anyhow::Result<MediaInfo> {
             .ok_or_else(|| anyhow::anyhow!("stream {} not found", i))?;
         let duration_ts = {
             let d = stream.duration();
-            if d == ffmpeg_next::ffi::AV_NOPTS_VALUE as i64 || d < 0 {
+            if d == ffmpeg_next::ffi::AV_NOPTS_VALUE || d < 0 {
                 None
             } else {
                 Some(d)
@@ -175,7 +175,7 @@ pub fn probe(path: &str) -> anyhow::Result<MediaInfo> {
 /// Reads video width/height from codec parameters (not exposed by ffmpeg-next).
 fn video_size_from_parameters(params: &ffmpeg_next::codec::Parameters) -> (u32, u32) {
     unsafe {
-        let ptr = params.as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
+        let ptr = params.as_ptr();
         let w = (*ptr).width;
         let h = (*ptr).height;
         (w.max(0) as u32, h.max(0) as u32)
@@ -185,7 +185,7 @@ fn video_size_from_parameters(params: &ffmpeg_next::codec::Parameters) -> (u32, 
 /// Reads audio sample rate and channel count from codec parameters.
 fn audio_params_from_parameters(params: &ffmpeg_next::codec::Parameters) -> (u32, u32) {
     unsafe {
-        let ptr = params.as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
+        let ptr = params.as_ptr();
         let sr = (*ptr).sample_rate;
         let ch = (*ptr).ch_layout.nb_channels;
         (sr.max(0) as u32, ch.max(0) as u32)

@@ -182,10 +182,10 @@ pub async fn initialize() -> anyhow::Result<()> {
                     _ = stop.cancelled() => return,
                     r = tokio::time::timeout(std::time::Duration::from_millis(300),pipe.subscribe_audio()) => r,
                 };
-                if let Ok(Ok(receiver)) = receiver {
-                    if super::MIXER.attach_source(&id, receiver).is_ok() {
-                        attached.insert(id, (Arc::downgrade(pipe), Arc::downgrade(&source)));
-                    }
+                if let Ok(Ok(receiver)) = receiver
+                    && super::MIXER.attach_source(&id, receiver).is_ok()
+                {
+                    attached.insert(id, (Arc::downgrade(pipe), Arc::downgrade(&source)));
                 }
             }
             attached.retain(|id, _| pipes.contains_key(id));
@@ -283,10 +283,10 @@ pub(super) async fn apply_devices(
     hub: &'static crate::detect::hub::DetectHub,
 ) -> anyhow::Result<()> {
     for device in devices {
-        if device.input_type == "gb28181" {
-            if let Some(bridge) = crate::gb::bridge() {
-                bridge.refresh_program(&device.id).await?;
-            }
+        if device.input_type == "gb28181"
+            && let Some(bridge) = crate::gb::bridge()
+        {
+            bridge.refresh_program(&device.id).await?;
         }
         crate::init::device::ensure_device_pipe(hub, device).await?;
     }

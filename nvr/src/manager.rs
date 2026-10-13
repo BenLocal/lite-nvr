@@ -58,10 +58,10 @@ impl Entry {
     async fn join(self) {
         match self {
             Entry::Pipe { handle, .. } | Entry::ReconnectingPipe { handle, .. } => {
-                if let Err(e) = handle.await {
-                    if !e.is_cancelled() {
-                        log::warn!("pipe task ended with error: {}", e);
-                    }
+                if let Err(e) = handle.await
+                    && !e.is_cancelled()
+                {
+                    log::warn!("pipe task ended with error: {}", e);
                 }
             }
             Entry::Worker {
@@ -85,10 +85,10 @@ impl Entry {
                 }
             }
             Entry::Task { handle, .. } => {
-                if let Err(e) = handle.await {
-                    if !e.is_cancelled() {
-                        log::warn!("stream worker task ended with error: {}", e);
-                    }
+                if let Err(e) = handle.await
+                    && !e.is_cancelled()
+                {
+                    log::warn!("stream worker task ended with error: {}", e);
                 }
             }
         }

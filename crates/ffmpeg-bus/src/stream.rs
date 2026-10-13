@@ -58,14 +58,14 @@ impl AvStream {
 
     pub fn width(&self) -> u32 {
         unsafe {
-            let ptr = self.parameters.as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
+            let ptr = self.parameters.as_ptr();
             (*ptr).width.max(0) as u32
         }
     }
 
     pub fn height(&self) -> u32 {
         unsafe {
-            let ptr = self.parameters.as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
+            let ptr = self.parameters.as_ptr();
             (*ptr).height.max(0) as u32
         }
     }
@@ -76,14 +76,14 @@ impl AvStream {
 
     pub fn sample_rate(&self) -> u32 {
         unsafe {
-            let ptr = self.parameters.as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
+            let ptr = self.parameters.as_ptr();
             (*ptr).sample_rate.max(0) as u32
         }
     }
 
     pub fn channels(&self) -> u32 {
         unsafe {
-            let ptr = self.parameters.as_ptr() as *const ffmpeg_next::ffi::AVCodecParameters;
+            let ptr = self.parameters.as_ptr();
             let n = (*ptr).ch_layout.nb_channels;
             n.max(0) as u32
         }

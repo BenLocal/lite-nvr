@@ -286,10 +286,10 @@ async fn save_and_apply_device(
         // builds none, so `ensure_device_pipe` won't replace it). Both are
         // idempotent no-ops otherwise; non-gb↔non-gb keeps its upsert-in-place path.
         if let Some(existing) = existing.filter(|old| old.input_type != device.input_type) {
-            if existing.input_type == "gb28181" {
-                if let Some(bridge) = crate::gb::bridge() {
-                    bridge.unregister_mapping(&device.id).await;
-                }
+            if existing.input_type == "gb28181"
+                && let Some(bridge) = crate::gb::bridge()
+            {
+                bridge.unregister_mapping(&device.id).await;
             }
             // Leaving onvif must drop the registry entry (PTZ / stream re-resolve
             // read from it), mirroring the gb28181 mapping cleanup above. The

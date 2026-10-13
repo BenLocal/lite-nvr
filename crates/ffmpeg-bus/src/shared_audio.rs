@@ -77,11 +77,10 @@ impl SharedEncodedAudio {
                         _ = cancel.cancelled() => Some(Ok(RawPacketCmd::EOF)),
                         r = input.recv() => match r {
                             Ok(RawPacketCmd::Data(p)) if p.index() == reference.index() => {
-                                if timeline.is_none() {
-                                    if let Some(pts) = p.pts().or(p.dts()) {
+                                if timeline.is_none()
+                                    && let Some(pts) = p.pts().or(p.dts()) {
                                         timeline = Some(AudioTimeline::new(time_base, pts.rescale(p.time_base(), time_base)));
                                     }
-                                }
                                 None
                             }
                             Ok(RawPacketCmd::EOF) | Err(tokio::sync::broadcast::error::RecvError::Closed) => Some(Ok(RawPacketCmd::EOF)),

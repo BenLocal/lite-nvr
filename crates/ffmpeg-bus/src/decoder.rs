@@ -477,6 +477,12 @@ pub struct DecoderTask {
     handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
+impl Default for DecoderTask {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DecoderTask {
     pub fn new() -> Self {
         Self {

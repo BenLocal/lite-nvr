@@ -23,6 +23,12 @@ pub struct AvInputTask {
     traffic: std::sync::Mutex<HashMap<usize, Arc<crate::metrics::Traffic>>>,
 }
 
+impl Default for AvInputTask {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AvInputTask {
     /// Input packet channel. Bounded per-frame size; balance memory vs avoiding Lagged drop.
     const PACKET_CHAN_CAP: usize = 4096;
@@ -74,23 +80,20 @@ impl AvInputTask {
                     }
                     match input.read() {
                         ReadOutcome::Packet(packet) => {
-                            if paced.load(Ordering::Relaxed) {
-                                if let Some(pts) = packet.dts().or(packet.pts()) {
-                                    let us =
-                                        pts.rescale(packet.time_base(), Rational(1, 1_000_000));
-                                    let (start, instant) =
-                                        *clock.get_or_insert((us, Instant::now()));
-                                    let delay = Duration::from_micros(
-                                        u64::try_from(us.saturating_sub(start)).unwrap_or(0),
+                            if paced.load(Ordering::Relaxed)
+                                && let Some(pts) = packet.dts().or(packet.pts())
+                            {
+                                let us = pts.rescale(packet.time_base(), Rational(1, 1_000_000));
+                                let (start, instant) = *clock.get_or_insert((us, Instant::now()));
+                                let delay = Duration::from_micros(
+                                    u64::try_from(us.saturating_sub(start)).unwrap_or(0),
+                                );
+                                while !cancel_inner.is_cancelled() && instant.elapsed() < delay {
+                                    std::thread::sleep(
+                                        delay
+                                            .saturating_sub(instant.elapsed())
+                                            .min(Duration::from_millis(2)),
                                     );
-                                    while !cancel_inner.is_cancelled() && instant.elapsed() < delay
-                                    {
-                                        std::thread::sleep(
-                                            delay
-                                                .saturating_sub(instant.elapsed())
-                                                .min(Duration::from_millis(2)),
-                                        );
-                                    }
                                 }
                             }
                             if let Some(counter) = traffic.get(&packet.index()) {

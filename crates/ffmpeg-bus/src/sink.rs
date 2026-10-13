@@ -45,9 +45,7 @@ impl Stream for RawFrameStream<'_> {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut guard = self.source.inner.lock().unwrap();
-        guard
-            .poll_recv(cx)
-            .map(|opt| opt.map(|frame| frame.clone()))
+        guard.poll_recv(cx).map(|opt| opt)
     }
 }
 
@@ -56,9 +54,7 @@ impl Stream for RawSinkSource {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut guard = self.get_mut().inner.lock().unwrap();
-        guard
-            .poll_recv(cx)
-            .map(|opt| opt.map(|frame| frame.clone()))
+        guard.poll_recv(cx).map(|opt| opt)
     }
 }
 
@@ -71,9 +67,7 @@ impl Stream for RawSinkSourceStream {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let source = &self.0;
         let mut guard = source.inner.lock().unwrap();
-        guard
-            .poll_recv(cx)
-            .map(|opt| opt.map(|frame| frame.clone()))
+        guard.poll_recv(cx).map(|opt| opt)
     }
 }
 

@@ -97,11 +97,11 @@ async fn probe(program: &std::path::Path, display: &str, timeout: Duration) -> b
 
 pub(crate) async fn environment() -> X11Environment {
     let mut sockets = Vec::new();
-    if cfg!(target_os = "linux") {
-        if let Ok(mut dir) = tokio::fs::read_dir("/tmp/.X11-unix").await {
-            while let Ok(Some(entry)) = dir.next_entry().await {
-                sockets.push(entry.file_name().to_string_lossy().into_owned());
-            }
+    if cfg!(target_os = "linux")
+        && let Ok(mut dir) = tokio::fs::read_dir("/tmp/.X11-unix").await
+    {
+        while let Ok(Some(entry)) = dir.next_entry().await {
+            sockets.push(entry.file_name().to_string_lossy().into_owned());
         }
     }
     let current = std::env::var("DISPLAY").ok();

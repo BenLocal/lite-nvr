@@ -88,6 +88,10 @@ pub(crate) fn filter_min_confidence(models: Vec<ModelResult>, min: f32) -> Vec<M
 ///
 /// `min_confidence` is a post-inference floor applied to every model's output;
 /// `0.0` keeps whatever each model already decided.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Detection inputs and lifecycle handles remain explicit at the existing task boundary"
+)]
 pub async fn run(
     pipe: String,
     detectors: Vec<Arc<dyn Detector>>,
@@ -109,10 +113,10 @@ pub async fn run(
         match cmd {
             Ok(RawFrameCmd::Data(RawFrame::Video(vf))) => {
                 let now = Instant::now();
-                if let Some(l) = last {
-                    if now.duration_since(l) < interval {
-                        continue; // drop frames faster than the sample rate
-                    }
+                if let Some(l) = last
+                    && now.duration_since(l) < interval
+                {
+                    continue; // drop frames faster than the sample rate
                 }
                 last = Some(now);
 

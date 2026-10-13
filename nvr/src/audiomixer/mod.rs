@@ -44,29 +44,28 @@ pub fn bus_flv_url(bus_id: &str) -> String {
 
 pub fn snapshot() -> MixerSnapshot {
     let mut state = MIXER.snapshot();
-    if state.buses.is_empty() {
-        if let Some(bus) = INACTIVE_BUS
+    if state.buses.is_empty()
+        && let Some(bus) = INACTIVE_BUS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-        {
-            state.buses.push(nvr_audio_mixer::BusSnapshot {
-                id: bus.id.clone(),
-                publish_url: bus.publish_url.clone(),
-                profile: bus.profile.clone(),
-                enabled: false,
-                inputs: bus
-                    .inputs
-                    .iter()
-                    .map(|i| nvr_audio_mixer::InputSnapshot {
-                        source_id: i.source_id.clone(),
-                        volume: i.volume,
-                        muted: i.muted,
-                        channel_map: i.channel_map,
-                    })
-                    .collect(),
-            });
-        }
+    {
+        state.buses.push(nvr_audio_mixer::BusSnapshot {
+            id: bus.id.clone(),
+            publish_url: bus.publish_url.clone(),
+            profile: bus.profile.clone(),
+            enabled: false,
+            inputs: bus
+                .inputs
+                .iter()
+                .map(|i| nvr_audio_mixer::InputSnapshot {
+                    source_id: i.source_id.clone(),
+                    volume: i.volume,
+                    muted: i.muted,
+                    channel_map: i.channel_map,
+                })
+                .collect(),
+        });
     }
     state
 }

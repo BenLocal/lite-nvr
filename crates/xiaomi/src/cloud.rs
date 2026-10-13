@@ -309,17 +309,16 @@ impl Cloud {
             if let Some(s) = headers
                 .get("Extension-Pragma")
                 .and_then(|h| h.to_str().ok())
+                && let Ok(v) = serde_json::from_str::<Ssecurity>(s)
             {
-                if let Ok(v) = serde_json::from_str::<Ssecurity>(s) {
-                    self.ssecurity = decode_b64_bytes(v.ssecurity.as_deref())?;
-                }
+                self.ssecurity = decode_b64_bytes(v.ssecurity.as_deref())?;
             }
 
-            if status.is_redirection() {
-                if let Some(loc) = headers.get(LOCATION).and_then(|h| h.to_str().ok()) {
-                    url = loc.to_string();
-                    continue;
-                }
+            if status.is_redirection()
+                && let Some(loc) = headers.get(LOCATION).and_then(|h| h.to_str().ok())
+            {
+                url = loc.to_string();
+                continue;
             }
             break;
         }

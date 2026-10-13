@@ -19,8 +19,6 @@ use nvr_compositor::{Compositor, CompositorConfig, Layout, Region, Source, Sourc
 /// can be restored at startup.
 const PERSIST_KEY: &str = "compositor_programs";
 
-/// ZLM RTMP publish endpoint (see `zlm::server`: `rtmp_server_start(8555)`).
-
 /// Grace period before the first restore attempt, letting device pipelines
 /// publish their ZLM streams.
 const RESTORE_GRACE: Duration = Duration::from_secs(3);
