@@ -1,6 +1,6 @@
 # nvr-hdmiout
 
-Rockchip HDMI 视频输出，直接使用 Linux DRM/KMS，不依赖 X11、Wayland、ZLM 或 FFmpeg。第一版仅输出视频。
+Rockchip HDMI 视频与音频输出，视频直接使用 Linux DRM/KMS，音频使用 ALSA，不依赖 X11、Wayland、ZLM 或 FFmpeg。
 
 - `list_connectors(card)`：探测 HDMI 连接状态与可用显示模式。
 - `HdmiOutput::open(&config)`：选择连接器和模式，默认 `/dev/dri/card0` 的已连接 HDMI 及首选模式。
@@ -36,3 +36,16 @@ cargo run -p nvr-hdmiout --example dual_hdmiout -- 300 "$DRM_CARD" "$FIRST_CONNE
 ```
 
 硬件测试另设 `NVR_HDMI_TEST_SIBLING=HDMI-A-2` 可验证双输出，以及关闭一路后另一路继续输出。
+
+## 音频输出
+
+`AudioOutput::open(&AudioConfig)` 打开指定 ALSA 播放设备；`write(&[i16])` 接收完整的交错 PCM 帧，默认 48000 Hz、双声道。音频写入放在专用线程，`close()` 丢弃排队音频并立即停止，非 Linux 返回 `UnsupportedAudio`。HDMI 音频需要对应 HDMI 视频输出已启用。Linux 构建需要 `libasound2-dev`，运行需要 ALSA 库及 `/dev/snd` 权限。
+
+双路视频与测试音（OUT 1 为 440 Hz，OUT 2 为 880 Hz）：
+
+```bash
+dual_hdmiout 0 /dev/dri/card0 HDMI-A-1 HDMI-A-2 \
+  hw:CARD=rockchiphdmi0,DEV=0 hw:CARD=rockchiphdmi1,DEV=0
+```
+
+设备名称须以主机 `/proc/asound/cards` 为准。时长 `0` 表示持续运行，SIGINT / SIGTERM 会停止并回收音频线程、恢复视频状态；不传 ALSA 参数仍仅输出视频。单路示例可在 `pattern` 的时长后追加 ALSA 设备与可选音调频率。Docker 需额外映射 `/dev/snd`。

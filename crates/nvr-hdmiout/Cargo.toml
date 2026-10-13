@@ -2,7 +2,7 @@
 name = "nvr-hdmiout"
 version = "0.1.0"
 edition = "2024"
-description = "Rockchip HDMI video output through Linux DRM/KMS"
+description = "HDMI video and audio output through Linux DRM/KMS and ALSA"
 
 [dependencies]
 thiserror = { workspace = true }
@@ -10,3 +10,7 @@ thiserror = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 drm = { workspace = true }
 rustix = { workspace = true }
+alsa = { workspace = true }
+
+[target.'cfg(unix)'.dev-dependencies]
+signal-hook = { workspace = true }

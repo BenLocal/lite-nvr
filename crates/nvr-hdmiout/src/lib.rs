@@ -1,4 +1,4 @@
-//! Synchronous HDMI video output using Linux DRM/KMS (including Rockchip VOP).
+//! Synchronous HDMI video/audio output using Linux DRM/KMS and ALSA.
 //!
 //! Frames use XRGB8888: on little-endian Rockchip, each pixel is B, G, R, X.
 //! Call blocking output methods on a dedicated thread, outside async executors.
@@ -6,6 +6,9 @@
 #[cfg(not(target_os = "linux"))]
 use std::path::Path;
 use std::path::PathBuf;
+
+mod audio;
+pub use audio::{AudioConfig, AudioOutput};
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -30,6 +33,15 @@ pub enum Error {
     FlipTimeout,
     #[error("output is closed or a previous page flip failed")]
     Closed,
+    #[error("HDMI audio output requires Linux ALSA")]
+    UnsupportedAudio,
+    #[error("invalid audio device, sample rate, channels, or interleaved sample count")]
+    InvalidAudio,
+    #[error("audio playback made no progress for one second")]
+    AudioTimeout,
+    #[cfg(target_os = "linux")]
+    #[error("ALSA operation failed: {0}")]
+    Audio(#[from] alsa::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

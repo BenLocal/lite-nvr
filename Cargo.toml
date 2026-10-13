@@ -51,6 +51,8 @@ turso = "0.6.1"
 tokio-linux-video = "0.1.1"
 drm = "0.15"
 rustix = { version = "1", features = ["event"] }
+alsa = "0.11"
+signal-hook = "0.3"
 # Utilities
 anyhow = "1"
 log = "0.4"

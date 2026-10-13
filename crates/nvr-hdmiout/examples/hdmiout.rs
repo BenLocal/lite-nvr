@@ -1,8 +1,8 @@
+mod common;
 use nvr_hdmiout::{HdmiOutput, OutputConfig, VideoFrame, list_connectors};
 use std::{
     io::{self, Read},
     path::PathBuf,
-    time::{Duration, Instant},
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if command != "pattern" && command != "stdin" {
-        return Err("usage: hdmiout [list|pattern|stdin] [card] [connector] [seconds=30]".into());
+        return Err("usage: hdmiout [list|pattern|stdin] [card] [connector] [seconds=30] [alsa-device] [tone-hz=440]; seconds=0 runs continuously".into());
     }
     let mut output = HdmiOutput::open(&config)?;
     let mode = output.mode();
@@ -40,9 +40,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|v| v.parse::<u64>())
         .transpose()?
         .unwrap_or(30);
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(seconds))
-        .ok_or("duration overflow")?;
+    let stop = if command == "pattern" {
+        common::stop_flag()?
+    } else {
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))
+    };
+    let deadline = common::deadline(seconds)?;
+    let frequency = args
+        .get(5)
+        .map(|value| value.parse::<f64>())
+        .transpose()?
+        .unwrap_or(440.0);
+    let devices = args
+        .get(4)
+        .map(|device| vec![(device.as_str(), frequency)])
+        .unwrap_or_default();
+    let mut audio = common::TonePlayback::start(&devices, std::sync::Arc::clone(&stop))?;
     let mut input = io::stdin().lock();
     let colors = [
         [255, 255, 255, 0],
@@ -58,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let half_height = usize::try_from(mode.height)? / 2;
     let mut line = vec![0; stride];
     if command == "pattern" {
-        for (x, pixel) in line.chunks_exact_mut(4).enumerate() {
+        for (x, pixel) in line.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             pixel.copy_from_slice(&colors[x * colors.len() / width]);
         }
         for row in pixels.chunks_exact_mut(stride).take(half_height) {
@@ -66,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let mut count = 0u64;
-    while Instant::now() < deadline {
+    while common::running(deadline, &stop) {
         if command == "stdin" {
             match input.read_exact(&mut pixels) {
                 Ok(()) => {}
@@ -76,7 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             // Generate a single moving row, then copy it; avoid rendering every
             // pixel with integer division on each frame of the hardware demo.
-            for (x, pixel) in line.chunks_exact_mut(4).enumerate() {
+            for (x, pixel) in line.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 let bright =
                     (u64::try_from(x)? + count.wrapping_mul(8)) % u64::from(mode.width) < 64;
                 pixel.copy_from_slice(if bright { &[255, 255, 255, 0] } else { &[0; 4] });
@@ -93,6 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })?;
         count = count.wrapping_add(1);
     }
+    audio.finish()?;
     output.close()?;
     eprintln!("Presented {count} frames");
     Ok(())
