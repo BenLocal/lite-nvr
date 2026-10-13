@@ -253,7 +253,7 @@ impl AvOutput {
         self.write_header()?;
         let time_base = packet.time_base();
 
-        let p = packet.get_mut();
+        let p = packet.get_mut()?;
         // Ensure PTS/DTS are set (FFmpeg deprecates unset timestamps)
         let pts = p.pts();
         let dts = p.dts();
@@ -382,7 +382,7 @@ impl AvOutputStreamWriter {
         }
 
         let time_base = packet.time_base();
-        let p = packet.get_mut();
+        let p = packet.get_mut()?;
         p.set_stream(0);
         p.set_position(-1);
         let out_time_base = self.inner.stream(0).unwrap().time_base();

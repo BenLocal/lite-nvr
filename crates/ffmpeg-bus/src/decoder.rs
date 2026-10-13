@@ -139,7 +139,7 @@ impl DecoderType {
         decoder_time_base: Rational,
     ) -> anyhow::Result<()> {
         let time_base = packet.time_base();
-        let packet = packet.get_mut();
+        let packet = packet.get_mut()?;
         // Only rescale when time bases differ; rescale_ts can cause EINVAL for some codecs (e.g. WRAPPED_AVFRAME).
         if time_base != decoder_time_base {
             packet.rescale_ts(time_base, decoder_time_base);
@@ -423,7 +423,7 @@ fn prepend_parameter_sets(packet: &mut RawPacket, sets: &[u8]) -> anyhow::Result
         .checked_add(sets.len())
         .ok_or_else(|| anyhow::anyhow!("decoder packet too large"))?;
     i32::try_from(total)?;
-    let packet = packet.get_mut();
+    let packet = packet.get_mut()?;
     packet.grow(sets.len());
     let data = packet
         .data_mut()

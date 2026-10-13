@@ -139,17 +139,7 @@ impl AudioTimeline {
             .anchor
             .checked_sub(origin)
             .ok_or_else(|| anyhow::anyhow!("audio timestamp offset overflow"))?;
-        use ffmpeg_next::codec::packet::{Mut, Ref};
-        let mut mapped = ffmpeg_next::Packet::empty();
-        // SAFETY: destination is an initialized empty AVPacket, source stays
-        // alive through this call. Only the independent packet header is
-        // subsequently changed; the shared codec payload is never written.
-        let result = unsafe {
-            ffmpeg_next::ffi::av_packet_ref(mapped.as_mut_ptr(), packet.packet().as_ptr())
-        };
-        if result < 0 {
-            return Err(ffmpeg_next::Error::from(result).into());
-        }
+        let mut mapped = packet.referenced_packet()?;
         mapped.rescale_ts(source_time_base, self.time_base);
         for value in [mapped.pts(), mapped.dts()].into_iter().flatten() {
             anyhow::ensure!(

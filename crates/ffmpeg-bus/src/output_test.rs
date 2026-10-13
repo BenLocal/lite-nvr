@@ -123,8 +123,8 @@ async fn test_network_output_write_is_interruptible() -> anyhow::Result<()> {
         // Keep writing (re-timestamped copies) until the socket blocks.
         for i in 0.. {
             let mut p = packets[i % packets.len()].clone();
-            p.get_mut().set_pts(Some(i as i64));
-            p.get_mut().set_dts(Some(i as i64));
+            p.get_mut()?.set_pts(Some(i as i64));
+            p.get_mut()?.set_dts(Some(i as i64));
             out.write_packet(video.index(), p)?;
             count.fetch_add(1, Ordering::Relaxed);
         }

@@ -128,7 +128,13 @@ fn run_mux_stream_writer(
                     break;
                 }
                 if retag {
-                    packet.get_mut().set_stream(index);
+                    match packet.get_mut() {
+                        Ok(header) => header.set_stream(index),
+                        Err(e) => {
+                            log::error!("mux packet header: {e:#}");
+                            break;
+                        }
+                    }
                 } else if packet.index() != index {
                     continue;
                 }

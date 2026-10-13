@@ -244,9 +244,9 @@ pub async fn restore_all() {
         loop {
             let restored: Result<()> = async {
                 for (source, _) in &inputs {
-                    if source == sources::TERMINAL_SOURCE {
+                    if let Some(address) = sources::capture_address(source) {
                         MIXER
-                            .ensure_capture_source(source, "hw:CARD=rockchipes8388,DEV=0", "alsa")
+                            .ensure_capture_source(source, &address, "alsa")
                             .await?;
                     } else {
                         MIXER.ensure_shared_source(source);

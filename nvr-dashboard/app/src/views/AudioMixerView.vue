@@ -39,16 +39,15 @@ const sources = ref<AudioSourceOption[]>([])
 const program = ref<ProgramState | null>(null)
 const programDraft = ref<ProgramConfig>({ enabled: false, mode: 'program', active_bus_id: null, profile: { codec: 'aac', sample_rate: 48000, channels: 2, bitrate: 128000 }, version: 0 })
 const savingProgram = ref(false)
-const deviceRows = computed(() => devices.value.map(device => {
-  const output = program.value?.outputs.find(item => item.device_id === device.id)
+const physicalRows = computed(() => sources.value.filter(source => source.kind === 'alsa').map(source => {
+  const input = state.value.sources.find(item => item.id === source.id)
   return {
-    id: device.id,
-    name: device.name,
-    inputType: device.input_type,
-    originalAudio: device.include_audio ? '使用' : '忽略',
-    buses: state.value.buses.filter(bus => bus.inputs.some(input => input.source_id === device.id)).map(bus => bus.id).join('、') || '未加入',
-    globalAudio: (device.config?.output?.use_global_audio ?? true) ? '跟随全局' : '关闭',
-    outputState: output?.state === 'applied' ? '已接入节目' : output?.state === 'waiting' ? '等待连接' : output?.state === 'original' ? '原音路径' : '状态未知',
+    id: source.id,
+    name: source.name,
+    channels: '左右双声道',
+    buses: state.value.buses.filter(bus => bus.inputs.some(input => input.source_id === source.id)).map(bus => bus.id).join('、') || '未加入',
+    inputState: input?.ready === true ? '已收到音频' : input?.ready === false ? '等待信号' : '未接入',
+    error: input?.error ?? '',
   }
 }))
 const modeOptions = [{ label: '统一节目音频，替换设备原音', value: 'program' }, { label: '节目音频叠加设备原音', value: 'add_original' }]
@@ -66,9 +65,10 @@ async function loadProgram(reset = false): Promise<void> {
   if (loadingProgram || programAbort.signal.aborted) return
   loadingProgram = true
   try {
-    const result = await getProgramConfig(programAbort.signal)
+    const [result, mixer] = await Promise.all([getProgramConfig(programAbort.signal), getMixer(programAbort.signal)])
     if (programAbort.signal.aborted) return
     program.value = result
+    state.value = mixer
     if (reset) programDraft.value = { ...result.config, profile: { ...result.config.profile } }
   } finally { loadingProgram = false }
 }
@@ -115,7 +115,7 @@ async function refresh() {
 
 onMounted(async () => {
   try {
-    const [devs, available] = await Promise.all([listDevices(), getAudioSources(), refresh(), loadProgram(true)])
+    const [devs, available] = await Promise.all([listDevices(), getAudioSources(), loadProgram(true)])
     devices.value = devs
     sources.value = available
     if (!programAbort.signal.aborted) programTimer = setInterval(() => { void loadProgram().catch(error => { if (!programAbort.signal.aborted) appToast.errorFrom('状态更新失败', error, '无法读取节目输出状态') }) }, 2000)
@@ -394,26 +394,28 @@ onBeforeUnmount(() => {
         <p class="field-hint">节目保留左右独立双声道。设备输出可以关闭“使用全局混音”；未使用设备原音的输出仍可接收节目音频。</p>
         <Button label="保存节目设置" icon="pi pi-check" :loading="savingProgram" @click="onSaveProgram" />
         <Message v-if="program.config.enabled && program.outputs.some(o => o.state === 'waiting')" severity="info" size="small" class="program-message">部分设备正在连接或等待取流，实际收到节目音轨后才显示为已接入。</Message>
+        <div class="program-output-status">
+          <span v-for="output in program.outputs" :key="output.device_id">{{ deviceName(output.device_id) }}：{{ output.state === 'applied' ? '已接入节目' : output.state === 'waiting' ? '等待连接' : '原音路径' }}</span>
+        </div>
       </template>
     </Card>
 
-    <Card class="data-card device-list-card">
+    <Card class="data-card physical-input-card">
       <template #header>
         <div class="card-header">
           <i class="pi pi-video card-header-icon" />
-          <span class="card-header-title">设备列表（{{ devices.length }}）</span>
+          <span class="card-header-title">音频输入节点（{{ physicalRows.length }}）</span>
         </div>
       </template>
       <template #content>
-        <DataTable :value="deviceRows" data-key="id" :loading="loading" size="small" scrollable>
-          <template #empty>暂无设备</template>
-          <Column field="name" header="设备名称" />
-          <Column field="id" header="设备 ID" />
-          <Column field="inputType" header="输入类型" />
-          <Column field="originalAudio" header="设备原音" />
+        <DataTable :value="physicalRows" data-key="id" :loading="loading" size="small" scrollable>
+          <template #empty>未发现端子或 HDMI 音频采集节点</template>
+          <Column field="name" header="输入节点" />
+          <Column field="id" header="采集设备" />
+          <Column field="channels" header="声道" />
           <Column field="buses" header="混音总线" />
-          <Column field="globalAudio" header="使用全局混音" />
-          <Column field="outputState" header="输出状态" />
+          <Column field="inputState" header="输入状态" />
+          <Column field="error" header="提示" />
         </DataTable>
       </template>
     </Card>
@@ -758,7 +760,7 @@ onBeforeUnmount(() => {
 }
 
 .program-card,
-.device-list-card {
+.physical-input-card {
   margin-bottom: 1rem;
 }
 
@@ -776,6 +778,14 @@ onBeforeUnmount(() => {
 
 .program-message {
   margin-top: 1rem;
+}
+
+.program-output-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  margin-top: 1rem;
+  color: var(--text-color-secondary);
 }
 
 </style>

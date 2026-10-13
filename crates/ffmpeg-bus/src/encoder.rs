@@ -1005,7 +1005,7 @@ impl Encoder {
                     let rate = self.stream.rate();
                     if rate.0 > 0 {
                         let duration = 1_000_000i64 * rate.1 as i64 / rate.0 as i64;
-                        p.set_duration(duration);
+                        p.set_duration(duration)?;
                     }
                 }
                 EncoderType::Audio(encoder) => {
@@ -1016,7 +1016,7 @@ impl Encoder {
                         // Duration of `frame_size` samples expressed in the
                         // encoder time base: frame_size/rate seconds ÷ (num/den).
                         let duration = frame_size * tb.1 as i64 / (rate * tb.0 as i64);
-                        p.set_duration(duration);
+                        p.set_duration(duration)?;
                     }
                 }
             }

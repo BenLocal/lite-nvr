@@ -92,7 +92,7 @@ impl SegmentWriter {
         let (num, den) = (tb.numerator(), tb.denominator());
         let off = us_to_tb(self.base_us, num, den);
         {
-            let p = pkt.get_mut();
+            let p = pkt.get_mut()?;
             if let Some(pts) = p.pts() {
                 p.set_pts(Some((pts - off).max(0)));
             }

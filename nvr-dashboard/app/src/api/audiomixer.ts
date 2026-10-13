@@ -121,8 +121,8 @@ export interface CreateBusPayload {
   inputs: CreateBusInput[]
 }
 
-export function getMixer() {
-  return request<MixerState>('/audiomixer/list')
+export function getMixer(signal?: AbortSignal): Promise<MixerState> {
+  return request<MixerState>('/audiomixer/list', { signal })
 }
 
 export function createBus(payload: CreateBusPayload) {
