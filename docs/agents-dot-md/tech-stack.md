@@ -40,6 +40,7 @@ make download-asr-libs       # 可选：nvr-asr 预编译库
 make download-asr-models     # 可选：ASR 模型
 cargo build --workspace
 make run                     # cargo run --package nvr，API :18080
+make package PACKAGE_ARCHS=rockchip   # 构建容器匹配主机 CPU，发布目标为 Linux ARM64
 make watch                   # 改 .rs 自动重启（需 cargo-watch）
 make dummy                   # 跑 GB28181 模拟摄像头对接本机 NVR
 

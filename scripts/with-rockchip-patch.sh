@@ -26,11 +26,26 @@ cache=$(bash scripts/prepare-rockchip-patch.sh)
 cache_relative="${cache#"$PWD/"}"
 # Cross runs its own metadata command without forwarding CLI --config overrides.
 # A temporary workspace config covers both that command and container compilation.
-cat >> .cargo/config.toml <<EOF
+python3 - "$cache_relative" <<'PY'
+import sys
+from pathlib import Path
 
-[patch.crates-io]
-ffmpeg-next = { path = "$cache_relative/ffmpeg-next" }
-ffmpeg-sys-next = { path = "$cache_relative/ffmpeg-sys-next" }
-EOF
+config = Path('.cargo/config.toml')
+lines = config.read_text().splitlines()
+header = '[patch.crates-io]'
+if header in lines:
+    start = lines.index(header) + 1
+    end = next((i for i in range(start, len(lines)) if lines[i].startswith('[')), len(lines))
+    section = [line for line in lines[start:end]
+               if not line.strip().startswith(('ffmpeg-next =', 'ffmpeg-sys-next ='))]
+else:
+    lines.extend(['', header])
+    start = end = len(lines)
+    section = []
+section.extend(f'{name} = {{ path = "{sys.argv[1]}/{name}" }}'
+               for name in ('ffmpeg-next', 'ffmpeg-sys-next'))
+lines[start:end] = section
+config.write_text('\n'.join(lines).rstrip() + '\n')
+PY
 cargo metadata --format-version 1 >/dev/null
 "$command_name" "$@"

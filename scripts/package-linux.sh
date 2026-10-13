@@ -16,6 +16,27 @@ if [[ -n "${APT_MIRROR:-}" ]]; then
     esac
 fi
 docker info >/dev/null
+case "$(uname -m)" in
+    arm64|aarch64) build_arch=arm64; build_toolchain=aarch64-unknown-linux-gnu ;;
+    x86_64|amd64) build_arch=amd64; build_toolchain=x86_64-unknown-linux-gnu ;;
+    *) echo "Unsupported build host: $(uname -m)" >&2; exit 1 ;;
+esac
+build_platform="linux/$build_arch"
+native_image="lite-nvr-cross:host-native-$build_arch"
+# Loopback proxies on macOS are reachable through Docker's host alias.
+build_http_proxy="${HTTP_PROXY:-}"
+build_https_proxy="${HTTPS_PROXY:-}"
+if [[ "$(uname -s)" == Darwin ]]; then
+    build_http_proxy="${build_http_proxy//127.0.0.1/host.docker.internal}"
+    build_http_proxy="${build_http_proxy//localhost/host.docker.internal}"
+    build_https_proxy="${build_https_proxy//127.0.0.1/host.docker.internal}"
+    build_https_proxy="${build_https_proxy//localhost/host.docker.internal}"
+fi
+HTTP_PROXY="$build_http_proxy" HTTPS_PROXY="$build_https_proxy" \
+docker build --platform "$build_platform" --build-arg HTTP_PROXY --build-arg HTTPS_PROXY \
+    --build-arg "APT_MIRROR=${APT_MIRROR:-}" \
+    -t "$native_image" -t lite-nvr-cross:host-native -f scripts/Dockerfile.cross-native scripts
+echo "Build container platform: $build_platform"
 (cd nvr-dashboard/app && npm ci && npm run build)
 version=$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' nvr/Cargo.toml)
 sherpa_version=$(awk '/^name = "sherpa-onnx-sys"/ {found=1; next} found && /^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.lock)
@@ -39,8 +60,9 @@ for arch in "${architectures[@]}"; do
         image_var=CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE
     fi
     target="${rust_arch}-unknown-linux-gnu"
-    base_image="${!image_var:-ghcr.io/cross-rs/$target:main}"
+    base_image="${!image_var:-$native_image}"
     export "$image_var=$base_image"
+    export "${image_var}_TOOLCHAIN=$build_toolchain"
     deps="target/cross-deps/$arch"
     mkdir -p "$deps/ffmpeg" "$deps/zlm"
     if [[ "$arch" == rockchip ]]; then
@@ -68,21 +90,22 @@ for arch in "${architectures[@]}"; do
     export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
     export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
     export BINDGEN_EXTRA_CLANG_ARGS="--target=$target"
-    if [[ "$dependency_arch" == arm64 ]]; then
-        export BINDGEN_EXTRA_CLANG_ARGS="--target=aarch64-linux-gnu --sysroot=/usr/aarch64-linux-gnu"
-    fi
+    sysroot=/
+    if [[ "$dependency_arch" != "$build_arch" ]]; then sysroot="/usr/${rust_arch}-linux-gnu"; fi
+    export BINDGEN_EXTRA_CLANG_ARGS="--target=$target --sysroot=$sysroot"
     flags="-C link-arg=-Wl,-rpath-link,/project/target/cross-deps/$dependency_arch/ffmpeg/lib -C link-arg=-Wl,-rpath,\$ORIGIN/../ffmpeg/lib -C link-arg=-Wl,-rpath,\$ORIGIN/../lib"
     export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="$flags"
     export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="$flags"
     if [[ -n "${APT_MIRROR:-}" ]]; then
-        docker build --platform linux/amd64 \
+        HTTP_PROXY="$build_http_proxy" HTTPS_PROXY="$build_https_proxy" \
+        docker build --platform "$build_platform" --build-arg HTTP_PROXY --build-arg HTTPS_PROXY \
             --build-arg "CROSS_BASE_IMAGE=$base_image" \
             --build-arg "APT_MIRROR=$APT_MIRROR" \
-            -t "lite-nvr-cross:$arch" -f scripts/Dockerfile.cross scripts
+            -t "lite-nvr-cross:$arch-$build_arch" -f scripts/Dockerfile.cross scripts
         if [[ "$arch" == amd64 ]]; then
-            export CROSS_TARGET_X86_64_UNKNOWN_LINUX_GNU_IMAGE=lite-nvr-cross:amd64
+            export CROSS_TARGET_X86_64_UNKNOWN_LINUX_GNU_IMAGE="lite-nvr-cross:amd64-$build_arch"
         else
-            export CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE="lite-nvr-cross:$arch"
+            export CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE="lite-nvr-cross:$arch-$build_arch"
         fi
     fi
     if [[ "$arch" == rockchip ]]; then
@@ -100,7 +123,7 @@ for arch in "${architectures[@]}"; do
     cp -P "$deps/zlm/lib/"*.so* "$staging/lib/"
     cp -P "$deps/onnxruntime/lib/"*.so* "$staging/lib/"
     # Bundle the target C++/OpenMP runtimes; glibc comes from the deployment OS.
-    docker run --rm --platform linux/amd64 --cpus=1 --memory=256m \
+    docker run --rm --platform "$build_platform" --cpus=1 --memory=256m \
         -v "$PWD/$staging/lib:/package" "$base_image" \
         bash -c 'for lib in libstdc++.so.6 libgcc_s.so.1 libgomp.so.1; do
             path=$("$1" -print-file-name="$lib")

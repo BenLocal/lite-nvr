@@ -1,0 +1,20 @@
+FROM ubuntu:22.04
+ARG TARGETARCH
+ARG APT_MIRROR
+COPY cross-pre-build.sh /cross-pre-build.sh
+RUN rm -f /etc/apt/apt.conf.d/docker-clean && \
+    printf 'Acquire::Retries "3";\n' > /etc/apt/apt.conf.d/80retry
+RUN --mount=type=cache,target=/var/cache/apt \
+    --mount=type=cache,target=/var/lib/apt/lists \
+    bash /cross-pre-build.sh
+RUN --mount=type=cache,target=/var/cache/apt \
+    --mount=type=cache,target=/var/lib/apt/lists \
+    apt-get update && \
+    case "$TARGETARCH" in \
+        arm64) cross_compiler="gcc-x86-64-linux-gnu g++-x86-64-linux-gnu" ;; \
+        amd64) cross_compiler="gcc-aarch64-linux-gnu g++-aarch64-linux-gnu" ;; \
+        *) echo "Unsupported build architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        build-essential $cross_compiler cmake git curl ca-certificates \
+        libclang-dev libasound2-dev pkg-config
