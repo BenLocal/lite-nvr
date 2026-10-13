@@ -90,3 +90,15 @@
 - 2026-10-13：192.168.31.241 原 Rockchip FFmpeg SDK 不含 ALSA，Docker 也默认屏蔽 `/proc/asound` → 主机测试容器增加 `/dev/snd`、只读 `/proc/asound` 和 `systempaths=unconfined`，按匹配 SDK 提交 d90e3a1c18 编译启用原设备支持与 ALSA 的 libavdevice.so.62.3.102；后续仅更新 NVR 二进制，标准 SDK 打包库不能覆盖该音频库。ALSA 打开/采集必须可中断，无 HDMI 信号时总线停止实测 0.027 秒。
 - 2026-10-13：双 HDMI 音频回环为 HDMI OUT1/rockchiphdmi0 → HDMI2/rockchiphdmiin（440Hz），HDMI OUT2/rockchiphdmi1 → HDMI1/D6911codec（880Hz）；nvr-hdmiout 只负责视频时钟，另用 FFmpeg 向 ALSA 输出音频。ego 浏览器扬声器输出录音同时检测到两路音调（RMS -18.31 dBFS）；端子未接线，不纳入实机声音测试。
 - 2026-10-13：开发页 localhost:5173 的混音 FLV 返回 404，而主机 :18080 同路径为 200 → Vite 只代理 `/api`，相对媒体地址落到本地静态服务；开发配置将 `/media` 代理到同一 NVR_API_TARGET，并开启 ws 支持媒体 WebSocket。
+- 2026-10-13：Apple Silicon 上官方 cross aarch64 镜像实际是 linux/amd64，长期构建靠 CPU 模拟 → 打包改用按 uname 选择的主机原生 Ubuntu 镜像，实测 cross 容器为 aarch64，Rockchip 发布包构建通过；CROSS_TARGET_*_IMAGE 环境变量会整体覆盖 Cross.toml 的 image/toolchain 配置，因此必须同时设置对应 IMAGE_TOOLCHAIN 为构建主机的 Linux Rust triple。首次安装 ARM64 Linux 工具链并重建依赖约 17 分钟，不能把首次耗时与旧缓存构建直接比较。
+- 2026-10-13：用户要求混音台不定时请求 `/api/audiomixer/list` → 页面仅首次加载和手动“刷新”获取状态；静音及声道调整成功后更新本地状态，避免依赖轮询才能显示操作结果。
+
+- 2026-10-13：有限时长 HDMI 测试音到期会使混音试听静音；`nvr-hdmiout` 现提供原生 ALSA PCM 输出，`dual_hdmiout 0 <card> <connector1> <connector2> <alsa1> <alsa2>` 可持续输出两路视频与 440/880 Hz 测试音。192.168.31.241 的持久容器为 `lite-nvr-hdmiout-av`，OUT1=rockchiphdmi0、OUT2=rockchiphdmi1；两路 DRM 1080p60 ACTIVE、PCM RUNNING，混音 FLV 检测到两个频率，SIGTERM 0.42 秒退出且 PCM closed，重启后重新验证声音正常。Linux 编译需要 libasound2-dev；终端音频未接线，不纳入回环测试。
+
+- 2026-10-13：HDMI 输出停止/重开及设备编辑后，video11/video0 设备列表停留 starting，日志出现 Device or resource busy 且无媒体注册；此时 HDMI 输入已锁定 1080p60，检查未发现其他进程持有采集节点。通过 device/update 原样提交各设备现有配置重新打开采集，两路恢复 running、H264 1080p60；未修改音频选择或混音增益。失败管线不自动恢复的具体原因仍待代码层复现，不能将 busy 直接归因为其他进程占用。
+
+- 2026-10-13：代码确认 V4L2 未接入设备重连监督：init/device.rs:221 仅网络源走 upsert_network_device，V4L2 经 manager.rs:191 的单次 Pipe::start；输入/输出启动失败或转发结束后会退出，没有重建管线的循环。handler/device.rs:99 只按注册表存在判 starting，已退出的 Entry 仍会显示连接中。可靠修复需为 V4L2 增加可取消、旧会话彻底回收后再重建的退避重试，并修正结束任务的状态判断；busy 的首次触发原因尚未确定。
+
+- 2026-10-13：设备媒体流拓扑须区分输入原音频、混音硬件来源、输出音视频来源；include_audio 非 true 显示虚线禁用框且注明不进入输出。混音总线状态与硬件名称在打开拓扑时一次加载、手动刷新，不增加 audiomixer/list 轮询；无管线音频输出但分发含音轨时标为分发生成静音。已在 localhost:5173 连接 192.168.31.241 数据，以 ego 验证 video0 混音来源及 video11 静音来源。
+
+- 2026-10-13：用户确认拓扑底部的音频来源详情只展示混音总线路径，删除重复的「输入原音频 → 已禁用」行；原音频禁用状态仍在输入节点标注。
