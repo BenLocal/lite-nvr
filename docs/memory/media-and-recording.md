@@ -85,3 +85,8 @@
 - 2026-10-11：导播合成报 `no source could be started` → 页面写死本机 RTSP 8554，测试主机实际 NVR 为 8556；RTMP 8555 还被 go2rtc 占用 → 合成本机取流按 `NVR_ZLM_RTSP_PORT` 解析，推流使用 `NVR_ZLM_RTMP_PORT`（该主机 8557），外部地址保持原样。
 - 2026-10-12：HDMI 回环录像画面色条正确，但 `crop=iw:ih/2:0:0,scale=8:1` 得到蓝色偏移并误报 → 解码后的 YUV420P 在单行缩放时色度采样失真；相同录像先 `format=rgb24` 再缩放，原 RGB 阈值通过 → 色条取样先转换 RGB 再降采样，已有合成 YUV 回归及真机 `20261012T065239Z-be769d9b` 证据。
 - 2026-10-11：合成帧的 PTS 使用微秒，但编码器沿用输入 RTSP 的 1/90000 时间基，输出还复制了源编码参数 → 合成编码使用独立微秒时钟，并由编码器生成输出参数；文件回归验证 50 帧/25 FPS 跨度 1.96 秒，主机浏览器合成画面正常播放。刚创建合成时 FLV 尚未发布会短暂 404（HEAD 仍返回 200，不能判定就绪），播放器需可取消的有限重试；主机“停止→更新”实测自动恢复，8 秒内收到 150 帧。
+
+- 2026-10-13：ALSA 双声道帧可能没有指定 channel order，混音重采样按默认布局初始化后会报 `Input changed` 并持续静音 → 仅对未指定布局的帧补默认 channel layout；回归测试及 RK3588 双 HDMI 440/880 Hz 混音验证通过，单路音量减半约 -6.03 dB，两路静音输出为数字零。
+- 2026-10-13：192.168.31.241 原 Rockchip FFmpeg SDK 不含 ALSA，Docker 也默认屏蔽 `/proc/asound` → 主机测试容器增加 `/dev/snd`、只读 `/proc/asound` 和 `systempaths=unconfined`，按匹配 SDK 提交 d90e3a1c18 编译启用原设备支持与 ALSA 的 libavdevice.so.62.3.102；后续仅更新 NVR 二进制，标准 SDK 打包库不能覆盖该音频库。ALSA 打开/采集必须可中断，无 HDMI 信号时总线停止实测 0.027 秒。
+- 2026-10-13：双 HDMI 音频回环为 HDMI OUT1/rockchiphdmi0 → HDMI2/rockchiphdmiin（440Hz），HDMI OUT2/rockchiphdmi1 → HDMI1/D6911codec（880Hz）；nvr-hdmiout 只负责视频时钟，另用 FFmpeg 向 ALSA 输出音频。ego 浏览器扬声器输出录音同时检测到两路音调（RMS -18.31 dBFS）；端子未接线，不纳入实机声音测试。
+- 2026-10-13：开发页 localhost:5173 的混音 FLV 返回 404，而主机 :18080 同路径为 200 → Vite 只代理 `/api`，相对媒体地址落到本地静态服务；开发配置将 `/media` 代理到同一 NVR_API_TARGET，并开启 ws 支持媒体 WebSocket。

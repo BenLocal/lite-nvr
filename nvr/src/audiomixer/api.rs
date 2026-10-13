@@ -16,6 +16,8 @@ pub fn audiomixer_router(hub: &'static crate::detect::hub::DetectHub) -> Router 
     Router::new()
         .route("/list", get(list))
         .route("/bus/create", post(create_bus))
+        .route("/bus/start", post(start_bus))
+        .route("/bus/stop", post(stop_bus))
         .route("/bus/remove", post(remove_bus))
         .route("/bus/input/add", post(add_input))
         .route("/bus/input/remove", post(remove_input))
@@ -54,6 +56,8 @@ struct InputDto {
 
 #[derive(Serialize)]
 struct BusDto {
+    enabled: bool,
+    profile: nvr_audio_mixer::AudioProfile,
     id: String,
     publish_url: String,
     /// FLV path for playing the mixed output on the dashboard.
@@ -91,6 +95,8 @@ fn to_dto(snap: MixerSnapshot) -> MixerDto {
             .buses
             .into_iter()
             .map(|b| BusDto {
+                enabled: b.enabled,
+                profile: b.profile,
                 flv_url: audiomixer::bus_flv_url(&b.id),
                 publish_url: redact_url(&b.publish_url),
                 id: b.id,
@@ -140,6 +146,8 @@ struct InputReq {
 
 #[derive(Deserialize)]
 struct CreateBusReq {
+    #[serde(default)]
+    profile: nvr_audio_mixer::AudioProfile,
     id: String,
     #[serde(default)]
     publish_url: Option<String>,
@@ -197,13 +205,34 @@ async fn list() -> ApiJsonResult<MixerDto> {
     Ok(ok_json(to_dto(audiomixer::snapshot())))
 }
 
+async fn start_bus(
+    State(hub): State<&'static crate::detect::hub::DetectHub>,
+    Json(req): Json<CreateBusReq>,
+) -> ApiJsonResult<MixerDto> {
+    let inputs = req
+        .inputs
+        .into_iter()
+        .map(|i| (i.source_id, i.volume.unwrap_or(DEFAULT_VOLUME)))
+        .collect();
+    audiomixer::start_bus(&req.id, inputs, req.profile, hub).await?;
+    Ok(ok_json(to_dto(audiomixer::snapshot())))
+}
+
+async fn stop_bus(
+    State(hub): State<&'static crate::detect::hub::DetectHub>,
+    Json(req): Json<BusRef>,
+) -> ApiJsonResult<MixerDto> {
+    audiomixer::stop_bus(&req.bus_id, hub).await?;
+    Ok(ok_json(to_dto(audiomixer::snapshot())))
+}
+
 async fn create_bus(Json(req): Json<CreateBusReq>) -> ApiJsonResult<MixerDto> {
     let inputs = req
         .inputs
         .into_iter()
         .map(|i| (i.source_id, i.volume.unwrap_or(DEFAULT_VOLUME)))
         .collect();
-    audiomixer::create_bus(&req.id, req.publish_url, inputs).await?;
+    audiomixer::create_bus(&req.id, req.publish_url, inputs, req.profile).await?;
     Ok(ok_json(to_dto(audiomixer::snapshot())))
 }
 

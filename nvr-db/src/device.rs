@@ -44,6 +44,10 @@ pub struct OutputConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_global_audio: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_bus_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_mode: Option<AudioMixMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub video_codec: Option<VideoCodec>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
@@ -72,6 +76,14 @@ pub enum VideoCodec {
 pub enum AudioCodec {
     Aac,
     Opus,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioMixMode {
+    #[default]
+    Program,
+    AddOriginal,
 }
 
 /// Per-device object-detection settings.

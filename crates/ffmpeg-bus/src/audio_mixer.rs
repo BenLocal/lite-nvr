@@ -97,6 +97,16 @@ impl SlotResampler {
     }
 
     fn convert(&mut self, input: &Audio) -> anyhow::Result<Vec<i16>> {
+        // ALSA PCM can name only its channel count. swr resolves that to a
+        // default layout, so the frame must use the same layout for conversion.
+        let mut normalized;
+        let input = if input.channel_layout().is_empty() {
+            normalized = input.clone();
+            normalized.set_channel_layout(ChannelLayout::default(i32::from(input.channels())));
+            &normalized
+        } else {
+            input
+        };
         let in_fmt = input.format();
         let in_rate = input.rate();
         let in_ch = input.channels();

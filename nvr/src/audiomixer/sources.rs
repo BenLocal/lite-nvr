@@ -8,24 +8,41 @@ const PHYSICAL_INPUTS: [(&str, &str); 3] = [
 ];
 
 pub fn capture_address(id: &str) -> Option<String> {
-    PHYSICAL_INPUTS.iter().find(|(card, _)| id == format!("alsa:{card}"))
+    PHYSICAL_INPUTS
+        .iter()
+        .find(|(card, _)| id == format!("alsa:{card}"))
         .map(|(card, _)| format!("hw:CARD={card},DEV=0"))
 }
 
 fn physical_inputs(cards: &str, pcm: &str) -> Vec<SourceOption> {
-    PHYSICAL_INPUTS.iter().filter_map(|(card, name)| {
-        let index = cards.lines().find_map(|line| {
-            let (head, tail) = line.split_once('[')?;
-            let (id, _) = tail.split_once(']')?;
-            (id.trim() == *card).then(|| head.trim().parse::<usize>().ok()).flatten()
-        })?;
-        let captures = pcm.lines().any(|line| {
-            let Some((device, description)) = line.split_once(':') else { return false; };
-            let Some((card_index, device_index)) = device.trim().split_once('-') else { return false; };
-            card_index.parse::<usize>().ok() == Some(index) && device_index.parse::<usize>().ok() == Some(0) && description.contains("capture")
-        });
-        captures.then(|| SourceOption { id: format!("alsa:{card}"), name: (*name).to_string(), kind: "alsa" })
-    }).collect()
+    PHYSICAL_INPUTS
+        .iter()
+        .filter_map(|(card, name)| {
+            let index = cards.lines().find_map(|line| {
+                let (head, tail) = line.split_once('[')?;
+                let (id, _) = tail.split_once(']')?;
+                (id.trim() == *card)
+                    .then(|| head.trim().parse::<usize>().ok())
+                    .flatten()
+            })?;
+            let captures = pcm.lines().any(|line| {
+                let Some((device, description)) = line.split_once(':') else {
+                    return false;
+                };
+                let Some((card_index, device_index)) = device.trim().split_once('-') else {
+                    return false;
+                };
+                card_index.parse::<usize>().ok() == Some(index)
+                    && device_index.parse::<usize>().ok() == Some(0)
+                    && description.contains("capture")
+            });
+            captures.then(|| SourceOption {
+                id: format!("alsa:{card}"),
+                name: (*name).to_string(),
+                kind: "alsa",
+            })
+        })
+        .collect()
 }
 
 #[derive(Serialize)]
@@ -36,20 +53,14 @@ pub struct SourceOption {
 }
 
 pub async fn available() -> anyhow::Result<Vec<SourceOption>> {
-    let conn = crate::db::app_db_conn()?;
-    let mut sources: Vec<_> = nvr_db::device::list(&conn)
-        .await?
-        .into_iter()
-        .filter(|d| d.include_audio && d.input_type != "xiaomi")
-        .map(|d| SourceOption {
-            id: d.id,
-            name: d.name,
-            kind: "device",
-        })
-        .collect();
-    let (cards, pcm) = tokio::join!(tokio::fs::read_to_string("/proc/asound/cards"), tokio::fs::read_to_string("/proc/asound/pcm"));
-    sources.extend(physical_inputs(&cards.unwrap_or_default(), &pcm.unwrap_or_default()));
-    Ok(sources)
+    let (cards, pcm) = tokio::join!(
+        tokio::fs::read_to_string("/proc/asound/cards"),
+        tokio::fs::read_to_string("/proc/asound/pcm")
+    );
+    Ok(physical_inputs(
+        &cards.unwrap_or_default(),
+        &pcm.unwrap_or_default(),
+    ))
 }
 
 pub async fn ensure(ids: &[String]) -> anyhow::Result<()> {
@@ -68,18 +79,6 @@ pub async fn ensure(ids: &[String]) -> anyhow::Result<()> {
                 .await?;
         } else {
             super::MIXER.ensure_shared_source(id);
-        }
-    }
-    if let Some(bridge) = crate::gb::bridge() {
-        // Unknown/non-GB mappings are ignored by looking up the stored type
-        // once for the whole set, not one database call per source.
-        let conn = crate::db::app_db_conn()?;
-        let devices = nvr_db::device::list(&conn).await?;
-        for device in devices
-            .iter()
-            .filter(|d| d.input_type == "gb28181" && ids.contains(&d.id))
-        {
-            bridge.ensure_mixer_source(&device.id).await?;
         }
     }
     Ok(())

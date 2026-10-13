@@ -35,6 +35,15 @@ impl AudioSource {
     }
 
     pub async fn start_with_format(id: &str, url: &str, format: Option<&str>) -> Result<Self> {
+        Self::start_with_interrupt(id, url, format, None).await
+    }
+
+    async fn start_with_interrupt(
+        id: &str,
+        url: &str,
+        format: Option<&str>,
+        interrupt: Option<Arc<std::sync::atomic::AtomicBool>>,
+    ) -> Result<Self> {
         let address = url.to_string();
         let format = format.map(str::to_string);
         let input = tokio::task::spawn_blocking(move || {
@@ -47,7 +56,7 @@ impl AudioSource {
                 options.set("rtsp_transport", "tcp");
                 options.set("timeout", "5000000");
             }
-            AvInput::new(&address, format.as_deref(), Some(options))
+            AvInput::open(&address, format.as_deref(), Some(options), interrupt)
         })
         .await??;
         let audio_stream = input
@@ -167,7 +176,23 @@ impl AudioSource {
         let error = source.error.clone();
         let task = tokio::spawn(async move {
             while !stop.is_cancelled() {
-                match Self::start_with_format(&id, &address, Some(&format)).await {
+                let interrupt = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let opening = Self::start_with_interrupt(
+                    &id,
+                    &address,
+                    Some(&format),
+                    Some(interrupt.clone()),
+                );
+                tokio::pin!(opening);
+                let result = tokio::select! {
+                    result = &mut opening => result,
+                    _ = stop.cancelled() => {
+                        interrupt.store(true, std::sync::atomic::Ordering::Release);
+                        if let Ok(input) = opening.await { input.shutdown().await; }
+                        break;
+                    }
+                };
+                match result {
                     Ok(input) => {
                         *error.lock().unwrap_or_else(|e| e.into_inner()) = None;
                         let mut end = input.subscribe();

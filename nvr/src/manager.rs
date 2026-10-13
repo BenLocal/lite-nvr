@@ -332,13 +332,8 @@ pub(crate) async fn upsert_xiaomi(
         id,
         move || {
             let cancel = CancellationToken::new();
-            let use_global = device
-                .config
-                .output
-                .as_ref()
-                .and_then(|o| o.use_global_audio)
-                .unwrap_or(true);
-            let isolate = crate::audiomixer::native::required(&device.id, use_global);
+            let isolate =
+                crate::audiomixer::native::required(&device.id, device.config.output.as_ref());
             let (media, forwarder) = if isolate {
                 drop(media);
                 let raw = Arc::new(rszlm::media::Media::new_with_default_vhost(

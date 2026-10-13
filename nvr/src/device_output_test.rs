@@ -4,6 +4,8 @@ use super::*;
 fn settings_map_to_distinct_video_and_audio_outputs() {
     let cfg = Settings {
         use_global_audio: None,
+        audio_bus_id: None,
+        audio_mode: None,
         video_codec: Some(VideoCodec::H265),
         width: Some(640),
         height: Some(360),

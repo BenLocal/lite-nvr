@@ -5,6 +5,15 @@ import { buildOutputConfig, outputFormValues, sampleRateOptions, validateOutputV
 const settings = { video_codec: 'h265', width: 640, height: 360, fps: 15, max_bitrate: 500000, audio_codec: 'opus', sample_rate: 24000 } as const
 
 describe('persisted output settings', () => {
+  it('selects program audio independently for each device, including native sources', () => {
+    for (const input_type of ['rtsp', 'v4l2', 'gb28181', 'xiaomi']) {
+      const values = { input_type, output_audio_bus_id: 'main', output_audio_mode: 'add_original' }
+      const config = buildOutputConfig(values)
+      expect(config).toEqual({ audio_bus_id: 'main', audio_mode: 'add_original' })
+      expect(outputFormValues(config)).toMatchObject({ output_audio_bus_id: 'main', output_audio_mode: 'add_original' })
+    }
+    expect(buildOutputConfig({ input_type: 'rtsp', output_audio_bus_id: '' })).toBeUndefined()
+  })
   it('keeps per-output program opt-out even for native forwarding devices', () => {
     expect(buildOutputConfig({ input_type: 'gb28181', output_use_global_audio: false })).toEqual({ use_global_audio: false })
     expect(buildOutputConfig({ input_type: 'rtsp', output_use_global_audio: true })).toBeUndefined()

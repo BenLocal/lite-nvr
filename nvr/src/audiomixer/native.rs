@@ -15,8 +15,13 @@ pub struct NativeOutput {
     pub settings: Option<nvr_db::device::OutputConfig>,
 }
 
-pub fn required(id: &str, use_global: bool) -> bool {
-    (super::output::config().enabled && use_global) || super::MIXER.has_source(id)
+pub fn required(id: &str, settings: Option<&nvr_db::device::OutputConfig>) -> bool {
+    settings
+        .and_then(|s| s.audio_bus_id.as_deref())
+        .is_some_and(super::bus_enabled)
+        || (super::output::config().enabled
+            && settings.and_then(|s| s.use_global_audio).unwrap_or(true))
+        || super::MIXER.has_source(id)
 }
 
 pub fn spawn(config: NativeOutput, cancel: CancellationToken) -> tokio::task::JoinHandle<()> {

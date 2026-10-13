@@ -22,6 +22,11 @@ const RESTORE_RETRY_MIN: Duration = Duration::from_secs(2);
 const RESTORE_RETRY_MAX: Duration = Duration::from_secs(8);
 const RESTORE_RETRY_BUDGET: Duration = Duration::from_secs(60);
 
+static INACTIVE_BUS: LazyLock<std::sync::Mutex<Option<PersistedBus>>> =
+    LazyLock::new(|| std::sync::Mutex::new(None));
+
+static BUS_MUTATIONS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub(crate) static MIXER: LazyLock<AudioMixer> = LazyLock::new(AudioMixer::new);
 
 /// Default publish URL for a bus when the caller doesn't give one.
@@ -38,7 +43,145 @@ pub fn bus_flv_url(bus_id: &str) -> String {
 }
 
 pub fn snapshot() -> MixerSnapshot {
-    MIXER.snapshot()
+    let mut state = MIXER.snapshot();
+    if state.buses.is_empty() {
+        if let Some(bus) = INACTIVE_BUS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            state.buses.push(nvr_audio_mixer::BusSnapshot {
+                id: bus.id.clone(),
+                publish_url: bus.publish_url.clone(),
+                profile: bus.profile.clone(),
+                enabled: false,
+                inputs: bus
+                    .inputs
+                    .iter()
+                    .map(|i| nvr_audio_mixer::InputSnapshot {
+                        source_id: i.source_id.clone(),
+                        volume: i.volume,
+                        muted: i.muted,
+                        channel_map: i.channel_map,
+                    })
+                    .collect(),
+            });
+        }
+    }
+    state
+}
+
+pub fn bus_enabled(bus_id: &str) -> bool {
+    MIXER.snapshot().buses.iter().any(|b| b.id == bus_id)
+}
+
+fn persisted_bus(bus: nvr_audio_mixer::BusSnapshot) -> PersistedBus {
+    PersistedBus {
+        id: bus.id,
+        publish_url: bus.publish_url,
+        profile: bus.profile,
+        enabled: bus.enabled,
+        inputs: bus
+            .inputs
+            .into_iter()
+            .map(|i| PersistedInput {
+                source_id: i.source_id,
+                volume: i.volume,
+                muted: i.muted,
+                channel_map: i.channel_map,
+            })
+            .collect(),
+    }
+}
+
+async fn selected_devices(bus_id: &str) -> Result<Vec<nvr_db::device::DeviceInfo>> {
+    let conn = crate::db::app_db_conn()?;
+    Ok(nvr_db::device::list(&conn)
+        .await?
+        .into_iter()
+        .filter(|d| {
+            d.config
+                .output
+                .as_ref()
+                .and_then(|o| o.audio_bus_id.as_deref())
+                == Some(bus_id)
+        })
+        .collect())
+}
+
+pub async fn start_bus(
+    bus_id: &str,
+    inputs: Vec<(String, u32)>,
+    profile: nvr_audio_mixer::AudioProfile,
+    hub: &'static crate::detect::hub::DetectHub,
+) -> Result<()> {
+    let _mutation = BUS_MUTATIONS.lock().await;
+    anyhow::ensure!(!bus_id.trim().is_empty(), "总线名称不能为空");
+    anyhow::ensure!(!inputs.is_empty(), "至少选择一路硬件音频输入");
+    anyhow::ensure!(
+        inputs.iter().all(|(_, volume)| *volume <= 400),
+        "音量不能超过 400%"
+    );
+    profile.validate()?;
+    let previous = snapshot().buses.into_iter().next();
+    anyhow::ensure!(
+        previous.as_ref().is_none_or(|b| b.id == bus_id),
+        "混音台只支持一条输出总线"
+    );
+    anyhow::ensure!(!bus_enabled(bus_id), "混音总线已启动，请先停止");
+    let devices = selected_devices(bus_id).await?;
+    sources::ensure(&inputs.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>()).await?;
+    let publish = previous
+        .as_ref()
+        .map(|b| Ok(b.publish_url.clone()))
+        .unwrap_or_else(|| default_publish_url(bus_id))?;
+    if let Err(error) = MIXER
+        .create_bus_with_profile(bus_id, &publish, &inputs, profile)
+        .await
+    {
+        MIXER.prune_sources().await;
+        return Err(error);
+    }
+    if let Some(previous) = &previous {
+        for input in &previous.inputs {
+            if inputs.iter().any(|(id, _)| id == &input.source_id) {
+                MIXER.bus_set_muted(bus_id, &input.source_id, input.muted)?;
+                MIXER.bus_set_channel_map(bus_id, &input.source_id, input.channel_map)?;
+            }
+        }
+    }
+    *INACTIVE_BUS.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    if let Err(error) = output::apply_devices(&devices, hub).await {
+        MIXER.remove_bus(bus_id).await;
+        *INACTIVE_BUS.lock().unwrap_or_else(|e| e.into_inner()) = previous.map(persisted_bus);
+        let rollback = output::apply_devices(&devices, hub).await;
+        MIXER.prune_sources().await;
+        if let Err(rollback) = rollback {
+            anyhow::bail!("启动失败：{error:#}；恢复失败：{rollback:#}");
+        }
+        return Err(error);
+    }
+    persist_all().await;
+    Ok(())
+}
+
+pub async fn stop_bus(bus_id: &str, hub: &'static crate::detect::hub::DetectHub) -> Result<()> {
+    let _mutation = BUS_MUTATIONS.lock().await;
+    let previous = MIXER
+        .snapshot()
+        .buses
+        .into_iter()
+        .find(|b| b.id == bus_id)
+        .ok_or_else(|| anyhow::anyhow!("混音总线未启动"))?;
+    let devices = selected_devices(bus_id).await?;
+    MIXER.remove_bus(bus_id).await;
+    let mut saved = persisted_bus(previous);
+    saved.enabled = false;
+    *INACTIVE_BUS.lock().unwrap_or_else(|e| e.into_inner()) = Some(saved);
+    persist_all().await;
+    let result = output::apply_devices(&devices, hub).await;
+    MIXER.prune_sources().await;
+    result
 }
 
 /// Stop every mixer bus and source (their tasks are cancelled on Drop) for a
@@ -59,7 +202,14 @@ pub async fn create_bus(
     bus_id: &str,
     publish_url: Option<String>,
     inputs: Vec<(String, u32)>,
+    profile: nvr_audio_mixer::AudioProfile,
 ) -> Result<()> {
+    let _mutation = BUS_MUTATIONS.lock().await;
+    profile.validate()?;
+    anyhow::ensure!(
+        snapshot().buses.is_empty(),
+        "混音台只支持一条输出总线，请修改现有总线"
+    );
     let bus_id = bus_id.trim();
     if bus_id.is_empty() {
         anyhow::bail!("bus id is required");
@@ -82,17 +232,29 @@ pub async fn create_bus(
         .map(Ok)
         .unwrap_or_else(|| default_publish_url(bus_id))?;
     MIXER
-        .create_bus_with_profile(bus_id, &publish, &inputs, output::config().profile)
+        .create_bus_with_profile(bus_id, &publish, &inputs, profile)
         .await?;
     persist_all().await;
     Ok(())
 }
 
 pub async fn remove_bus(bus_id: &str) -> Result<()> {
+    let _mutation = BUS_MUTATIONS.lock().await;
     let cfg = output::config();
     anyhow::ensure!(
         !cfg.enabled || cfg.active_bus_id.as_deref() != Some(bus_id),
         "请先关闭或切换全局节目总线"
+    );
+    let conn = crate::db::app_db_conn()?;
+    let devices = nvr_db::device::list(&conn).await?;
+    anyhow::ensure!(
+        !devices.iter().any(|d| d
+            .config
+            .output
+            .as_ref()
+            .and_then(|o| o.audio_bus_id.as_deref())
+            == Some(bus_id)),
+        "请先在设备中取消使用该混音总线"
     );
     if !MIXER.remove_bus(bus_id).await {
         anyhow::bail!("bus '{bus_id}' not found");
@@ -103,6 +265,7 @@ pub async fn remove_bus(bus_id: &str) -> Result<()> {
 }
 
 pub async fn add_input(bus_id: &str, source_id: &str, volume: u32) -> Result<()> {
+    let _mutation = BUS_MUTATIONS.lock().await;
     anyhow::ensure!(volume <= 400, "音量不能超过 400%");
     sources::ensure(&[source_id.to_string()]).await?;
     MIXER.bus_add_input(bus_id, source_id, volume)?;
@@ -111,6 +274,7 @@ pub async fn add_input(bus_id: &str, source_id: &str, volume: u32) -> Result<()>
 }
 
 pub async fn remove_input(bus_id: &str, source_id: &str) -> Result<()> {
+    let _mutation = BUS_MUTATIONS.lock().await;
     MIXER.bus_remove_input(bus_id, source_id)?;
     MIXER.prune_sources().await;
     persist_all().await;
@@ -118,6 +282,7 @@ pub async fn remove_input(bus_id: &str, source_id: &str) -> Result<()> {
 }
 
 pub async fn set_volume(bus_id: &str, source_id: &str, volume: u32) -> Result<()> {
+    let _mutation = BUS_MUTATIONS.lock().await;
     anyhow::ensure!(volume <= 400, "音量不能超过 400%");
     MIXER.bus_set_volume(bus_id, source_id, volume)?;
     persist_all().await;
@@ -125,6 +290,7 @@ pub async fn set_volume(bus_id: &str, source_id: &str, volume: u32) -> Result<()
 }
 
 pub async fn set_muted(bus_id: &str, source_id: &str, muted: bool) -> Result<()> {
+    let _mutation = BUS_MUTATIONS.lock().await;
     MIXER.bus_set_muted(bus_id, source_id, muted)?;
     persist_all().await;
     Ok(())
@@ -135,6 +301,7 @@ pub async fn set_channel_map(
     source_id: &str,
     mapping: nvr_audio_mixer::ChannelMap,
 ) -> Result<()> {
+    let _mutation = BUS_MUTATIONS.lock().await;
     MIXER.bus_set_channel_map(bus_id, source_id, mapping)?;
     persist_all().await;
     Ok(())
@@ -159,32 +326,22 @@ fn default_volume() -> u32 {
 
 #[derive(Serialize, Deserialize, Clone)]
 struct PersistedBus {
+    #[serde(default = "default_enabled")]
+    enabled: bool,
+    #[serde(default)]
+    profile: nvr_audio_mixer::AudioProfile,
     id: String,
     publish_url: String,
     inputs: Vec<PersistedInput>,
 }
 
+fn default_enabled() -> bool {
+    true
+}
+
 /// Serialize every live bus to the KV store. Best-effort.
 async fn persist_all() {
-    let buses: Vec<PersistedBus> = MIXER
-        .snapshot()
-        .buses
-        .into_iter()
-        .map(|b| PersistedBus {
-            id: b.id,
-            publish_url: b.publish_url,
-            inputs: b
-                .inputs
-                .into_iter()
-                .map(|i| PersistedInput {
-                    source_id: i.source_id,
-                    volume: i.volume,
-                    muted: i.muted,
-                    channel_map: i.channel_map,
-                })
-                .collect(),
-        })
-        .collect();
+    let buses: Vec<PersistedBus> = snapshot().buses.into_iter().map(persisted_bus).collect();
     if let Err(e) = save_persisted(buses).await {
         log::warn!("audio mixer: failed to persist buses: {e:#}");
     }
@@ -232,6 +389,10 @@ pub async fn restore_all() {
     log::info!("audio mixer restore: {} bus(es) to restore", saved.len());
 
     for bus in saved {
+        if !bus.enabled {
+            *INACTIVE_BUS.lock().unwrap_or_else(|e| e.into_inner()) = Some(bus);
+            continue;
+        }
         let id = bus.id.clone();
         let inputs: Vec<(String, u32)> = bus
             .inputs
@@ -257,7 +418,7 @@ pub async fn restore_all() {
                     .map(Ok)
                     .unwrap_or_else(|| default_publish_url(&id))?;
                 MIXER
-                    .create_bus_with_profile(&id, &target, &inputs, output::config().profile)
+                    .create_bus_with_profile(&id, &target, &inputs, bus.profile.clone())
                     .await
             }
             .await;

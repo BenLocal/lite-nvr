@@ -1,5 +1,21 @@
 use super::*;
 
+#[test]
+fn resamples_pcm_with_unspecified_channel_order() {
+    crate::init().unwrap();
+    let mut input = Audio::new(OUT_FMT, FRAME_SAMPLES, ChannelLayout::STEREO);
+    input.set_rate(48_000);
+    for sample in input.plane_mut::<(i16, i16)>(0) {
+        *sample = (1000, -2000);
+    }
+    let mut layout = ChannelLayout::STEREO;
+    layout.0.order = ffmpeg_next::ffi::AVChannelOrder::AV_CHANNEL_ORDER_UNSPEC;
+    input.set_channel_layout(layout);
+    let samples = SlotResampler::new(48_000).convert(&input).unwrap();
+    assert_eq!(samples.len(), FRAME_LEN);
+    assert!(samples.chunks_exact(2).all(|pair| pair == [1000, -2000]));
+}
+
 // ---- pure PCM helpers -----------------------------------------------------
 
 #[test]

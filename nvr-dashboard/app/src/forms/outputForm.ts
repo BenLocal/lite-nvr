@@ -23,6 +23,8 @@ export function outputSupported(inputType: unknown): boolean {
 }
 export function outputFormValues(config?: OutputConfig): Record<string, unknown> {
   return {
+    output_audio_bus_id: config?.audio_bus_id ?? '',
+    output_audio_mode: config?.audio_mode ?? 'program',
     output_use_global_audio: config?.use_global_audio ?? true,
     output_video_codec: config?.video_codec ?? '',
     output_resolution: config?.width && config?.height ? `${config.width}x${config.height}` : '',
@@ -59,6 +61,10 @@ export function validateOutputValues(values: Record<string, unknown>): FormError
 }
 export function buildOutputConfig(values: Record<string, unknown>): OutputConfig | undefined {
   const config: OutputConfig = {}
+  if (typeof values.output_audio_bus_id === 'string' && values.output_audio_bus_id.trim()) {
+    config.audio_bus_id = values.output_audio_bus_id
+    config.audio_mode = values.output_audio_mode === 'add_original' ? 'add_original' : 'program'
+  }
   if (values.output_use_global_audio === false) config.use_global_audio = false
   if (!outputSupported(values.input_type)) return Object.keys(config).length ? config : undefined
   if (values.output_video_codec === 'h264' || values.output_video_codec === 'h265') config.video_codec = values.output_video_codec

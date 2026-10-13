@@ -90,6 +90,8 @@ export function setBusInputChannels(bus_id: string, source_id: string, channel_m
 }
 
 export interface MixerBus {
+  enabled: boolean
+  profile: AudioProfile
   id: string
   /** Where the server publishes the mixed stream (credentials redacted). */
   publish_url: string
@@ -116,17 +118,54 @@ export interface CreateBusInput {
 }
 
 export interface CreateBusPayload {
+  profile?: AudioProfile
   id: string
   publish_url?: string
   inputs: CreateBusInput[]
 }
 
-export function getMixer(signal?: AbortSignal): Promise<MixerState> {
-  return request<MixerState>('/audiomixer/list', { signal })
+function mixerInput(value: unknown): value is MixerInput {
+  return record(value) && typeof value.source_id === 'string' && typeof value.volume === 'number' &&
+    Number.isInteger(value.volume) && value.volume >= 0 && value.volume <= 400 && typeof value.muted === 'boolean' &&
+    (value.channel_map === undefined || ['stereo', 'swap', 'left_to_both', 'right_to_both'].some(mapping => mapping === value.channel_map))
 }
 
-export function createBus(payload: CreateBusPayload) {
-  return request<MixerState>('/audiomixer/bus/create', { method: 'POST', body: payload })
+function mixerSource(value: unknown): value is MixerSource {
+  return record(value) && typeof value.id === 'string' && typeof value.url === 'string' &&
+    (value.ready === undefined || typeof value.ready === 'boolean') &&
+    (value.error === undefined || value.error === null || typeof value.error === 'string')
+}
+
+export function parseMixerState(value: unknown): MixerState {
+  if (!record(value) || !Array.isArray(value.sources) || !value.sources.every(mixerSource) || !Array.isArray(value.buses)) {
+    throw new Error('混音台状态格式不正确')
+  }
+  const buses: MixerBus[] = value.buses.map(bus => {
+    if (!record(bus) || typeof bus.id !== 'string' || typeof bus.publish_url !== 'string' || typeof bus.flv_url !== 'string' ||
+      !Array.isArray(bus.inputs) || !bus.inputs.every(mixerInput) || (bus.enabled !== undefined && typeof bus.enabled !== 'boolean') || (bus.profile !== undefined && !profile(bus.profile))) {
+      throw new Error('混音总线格式不正确')
+    }
+    // Older servers have no per-bus profile and publish with the default AAC profile.
+    const audioProfile = profile(bus.profile) ? bus.profile : { codec: 'aac', sample_rate: 48000, channels: 2, bitrate: 128000 } satisfies AudioProfile
+    return { enabled: bus.enabled !== false, id: bus.id, publish_url: bus.publish_url, flv_url: bus.flv_url, inputs: bus.inputs, profile: audioProfile }
+  })
+  return { sources: value.sources, buses }
+}
+
+export async function getMixer(signal?: AbortSignal): Promise<MixerState> {
+  return parseMixerState(await request<unknown>('/audiomixer/list', { signal }))
+}
+
+export async function createBus(payload: CreateBusPayload): Promise<MixerState> {
+  return parseMixerState(await request<unknown>('/audiomixer/bus/create', { method: 'POST', body: payload }))
+}
+
+export async function startBus(payload: CreateBusPayload): Promise<MixerState> {
+  return parseMixerState(await request<unknown>('/audiomixer/bus/start', { method: 'POST', body: payload }))
+}
+
+export async function stopBus(bus_id: string): Promise<MixerState> {
+  return parseMixerState(await request<unknown>('/audiomixer/bus/stop', { method: 'POST', body: { bus_id } }))
 }
 
 export function removeBus(bus_id: string) {

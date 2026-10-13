@@ -58,8 +58,23 @@ pub fn register_pipe(id: &str, pipe: &Arc<Pipe>) {
 pub async fn audio_for_output(
     id: &str,
     include_original: bool,
-    use_global: bool,
+    settings: Option<&nvr_db::device::OutputConfig>,
 ) -> anyhow::Result<Option<ffmpeg_bus::shared_audio::SharedEncodedAudio>> {
+    if let Some(bus) = settings.and_then(|s| s.audio_bus_id.as_deref()) {
+        if !super::bus_enabled(bus) {
+            return Ok(None);
+        }
+        let mode = match settings.and_then(|s| s.audio_mode).unwrap_or_default() {
+            nvr_db::device::AudioMixMode::Program => MixMode::Program,
+            nvr_db::device::AudioMixMode::AddOriginal => MixMode::AddOriginal,
+        };
+        return Ok(Some(
+            super::MIXER
+                .output_audio(bus, id, mode, include_original)
+                .await?,
+        ));
+    }
+    let use_global = settings.and_then(|s| s.use_global_audio).unwrap_or(true);
     let cfg = config();
     if !cfg.enabled || !use_global {
         return Ok(None);
@@ -263,7 +278,7 @@ async fn recreate_buses(
     Ok(())
 }
 
-async fn apply_devices(
+pub(super) async fn apply_devices(
     devices: &[nvr_db::device::DeviceInfo],
     hub: &'static crate::detect::hub::DetectHub,
 ) -> anyhow::Result<()> {

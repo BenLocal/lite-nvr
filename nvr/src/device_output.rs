@@ -8,9 +8,9 @@ pub(crate) async fn outputs(
     include_original: bool,
     settings: Option<&Settings>,
 ) -> anyhow::Result<Vec<OutputConfig>> {
-    let use_global = settings.and_then(|s| s.use_global_audio).unwrap_or(true);
-    let audio =
-        crate::audiomixer::output::audio_for_output(id, include_original, use_global).await?;
+    let use_global = settings.is_some_and(|s| s.audio_bus_id.is_some())
+        || settings.and_then(|s| s.use_global_audio).unwrap_or(true);
+    let audio = crate::audiomixer::output::audio_for_output(id, include_original, settings).await?;
     let mut outputs = media_pipe_zlm::zlm_outputs(media, include_original || audio.is_some());
     for output in &mut outputs {
         output.use_global_audio = use_global;
@@ -23,6 +23,18 @@ pub(crate) fn validate(device: &DeviceInfo) -> anyhow::Result<()> {
     let Some(cfg) = device.config.output.as_ref() else {
         return Ok(());
     };
+    if let Some(bus) = &cfg.audio_bus_id {
+        anyhow::ensure!(!bus.trim().is_empty(), "请选择混音总线");
+        anyhow::ensure!(
+            crate::audiomixer::snapshot()
+                .buses
+                .iter()
+                .any(|b| &b.id == bus),
+            "混音总线不存在"
+        );
+    } else {
+        anyhow::ensure!(cfg.audio_mode.is_none(), "请先选择混音总线");
+    }
     if matches!(device.input_type.as_str(), "gb28181" | "xiaomi")
         && (cfg.video_codec.is_some()
             || cfg.width.is_some()

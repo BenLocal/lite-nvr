@@ -35,7 +35,7 @@ fn detect_config_round_trips() {
 
 #[tokio::test]
 async fn output_settings_survive_database_reopen() -> anyhow::Result<()> {
-    use super::{AudioCodec, OutputConfig, VideoCodec};
+    use super::{AudioCodec, AudioMixMode, OutputConfig, VideoCodec};
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("devices.db");
     let db = turso::Builder::new_local(path.to_str().unwrap())
@@ -57,6 +57,8 @@ async fn output_settings_survive_database_reopen() -> anyhow::Result<()> {
         config: DeviceConfig {
             output: Some(OutputConfig {
                 use_global_audio: Some(false),
+                audio_bus_id: Some("main".into()),
+                audio_mode: Some(AudioMixMode::AddOriginal),
                 video_codec: Some(VideoCodec::H265),
                 width: Some(640),
                 height: Some(360),

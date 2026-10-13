@@ -158,13 +158,9 @@ impl GbBridge {
             Ok(conn) => nvr_db::device::get(stream_id, &conn).await?,
             Err(_) => None, // protocol seam tests have no application database
         };
-        let use_global = device
-            .as_ref()
-            .and_then(|d| d.config.output.as_ref())
-            .and_then(|o| o.use_global_audio)
-            .unwrap_or(true);
-        let isolate =
-            device.is_some() && crate::audiomixer::native::required(stream_id, use_global);
+        let isolate = device.as_ref().is_some_and(|d| {
+            crate::audiomixer::native::required(stream_id, d.config.output.as_ref())
+        });
         let source_id = if isolate {
             format!("mix-source-{}", uuid::Uuid::new_v4())
         } else {

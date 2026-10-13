@@ -102,3 +102,28 @@ GET http://{{Host}}/system/list/v4l2/devices
 
 ### List x11grab devices
 GET http://{{Host}}/system/list/x11grab/devices
+
+@NvrApi=http://localhost:18080/api
+@NvrToken={{$processEnv NVR_TEST_TOKEN}}
+
+### Hardware audio inputs
+GET {{NvrApi}}/audiomixer/sources
+Authorization: Bearer {{NvrToken}}
+
+### Start the single hardware audio mix bus
+POST {{NvrApi}}/audiomixer/bus/start
+Authorization: Bearer {{NvrToken}}
+Content-Type: application/json
+
+{
+    "id": "main",
+    "profile": { "codec": "aac", "sample_rate": 48000, "channels": 2, "bitrate": 128000 },
+    "inputs": [ { "source_id": "alsa:D6911codec" }, { "source_id": "alsa:rockchiphdmiin" } ]
+}
+
+### Stop the bus while retaining its configuration
+POST {{NvrApi}}/audiomixer/bus/stop
+Authorization: Bearer {{NvrToken}}
+Content-Type: application/json
+
+{ "bus_id": "main" }

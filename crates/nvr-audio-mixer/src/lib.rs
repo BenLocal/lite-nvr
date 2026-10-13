@@ -44,9 +44,17 @@ pub struct InputSnapshot {
 /// One output bus and its inputs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BusSnapshot {
+    #[serde(default = "default_bus_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub profile: AudioProfile,
     pub id: String,
     pub publish_url: String,
     pub inputs: Vec<InputSnapshot>,
+}
+
+fn default_bus_enabled() -> bool {
+    true
 }
 
 /// One source in the input pool.
@@ -440,6 +448,8 @@ impl AudioMixer {
             .unwrap()
             .values()
             .map(|b| BusSnapshot {
+                enabled: true,
+                profile: b.profile().clone(),
                 id: b.id().to_string(),
                 publish_url: b.publish_url().to_string(),
                 inputs: b.inputs_snapshot(),

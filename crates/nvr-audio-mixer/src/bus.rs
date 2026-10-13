@@ -192,6 +192,10 @@ impl MixBus {
         &self.publish_url
     }
 
+    pub fn profile(&self) -> &AudioProfile {
+        &self.profile
+    }
+
     pub fn encoded(&self) -> SharedEncodedAudio {
         self.encoded.clone()
     }
