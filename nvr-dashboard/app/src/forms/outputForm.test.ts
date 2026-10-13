@@ -7,11 +7,12 @@ const settings = { video_codec: 'h265', width: 640, height: 360, fps: 15, max_bi
 describe('persisted output settings', () => {
   it('selects program audio independently for each device, including native sources', () => {
     for (const input_type of ['rtsp', 'v4l2', 'gb28181', 'xiaomi']) {
-      const values = { input_type, output_audio_bus_id: 'main', output_audio_mode: 'add_original' }
+      const values = { input_type, output_audio_bus_id: 'main', include_audio: true }
       const config = buildOutputConfig(values)
       expect(config).toEqual({ audio_bus_id: 'main', audio_mode: 'add_original' })
-      expect(outputFormValues(config)).toMatchObject({ output_audio_bus_id: 'main', output_audio_mode: 'add_original' })
+      expect(outputFormValues(config)).toMatchObject({ output_audio_bus_id: 'main' })
     }
+    expect(buildOutputConfig({ input_type: 'rtsp', output_audio_bus_id: 'main', include_audio: false })).toEqual({ audio_bus_id: 'main', audio_mode: 'program' })
     expect(buildOutputConfig({ input_type: 'rtsp', output_audio_bus_id: '' })).toBeUndefined()
   })
   it('keeps per-output program opt-out even for native forwarding devices', () => {

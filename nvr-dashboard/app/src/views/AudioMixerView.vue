@@ -43,11 +43,10 @@ const physicalRows = computed(() => sources.value.filter(source => source.kind =
 const codecOptions = [{ label: 'AAC', value: 'aac' }, { label: 'Opus', value: 'opus' }]
 const channelOptions = [{ label: '左右独立', value: 'stereo' }, { label: '交换左右', value: 'swap' }, { label: '左声道到两路', value: 'left_to_both' }, { label: '右声道到两路', value: 'right_to_both' }]
 const statusAbort = new AbortController()
-let statusTimer: ReturnType<typeof setInterval> | undefined
-let loadingStatus = false
+const loadingStatus = ref(false)
 async function loadStatus(reset = false): Promise<void> {
-  if (loadingStatus || statusAbort.signal.aborted) return
-  loadingStatus = true
+  if (loadingStatus.value || statusAbort.signal.aborted) return
+  loadingStatus.value = true
   try {
     const mixer = await getMixer(statusAbort.signal)
     if (!statusAbort.signal.aborted) {
@@ -57,17 +56,21 @@ async function loadStatus(reset = false): Promise<void> {
         selectedSourceIds.value = mixer.buses[0]?.inputs.map(input => input.source_id) ?? []
       }
     }
-  } finally { loadingStatus = false }
+  } finally { loadingStatus.value = false }
 }
 
 async function onChannels(busId: string, sourceId: string, value: ChannelMap): Promise<void> {
-  try { await setBusInputChannels(busId, sourceId, value) }
+  try {
+    await setBusInputChannels(busId, sourceId, value)
+    const input = state.value.buses.find(bus => bus.id === busId)?.inputs.find(input => input.source_id === sourceId)
+    if (input) input.channel_map = value
+  }
   catch (error) { appToast.errorFrom('设置失败', error, '无法修改声道映射'); await refresh() }
 }
 
 async function refresh() {
   try {
-    state.value = await getMixer()
+    await loadStatus(true)
   } catch (error) {
     appToast.errorFrom('加载失败', error, '无法获取混音台状态')
   }
@@ -78,7 +81,6 @@ onMounted(async () => {
     const [available] = await Promise.all([getAudioSources(), loadStatus(true)])
     sources.value = available
     selectedSourceIds.value = selectedSourceIds.value.filter(id => available.some(source => source.kind === 'alsa' && source.id === id))
-    if (!statusAbort.signal.aborted) statusTimer = setInterval(() => { void loadStatus().catch(error => { if (!statusAbort.signal.aborted) appToast.errorFrom('状态更新失败', error, '无法读取混音台状态') }) }, 2000)
   } catch (error) {
     appToast.errorFrom('加载失败', error, '无法获取设备列表')
   } finally {
@@ -86,7 +88,7 @@ onMounted(async () => {
   }
 })
 
-onBeforeUnmount(() => { statusAbort.abort(); if (statusTimer) clearInterval(statusTimer) })
+onBeforeUnmount(() => { statusAbort.abort() })
 
 // ---- one output bus -------------------------------------------------------
 const selectedSourceIds = ref<string[]>([])
@@ -137,6 +139,8 @@ async function onVolume(busId: string, sourceId: string, volume: number) {
 async function onMute(busId: string, sourceId: string, muted: boolean) {
   try {
     await setBusInputMute(busId, sourceId, muted)
+    const input = state.value.buses.find(bus => bus.id === busId)?.inputs.find(input => input.source_id === sourceId)
+    if (input) input.muted = muted
   } catch (error) {
     appToast.errorFrom('操作失败', error, '无法设置静音')
   }
@@ -275,6 +279,7 @@ onBeforeUnmount(() => {
       <div class="page-actions">
         <Button :label="running ? '停止' : '开始'" :icon="running ? 'pi pi-stop' : 'pi pi-play'" :severity="running ? 'danger' : undefined" size="small" :loading="changingBus" :disabled="loading" @click="toggleBus" />
         <Button :label="listeningId ? '停止试听' : '试听'" :icon="listeningId ? 'pi pi-stop' : 'pi pi-headphones'" severity="secondary" size="small" :disabled="!running || changingBus" @click="state.buses[0] && toggleListen(state.buses[0])" />
+        <Button label="刷新" icon="pi pi-refresh" severity="secondary" size="small" :loading="loadingStatus" :disabled="loading || changingBus" @click="refresh" />
       </div>
     </div>
 

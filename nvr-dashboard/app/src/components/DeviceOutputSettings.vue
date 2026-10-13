@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import InputNumber from 'primevue/inputnumber'
 import Select from 'primevue/select'
+import ToggleSwitch from 'primevue/toggleswitch'
 import Message from 'primevue/message'
 import { onMounted, ref } from 'vue'
 import { getMixer } from '../api/audiomixer'
@@ -9,24 +10,22 @@ import type { DeviceFormFields } from '../forms/deviceForm'
 import { resolutionOptions, videoCodecOptions, outputSupported } from '../forms/outputForm'
 
 defineProps<{ form: DeviceFormFields }>()
-const buses = ref<{ label: string; value: string }[]>([{ label: '保持设备原音', value: '' }])
-const modeOptions = [{ label: '替换设备原音', value: 'program' }, { label: '叠加设备原音', value: 'add_original' }]
+const mixBusId = ref('')
 const toast = useAppToast()
 onMounted(async () => {
-  try { buses.value.push(...(await getMixer()).buses.map(bus => ({ label: bus.id, value: bus.id }))) }
+  try { mixBusId.value = (await getMixer()).buses[0]?.id ?? '' }
   catch (error) { toast.errorFrom('加载失败', error, '无法获取混音总线') }
 })
 </script>
 
 <template>
   <div class="field">
-    <label for="output_audio_bus_id">混音总线</label>
-    <Select input-id="output_audio_bus_id" name="output_audio_bus_id" aria-label="混音总线" :options="buses" option-label="label" option-value="value" class="field-input" />
-  </div>
-  <div v-if="form.output_audio_bus_id?.value" class="field">
-    <label for="output_audio_mode">输出音频组成</label>
-    <Select input-id="output_audio_mode" name="output_audio_mode" aria-label="输出音频组成" :options="modeOptions" option-label="label" option-value="value" class="field-input" />
-    <span class="field-hint">叠加原音需要开启设备的“包含音频”。编码、采样率和码率在混音总线中设置。</span>
+    <div class="audio-bus-toggle">
+      <label for="output-audio-mix">混音总线</label>
+      <ToggleSwitch input-id="output-audio-mix" name="output_audio_bus_id" :true-value="mixBusId || null" false-value="" :disabled="!mixBusId" />
+      <span>{{ form.output_audio_bus_id?.value ? '启用' : '关闭' }}</span>
+    </div>
+    <span v-if="!mixBusId" class="field-hint">请先在混音台配置音频输入。</span>
   </div>
   <Message v-if="!outputSupported(form.input_type?.value)" severity="info" size="small">
     此设备使用原生转发，暂不支持输出转码参数。
@@ -52,3 +51,15 @@ onMounted(async () => {
 
   </div>
 </template>
+
+<style scoped>
+.audio-bus-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.audio-bus-toggle label {
+  margin: 0;
+}
+</style>

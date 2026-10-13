@@ -340,9 +340,9 @@ function close() {
             <template #content>
               <div class="form-horizontal">
                 <div class="field">
-                  <label for="include_audio">包含音频</label>
+                  <label for="include_audio">使用输入流音频</label>
                   <ToggleSwitch input-id="include_audio" name="include_audio" />
-                  <span class="field-hint">开启后推流会包含音频轨（需输入源带音频）</span>
+                  <span class="field-hint">开启后使用输入流自带的音频；关闭后不使用原音</span>
                 </div>
                 <div class="field">
                   <label for="record">录制</label>
