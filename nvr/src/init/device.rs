@@ -34,6 +34,7 @@ pub(crate) fn init_device_pipes(
 async fn init_device_pipes_inner(
     detect_hub: &'static crate::detect::hub::DetectHub,
 ) -> anyhow::Result<()> {
+    crate::audiomixer::output::initialize().await?;
     let conn = app_db_conn()?;
     let devices = nvr_db::device::list(&conn).await?;
     let total = devices.len();
@@ -52,11 +53,6 @@ async fn init_device_pipes_inner(
     // published to ZLM. Spawned so its grace period / retries don't block.
     tokio::spawn(async {
         crate::compositor::restore_all().await;
-    });
-
-    // Same for the audio mixer buses (they pull the same device streams).
-    tokio::spawn(async {
-        crate::audiomixer::restore_all().await;
     });
 
     Ok(())
@@ -125,7 +121,7 @@ pub(crate) async fn ensure_device_pipe(
             device.record,
             false,
         ));
-        manager::upsert_xiaomi(&device.id, media, cfg, true).await?;
+        manager::upsert_xiaomi(&device.id, media, cfg, true, device.clone()).await?;
         crate::detect::control::reconcile_detection(detect_hub, device).await;
         return Ok(());
     }
@@ -145,6 +141,9 @@ pub(crate) async fn ensure_device_pipe(
                     &gb.channel_id,
                     gb28181::Transport::Udp,
                 );
+                if crate::audiomixer::MIXER.has_source(&device.id) {
+                    bridge.ensure_mixer_source(&device.id).await?;
+                }
                 log::info!(
                     "gb28181: registered mapping {} -> {}/{}",
                     device.id,
@@ -248,7 +247,13 @@ pub(crate) async fn ensure_device_pipe(
         device.record,
         false,
     ));
-    let mut outputs = media_pipe_zlm::zlm_outputs(media, device.include_audio);
+    let mut outputs = crate::device_output::outputs(
+        &device.id,
+        media,
+        device.include_audio,
+        device.config.output.as_ref(),
+    )
+    .await?;
     // Capture devices produce raw frames, which ZLM cannot distribute directly.
     if matches!(device.input_type.as_str(), "v4l2" | "x11grab" | "lavfi") {
         outputs[0].encode = Some(EncodeConfig {

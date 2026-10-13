@@ -8,6 +8,7 @@ export interface DetectConfig {
 }
 
 export interface OutputConfig {
+  use_global_audio?: boolean
   video_codec?: 'h264' | 'h265'
   width?: number
   height?: number
@@ -205,6 +206,7 @@ export async function getDeviceMetrics(signal?: AbortSignal): Promise<DeviceMetr
 
 function isOutputConfig(value: unknown): value is OutputConfig {
   if (!isRecord(value)) return false
+  if (value.use_global_audio !== undefined && typeof value.use_global_audio !== 'boolean') return false
   if (value.video_codec !== undefined && value.video_codec !== 'h264' && value.video_codec !== 'h265') return false
   if (value.audio_codec !== undefined && value.audio_codec !== 'aac' && value.audio_codec !== 'opus') return false
   return ['width', 'height', 'fps', 'max_bitrate', 'sample_rate'].every(key =>

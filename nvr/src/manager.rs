@@ -27,6 +27,7 @@ enum Entry {
     Worker {
         cancel: CancellationToken,
         handle: std::thread::JoinHandle<()>,
+        forwarder: Option<JoinHandle<()>>,
     },
     /// An async supervisor task (e.g. a platform live-stream worker that
     /// re-resolves its pull URL and re-runs an inner pipe on every reconnect).
@@ -63,7 +64,12 @@ impl Entry {
                     }
                 }
             }
-            Entry::Worker { handle, .. } => {
+            Entry::Worker {
+                handle, forwarder, ..
+            } => {
+                if let Some(forwarder) = forwarder {
+                    let _ = forwarder.await;
+                }
                 // The worker can be blocked in a socket read, so join it on a
                 // blocking thread with a bound — a stalled camera must not hang
                 // the manager. If it overruns we detach; it exits on its own
@@ -183,11 +189,13 @@ fn rockchip_capture_options(name: &str) -> Option<HashMap<String, String>> {
 }
 
 async fn upsert_pipe(id: &str, config: PipeConfig, update_if_exists: bool) -> anyhow::Result<()> {
+    let source_id = id.to_string();
     upsert_entry(
         id,
         move || {
             let options = input_options(&config.input);
             let pipe = Arc::new(Pipe::new(config));
+            crate::audiomixer::output::register_pipe(&source_id, &pipe);
             let pipe_for_task = Arc::clone(&pipe);
             let handle = tokio::spawn(async move {
                 pipe_for_task.start(options).await;
@@ -250,7 +258,20 @@ fn spawn_network_device(
                 device.record,
                 false,
             ));
-            let mut outputs = media_pipe_zlm::zlm_outputs(media, device.include_audio);
+            let mut outputs = match crate::device_output::outputs(
+                &device.id,
+                media,
+                device.include_audio,
+                device.config.output.as_ref(),
+            )
+            .await
+            {
+                Ok(outputs) => outputs,
+                Err(e) => {
+                    log::warn!("program output {}: {e:#}", device.id);
+                    break;
+                }
+            };
             crate::device_output::apply(&mut outputs, device.config.output.as_ref());
             let config = PipeConfig {
                 input: InputConfig::Network {
@@ -260,6 +281,7 @@ fn spawn_network_device(
             };
             let options = input_options(&config.input);
             let pipe = Arc::new(Pipe::new(config));
+            crate::audiomixer::output::register_pipe(&device.id, &pipe);
             *current.write().expect("network pipe lock poisoned") = Some(pipe.clone());
             let running = pipe.clone();
             let mut session = tokio::spawn(async move {
@@ -304,13 +326,50 @@ pub(crate) async fn upsert_xiaomi(
     media: Arc<rszlm::media::Media>,
     cfg: crate::xiaomi::XiaomiConfig,
     update_if_exists: bool,
+    device: DeviceInfo,
 ) -> anyhow::Result<()> {
     upsert_entry(
         id,
         move || {
             let cancel = CancellationToken::new();
+            let use_global = device
+                .config
+                .output
+                .as_ref()
+                .and_then(|o| o.use_global_audio)
+                .unwrap_or(true);
+            let isolate = crate::audiomixer::native::required(&device.id, use_global);
+            let (media, forwarder) = if isolate {
+                drop(media);
+                let raw = Arc::new(rszlm::media::Media::new_with_default_vhost(
+                    crate::audiomixer::native::SOURCE_APP,
+                    &device.id,
+                    0.0,
+                    false,
+                    false,
+                ));
+                let forwarder = crate::audiomixer::native::spawn(
+                    crate::audiomixer::native::NativeOutput {
+                        device_id: device.id.clone(),
+                        source_app: crate::audiomixer::native::SOURCE_APP.to_string(),
+                        source_id: device.id.clone(),
+                        output_app: crate::init::device::DEVICE_APP.to_string(),
+                        record: device.record,
+                        include_original: false,
+                        settings: device.config.output.clone(),
+                    },
+                    cancel.clone(),
+                );
+                (raw, Some(forwarder))
+            } else {
+                (media, None)
+            };
             let handle = crate::xiaomi::spawn_to_zlm(cfg, media, cancel.clone());
-            Entry::Worker { cancel, handle }
+            Entry::Worker {
+                cancel,
+                handle,
+                forwarder,
+            }
         },
         update_if_exists,
     )

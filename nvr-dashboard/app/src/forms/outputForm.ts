@@ -23,6 +23,7 @@ export function outputSupported(inputType: unknown): boolean {
 }
 export function outputFormValues(config?: OutputConfig): Record<string, unknown> {
   return {
+    output_use_global_audio: config?.use_global_audio ?? true,
     output_video_codec: config?.video_codec ?? '',
     output_resolution: config?.width && config?.height ? `${config.width}x${config.height}` : '',
     output_fps: config?.fps ?? null,
@@ -57,8 +58,9 @@ export function validateOutputValues(values: Record<string, unknown>): FormError
   return errors
 }
 export function buildOutputConfig(values: Record<string, unknown>): OutputConfig | undefined {
-  if (!outputSupported(values.input_type)) return undefined
   const config: OutputConfig = {}
+  if (values.output_use_global_audio === false) config.use_global_audio = false
+  if (!outputSupported(values.input_type)) return Object.keys(config).length ? config : undefined
   if (values.output_video_codec === 'h264' || values.output_video_codec === 'h265') config.video_codec = values.output_video_codec
   if (values.output_audio_codec === 'aac' || values.output_audio_codec === 'opus') config.audio_codec = values.output_audio_codec
   const resolution = resolutionOptions.find(option => option.value === values.output_resolution)

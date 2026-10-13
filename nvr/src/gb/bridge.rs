@@ -15,6 +15,11 @@ use crate::zlm::media_cache::MediaCache;
 struct ActiveSession {
     _receiver: Box<dyn ReceiverHandle>,
     session: MediaSession,
+    forwarder: Option<(
+        tokio_util::sync::CancellationToken,
+        tokio::task::JoinHandle<()>,
+    )>,
+    source_id: String,
 }
 
 pub struct GbBridge {
@@ -71,8 +76,15 @@ impl GbBridge {
         let mut out = Vec::with_capacity(mappings.len());
         for (stream_id, m) in mappings {
             let live = self.media_cache.is_live("rtp", &stream_id);
+            let source = self
+                .active
+                .lock()
+                .unwrap()
+                .get(&stream_id)
+                .map(|s| s.source_id.clone())
+                .unwrap_or_else(|| stream_id.clone());
             let rtp = if live {
-                self.control.rtp_info("rtp", &stream_id).await
+                self.control.rtp_info("rtp", &source).await
             } else {
                 None
             };
@@ -142,7 +154,23 @@ impl GbBridge {
         mapping: &crate::gb::stream_map::Mapping,
     ) -> anyhow::Result<()> {
         let transport = mapping.transport;
-        let handle = self.receiver.open(stream_id, transport).await?;
+        let device = match crate::db::app_db_conn() {
+            Ok(conn) => nvr_db::device::get(stream_id, &conn).await?,
+            Err(_) => None, // protocol seam tests have no application database
+        };
+        let use_global = device
+            .as_ref()
+            .and_then(|d| d.config.output.as_ref())
+            .and_then(|o| o.use_global_audio)
+            .unwrap_or(true);
+        let isolate =
+            device.is_some() && crate::audiomixer::native::required(stream_id, use_global);
+        let source_id = if isolate {
+            format!("mix-source-{}", uuid::Uuid::new_v4())
+        } else {
+            stream_id.to_string()
+        };
+        let handle = self.receiver.open(&source_id, transport).await?;
         let port = handle.port();
         let (ssrc, ssrc_str) = self.server.next_ssrc(SsrcKind::Live);
         let media_addr = format!("{}:{}", self.media_ip, port).parse()?;
@@ -174,11 +202,34 @@ impl GbBridge {
                     anyhow::anyhow!("gb28181: tcp-active connect timed out for {stream_id}")
                 })??;
         }
+        let forwarder = if isolate {
+            let device = device
+                .as_ref()
+                .expect("isolated receiver requires device metadata");
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let task = crate::audiomixer::native::spawn(
+                crate::audiomixer::native::NativeOutput {
+                    device_id: stream_id.to_string(),
+                    source_app: "rtp".to_string(),
+                    source_id: source_id.clone(),
+                    output_app: "rtp".to_string(),
+                    record: device.record,
+                    include_original: device.include_audio,
+                    settings: device.config.output.clone(),
+                },
+                cancel.clone(),
+            );
+            Some((cancel, task))
+        } else {
+            None
+        };
         self.active.lock().unwrap().insert(
             stream_id.to_string(),
             ActiveSession {
                 _receiver: handle,
                 session,
+                forwarder,
+                source_id,
             },
         );
         log::info!(
@@ -194,8 +245,42 @@ impl GbBridge {
 
     /// ZLM `on_media_no_reader`: last viewer left — BYE and release.
     pub async fn handle_media_no_reader(&self, stream_id: &str) {
+        if crate::audiomixer::MIXER.has_source(stream_id) {
+            return;
+        }
         let _operation = self.operations.lock(stream_id).await;
         self.teardown(stream_id).await;
+    }
+
+    pub async fn ensure_mixer_source(&self, stream_id: &str) -> anyhow::Result<()> {
+        let _operation = self.operations.lock(stream_id).await;
+        let mapping = self
+            .streams
+            .get(stream_id)
+            .ok_or_else(|| anyhow::anyhow!("国标设备未登记"))?;
+        let already_isolated = self
+            .active
+            .lock()
+            .unwrap()
+            .get(stream_id)
+            .is_some_and(|s| s.source_id != stream_id);
+        if already_isolated {
+            return Ok(());
+        }
+        self.teardown(stream_id).await;
+        self.start_pull(stream_id, &mapping).await
+    }
+
+    pub async fn refresh_program(&self, stream_id: &str) -> anyhow::Result<()> {
+        let _operation = self.operations.lock(stream_id).await;
+        let live = self.active.lock().unwrap().contains_key(stream_id);
+        self.teardown(stream_id).await;
+        if live || crate::audiomixer::MIXER.has_source(stream_id) {
+            if let Some(mapping) = self.streams.get(stream_id) {
+                self.start_pull(stream_id, &mapping).await?;
+            }
+        }
+        Ok(())
     }
 
     pub async fn shutdown(&self) {
@@ -203,14 +288,19 @@ impl GbBridge {
             .store(true, std::sync::atomic::Ordering::Release);
         // A pending pull also holds its key gate, so teardown waits for it.
         for (stream_id, _) in self.streams.list() {
-            self.handle_media_no_reader(&stream_id).await;
+            let _operation = self.operations.lock(&stream_id).await;
+            self.teardown(&stream_id).await;
         }
         self.server.shutdown();
     }
 
     async fn teardown(&self, stream_id: &str) {
         let active = self.active.lock().unwrap().remove(stream_id);
-        if let Some(active) = active {
+        if let Some(mut active) = active {
+            if let Some((cancel, task)) = active.forwarder.take() {
+                cancel.cancel();
+                let _ = task.await;
+            }
             if let Err(e) = active.session.stop().await {
                 log::warn!("gb28181: BYE for stream {stream_id} failed: {e:#}");
             }

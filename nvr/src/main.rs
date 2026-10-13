@@ -128,7 +128,7 @@ async fn main() -> ! {
     let teardown = async {
         crate::program::shutdown().await;
         crate::compositor::shutdown().await;
-        crate::audiomixer::shutdown();
+        crate::audiomixer::shutdown().await;
         crate::gb::shutdown().await;
         crate::manager::shutdown().await;
         // With every producer stopped, tear ZLM's servers/sessions down while

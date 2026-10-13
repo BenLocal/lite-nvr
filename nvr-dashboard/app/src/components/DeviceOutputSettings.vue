@@ -2,13 +2,30 @@
 import InputNumber from 'primevue/inputnumber'
 import Select from 'primevue/select'
 import Message from 'primevue/message'
+import ToggleSwitch from 'primevue/toggleswitch'
+import { computed, onMounted, ref } from 'vue'
+import { getProgramConfig, type ProgramConfig } from '../api/audiomixer'
+import { useAppToast } from '../utils/toast'
 import type { DeviceFormFields } from '../forms/deviceForm'
 import { resolutionOptions, videoCodecOptions, audioCodecOptions, sampleRateOptions, outputSupported } from '../forms/outputForm'
 
-defineProps<{ form: DeviceFormFields }>()
+const props = defineProps<{ form: DeviceFormFields }>()
+const program = ref<ProgramConfig | null>(null)
+const inherits = computed(() => program.value?.enabled && props.form.output_use_global_audio?.value !== false)
+const toast = useAppToast()
+onMounted(async () => {
+  try { program.value = (await getProgramConfig()).config }
+  catch (error) { toast.errorFrom('加载失败', error, '无法获取混音台音频设置') }
+})
 </script>
 
 <template>
+  <div class="field">
+    <label for="output_use_global_audio">使用全局混音</label>
+    <ToggleSwitch input-id="output_use_global_audio" name="output_use_global_audio" aria-label="使用全局混音" />
+    <span class="field-hint">混音台启用后生效；关闭时该输出保留设备原音路径。</span>
+  </div>
+  <Message v-if="inherits && program" severity="info" size="small">音频由混音台统一设置：{{ program.profile.codec.toUpperCase() }} / {{ program.profile.sample_rate }} Hz / 双声道。此处只设置视频参数。</Message>
   <Message v-if="!outputSupported(form.input_type?.value)" severity="info" size="small">
     此设备使用原生转发，暂不支持输出转码参数。
   </Message>
@@ -30,12 +47,12 @@ defineProps<{ form: DeviceFormFields }>()
       <InputNumber :input-id="field.name" :name="field.name" :min="field.min" :max="field.max" :suffix="field.suffix" :use-grouping="false" placeholder="保持默认" class="field-input" :invalid="form[field.name]?.invalid" />
       <Message v-if="form[field.name]?.invalid" severity="error" size="small" variant="simple">{{ form[field.name]?.error?.message }}</Message>
     </div>
-    <div class="field">
+    <div v-if="!inherits" class="field">
       <label for="output_audio_codec">音频编码</label>
       <Select input-id="output_audio_codec" name="output_audio_codec" aria-label="音频编码" placeholder="保持默认" :options="audioCodecOptions" option-label="label" option-value="value" class="field-input" />
       <span class="field-hint">音频设置仅在开启“包含音频”且输入有音轨时生效。</span>
     </div>
-    <div class="field">
+    <div v-if="!inherits" class="field">
       <label for="output_sample_rate">音频采样率</label>
       <Select input-id="output_sample_rate" name="output_sample_rate" aria-label="音频采样率" placeholder="保持输入采样率" :options="sampleRateOptions(form.output_audio_codec?.value)" option-label="label" option-value="value" class="field-input" :invalid="form.output_sample_rate?.invalid" />
       <Message v-if="form.output_sample_rate?.invalid" severity="error" size="small" variant="simple">{{ form.output_sample_rate.error?.message }}</Message>

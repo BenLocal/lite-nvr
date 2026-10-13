@@ -1054,6 +1054,7 @@ pub struct EncoderTask {
     state: SharedOutputState,
     /// Stop once the last output subscriber leaves (bus-managed encoders).
     auto_stop: bool,
+    handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl EncoderTask {
@@ -1067,6 +1068,7 @@ impl EncoderTask {
             raw_chan: sender,
             state: SharedOutputState::default(),
             auto_stop: false,
+            handle: std::sync::Mutex::new(None),
         }
     }
 
@@ -1109,6 +1111,21 @@ impl EncoderTask {
         self.cancel.cancel();
     }
 
+    pub fn shared_audio(
+        &self,
+        stream: AvStream,
+    ) -> anyhow::Result<crate::shared_audio::SharedEncodedAudio> {
+        crate::shared_audio::SharedEncodedAudio::new(stream, self.raw_chan.clone())
+    }
+
+    pub async fn stop_and_join(&self) {
+        self.stop();
+        let handle = self.handle.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(handle) = handle {
+            let _ = handle.await;
+        }
+    }
+
     pub async fn start(
         &self,
         encoder: Encoder,
@@ -1129,7 +1146,7 @@ impl EncoderTask {
         );
         /// Log "queue full" at most every N drops; use debug level so info logs stay clean.
         const DROP_LOG_INTERVAL: u64 = 120;
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let (tx, rx) = std::sync::mpsc::sync_channel::<RawFrameCmd>(*FRAME_QUEUE_BOUND);
             let handle_cancel = cancel_clone.clone();
             let handle = tokio::task::spawn_blocking(move || {
@@ -1193,6 +1210,7 @@ impl EncoderTask {
             let _ = handle.await;
             log::info!("encoder task finished");
         });
+        *self.handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
     }
 
     /// Send a frame into the bounded encoder queue, waiting (async, so the

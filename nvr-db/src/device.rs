@@ -39,6 +39,10 @@ pub struct DeviceConfig {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OutputConfig {
+    /// None follows the global program when it is enabled. False keeps this
+    /// output on its original-audio path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_global_audio: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub video_codec: Option<VideoCodec>,
     #[serde(skip_serializing_if = "Option::is_none")]

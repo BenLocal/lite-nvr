@@ -9,6 +9,135 @@ use crate::input::AvInput;
 use crate::metadata::probe;
 use crate::test_mp4_path;
 
+/// Two real MP4 outputs reuse one external encoder, replace the input audio,
+/// keep video stream-copy, and finish with the finite input.
+#[tokio::test]
+async fn shared_program_audio_reaches_multiple_file_outputs() -> anyhow::Result<()> {
+    use crate::frame::RawFrame;
+    use crate::packet::RawPacketCmd;
+    use crate::shared_audio::SharedEncodedAudio;
+    use crate::stream::AvStream;
+    use ffmpeg_next::{Rational, codec::Parameters};
+    use tokio_util::sync::CancellationToken;
+
+    crate::init()?;
+    let template = AvStream::new(0, Parameters::new(), Rational(1, 48_000), Rational(0, 1));
+    let mut encoder = Encoder::new_audio(
+        &template,
+        AudioSettings {
+            sample_rate: Some(48_000),
+            channels: Some(2),
+            bitrate: Some(128_000),
+            ..Default::default()
+        },
+        None,
+    )?;
+    let (tx, _) = tokio::sync::broadcast::channel(32);
+    let audio = SharedEncodedAudio::new(encoder.output_stream(0), tx.clone())?;
+    let cancel = CancellationToken::new();
+    let stop = cancel.clone();
+    let producer = tokio::spawn(async move {
+        let mut pts = 0i64;
+        let mut tick = tokio::time::interval(std::time::Duration::from_micros(21_333));
+        loop {
+            tokio::select! { _ = stop.cancelled() => break, _ = tick.tick() => {} }
+            let mut frame = ffmpeg_next::frame::Audio::new(
+                ffmpeg_next::format::Sample::I16(ffmpeg_next::format::sample::Type::Packed),
+                1024,
+                ffmpeg_next::ChannelLayout::STEREO,
+            );
+            frame.set_rate(48_000);
+            frame.set_pts(Some(pts));
+            for (i, sample) in frame.plane_mut::<(i16, i16)>(0).iter_mut().enumerate() {
+                let t = (pts as f64 + i as f64) / 48_000.0;
+                *sample = (
+                    (3000.0 * (2.0 * std::f64::consts::PI * 1000.0 * t).sin()) as i16,
+                    (3000.0 * (2.0 * std::f64::consts::PI * 1500.0 * t).sin()) as i16,
+                );
+            }
+            encoder.send_frame(RawFrame::Audio(frame.into()))?;
+            while let Some(p) = encoder.encoder_receive_packet()? {
+                let _ = tx.send(RawPacketCmd::Data(p));
+            }
+            pts += 1024;
+        }
+        Ok::<_, anyhow::Error>(())
+    });
+    let bus = Bus::new_deferred("shared-program-files");
+    bus.add_input(
+        InputConfig::File {
+            path: test_mp4_path().to_string_lossy().into_owned(),
+        },
+        None,
+    )
+    .await?;
+    let paths = [
+        test_media("shared-program-a.mp4"),
+        test_media("shared-program-b.mp4"),
+    ];
+    for (i, path) in paths.iter().enumerate() {
+        let _ = bus
+            .add_output(
+                OutputConfig::new(
+                    format!("program-{i}"),
+                    OutputAvType::Video,
+                    OutputDest::File { path: path.clone() },
+                )
+                .with_external_audio(audio.clone()),
+            )
+            .await?;
+    }
+    bus.start().await?;
+    tokio::time::sleep(std::time::Duration::from_secs(7)).await;
+    let metrics = bus.metrics().await?;
+    bus.stop();
+    cancel.cancel();
+    producer.await??;
+    assert!(
+        metrics.encoders.is_empty(),
+        "external program must not start per-output encoders"
+    );
+    assert!(metrics.decoders.is_empty(), "video must remain stream-copy");
+    for path in paths {
+        let input = AvInput::new(&path, None, None)?;
+        let stream = input.streams().values().find(|s| s.is_audio()).unwrap();
+        assert_eq!(stream.sample_rate(), 48_000);
+        assert_eq!(stream.channels(), 2);
+        let ffmpeg = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ffmpeg/bin/ffmpeg");
+        let decoded = std::process::Command::new(ffmpeg)
+            .args([
+                "-v", "error", "-i", &path, "-map", "0:a:0", "-t", "1", "-f", "f64le", "-ac", "2",
+                "-ar", "48000", "pipe:1",
+            ])
+            .output()?;
+        assert!(decoded.status.success(), "audio decode failed");
+        let samples: Vec<f64> = decoded
+            .stdout
+            .chunks_exact(8)
+            .map(|b| f64::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        assert!(samples.len() >= 48_000, "not enough real decoded audio");
+        for (ch, own, other) in [(0, 1000.0, 1500.0), (1, 1500.0, 1000.0)] {
+            let power = |freq: f64| -> f64 {
+                let (re, im) =
+                    samples
+                        .chunks_exact(2)
+                        .enumerate()
+                        .fold((0.0, 0.0), |(re, im), (i, v)| {
+                            let phase = 2.0 * std::f64::consts::PI * freq * i as f64 / 48000.0;
+                            (re + v[ch] * phase.cos(), im + v[ch] * phase.sin())
+                        });
+                re.hypot(im)
+            };
+            assert!(
+                power(own) > power(other) * 20.0,
+                "shared program stereo tone not present in {path}"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Path for a test-generated media file under `crates/ffmpeg-bus/.test_media/`
 /// (git-ignored), creating the directory if needed.
 pub(super) fn test_media(name: &str) -> String {

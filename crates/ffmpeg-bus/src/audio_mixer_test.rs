@@ -84,3 +84,54 @@ fn control_of_missing_input_errors() {
     assert!(task.set_volume("nope", 50).is_err());
     assert!(task.set_muted("nope", true).is_err());
 }
+
+#[tokio::test]
+async fn device_original_is_added_before_the_program_is_clipped() {
+    let (program_tx, program) = tokio::sync::broadcast::channel(4);
+    let mixer = DynamicMixerTask::with_program(48_000, program);
+    let (original_tx, original) = tokio::sync::broadcast::channel(4);
+    mixer.add_input("original", original, 100);
+    let mut output = mixer.subscribe();
+    mixer.start();
+    assert!(
+        original_tx
+            .send(RawFrameCmd::Data(RawFrame::Audio(
+                build_frame(&vec![-30_000; FRAME_LEN], 48_000, 0).into()
+            )))
+            .is_ok()
+    );
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert!(
+        program_tx
+            .send(ProgramPcmFrame {
+                samples: vec![45_000; FRAME_LEN].into(),
+                pts: 96_000,
+                sample_rate: 48_000
+            })
+            .is_ok()
+    );
+    let frame = tokio::time::timeout(Duration::from_secs(2), output.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    mixer.stop_and_join().await;
+    let RawFrameCmd::Data(RawFrame::Audio(frame)) = frame else {
+        panic!("expected mixed PCM")
+    };
+    assert_eq!(frame.pts(), Some(96_000));
+    for sample in frame.as_audio().data(0)[..FRAME_LEN * 2].chunks_exact(2) {
+        assert_eq!(i16::from_ne_bytes(sample.try_into().unwrap()), 15_000);
+    }
+}
+
+#[test]
+fn input_mapping_changes_live_controls_and_validates_channel_choices() {
+    let mixer = DynamicMixerTask::new(48_000);
+    let (_tx, rx) = tokio::sync::broadcast::channel(4);
+    mixer.add_input("stereo", rx, 100);
+    assert_eq!(mixer.channel_map("stereo"), 0);
+    mixer.set_channel_map("stereo", 1).unwrap();
+    assert_eq!(mixer.channel_map("stereo"), 1);
+    assert!(mixer.set_channel_map("stereo", 4).is_err());
+    assert!(mixer.set_channel_map("missing", 0).is_err());
+}

@@ -19,7 +19,7 @@
 //! reads each tick, so they change with zero interruption.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -42,6 +42,15 @@ const FRAME_LEN: usize = FRAME_SAMPLES * CHANNELS;
 const OUT_CHAN_CAP: usize = 128;
 /// Default per-input volume (unity gain, percent).
 pub const DEFAULT_VOLUME: u32 = 100;
+/// Unclipped program sum. Device-original audio can be added before the one
+/// final saturation, without re-mixing every program input per device.
+#[derive(Clone)]
+pub struct ProgramPcmFrame {
+    pub samples: Arc<[i32]>,
+    pub pts: i64,
+    pub sample_rate: u32,
+}
+pub type ProgramPcmReceiver = tokio::sync::broadcast::Receiver<ProgramPcmFrame>;
 /// Mixer output sample format: packed (interleaved) signed 16-bit.
 const OUT_FMT: Sample = Sample::I16(Type::Packed);
 
@@ -132,6 +141,7 @@ impl SlotResampler {
 struct InputControl {
     volume: Arc<AtomicU32>,
     muted: Arc<AtomicBool>,
+    channel_map: Arc<AtomicU8>,
 }
 
 /// Command into the mix thread. Carries only `Send` payloads.
@@ -141,6 +151,7 @@ enum MixerCmd {
         receiver: RawFrameReceiver,
         volume: Arc<AtomicU32>,
         muted: Arc<AtomicBool>,
+        channel_map: Arc<AtomicU8>,
     },
     Remove {
         id: String,
@@ -155,6 +166,9 @@ pub struct DynamicMixerTask {
     controls: Arc<Mutex<HashMap<String, InputControl>>>,
     cmd_tx: UnboundedSender<MixerCmd>,
     cmd_rx: Mutex<Option<UnboundedReceiver<MixerCmd>>>,
+    program_rx: Mutex<Option<ProgramPcmReceiver>>,
+    wide_tx: tokio::sync::broadcast::Sender<ProgramPcmFrame>,
+    handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl DynamicMixerTask {
@@ -163,6 +177,7 @@ impl DynamicMixerTask {
     pub fn new(sample_rate: u32) -> Self {
         let (cmd_tx, cmd_rx) = unbounded_channel();
         let (out_tx, _) = tokio::sync::broadcast::channel(OUT_CHAN_CAP);
+        let (wide_tx, _) = tokio::sync::broadcast::channel(OUT_CHAN_CAP);
         Self {
             sample_rate,
             cancel: CancellationToken::new(),
@@ -170,12 +185,33 @@ impl DynamicMixerTask {
             controls: Arc::new(Mutex::new(HashMap::new())),
             cmd_tx,
             cmd_rx: Mutex::new(Some(cmd_rx)),
+            program_rx: Mutex::new(None),
+            wide_tx,
+            handle: Mutex::new(None),
         }
     }
 
     /// Subscribe to the mixed output (interleaved-s16 stereo `RawFrame::Audio`).
     pub fn subscribe(&self) -> RawFrameReceiver {
         self.out_tx.subscribe()
+    }
+
+    pub fn with_program(sample_rate: u32, program: ProgramPcmReceiver) -> Self {
+        let task = Self::new(sample_rate);
+        *task.program_rx.lock().unwrap_or_else(|e| e.into_inner()) = Some(program);
+        task
+    }
+
+    pub fn subscribe_program(&self) -> ProgramPcmReceiver {
+        self.wide_tx.subscribe()
+    }
+
+    pub async fn stop_and_join(&self) {
+        self.cancel();
+        let handle = self.handle.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(handle) = handle {
+            let _ = handle.await;
+        }
     }
 
     /// Start the mix loop on a dedicated blocking thread. Call once.
@@ -189,18 +225,28 @@ impl DynamicMixerTask {
         let rate = self.sample_rate;
         let cancel = self.cancel.clone();
         let out = self.out_tx.clone();
-        tokio::task::spawn_blocking(move || mix_loop(rate, cancel, rx, out));
+        let wide = self.wide_tx.clone();
+        let program = self
+            .program_rx
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        let handle =
+            tokio::task::spawn_blocking(move || mix_loop(rate, cancel, rx, out, wide, program));
+        *self.handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
     }
 
     /// Add (or replace) an input at the given volume (percent).
     pub fn add_input(&self, id: &str, receiver: RawFrameReceiver, volume: u32) {
         let volume = Arc::new(AtomicU32::new(volume));
         let muted = Arc::new(AtomicBool::new(false));
+        let channel_map = Arc::new(AtomicU8::new(0));
         self.controls.lock().unwrap().insert(
             id.to_string(),
             InputControl {
                 volume: volume.clone(),
                 muted: muted.clone(),
+                channel_map: channel_map.clone(),
             },
         );
         let _ = self.cmd_tx.send(MixerCmd::Add {
@@ -208,6 +254,7 @@ impl DynamicMixerTask {
             receiver,
             volume,
             muted,
+            channel_map,
         });
     }
 
@@ -256,6 +303,26 @@ impl DynamicMixerTask {
             .collect()
     }
 
+    /// 0 stereo, 1 swap, 2 left to both, 3 right to both.
+    pub fn set_channel_map(&self, id: &str, mapping: u8) -> anyhow::Result<()> {
+        anyhow::ensure!(mapping <= 3, "unknown audio channel mapping");
+        let controls = self.controls.lock().unwrap_or_else(|e| e.into_inner());
+        let input = controls
+            .get(id)
+            .ok_or_else(|| anyhow::anyhow!("mixer input '{id}' not found"))?;
+        input.channel_map.store(mapping, Ordering::Relaxed);
+        Ok(())
+    }
+
+    pub fn channel_map(&self, id: &str) -> u8 {
+        self.controls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .map(|c| c.channel_map.load(Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
     /// Stop the mix loop.
     pub fn cancel(&self) {
         self.cancel.cancel();
@@ -269,6 +336,7 @@ struct Active {
     buffer: VecDeque<i16>,
     volume: Arc<AtomicU32>,
     muted: Arc<AtomicBool>,
+    channel_map: Arc<AtomicU8>,
 }
 
 /// The mix loop: resample every input to the common format, sum the current
@@ -279,6 +347,8 @@ fn mix_loop(
     cancel: CancellationToken,
     mut cmd_rx: UnboundedReceiver<MixerCmd>,
     out: RawFrameSender,
+    wide: tokio::sync::broadcast::Sender<ProgramPcmFrame>,
+    mut program: Option<ProgramPcmReceiver>,
 ) {
     let max_buffer = rate as usize * CHANNELS; // ~1 s per input
     let tick = Duration::from_micros(FRAME_SAMPLES as u64 * 1_000_000 / rate.max(1) as u64);
@@ -295,6 +365,7 @@ fn mix_loop(
                     receiver,
                     volume,
                     muted,
+                    channel_map,
                 } => {
                     inputs.insert(
                         id,
@@ -304,6 +375,7 @@ fn mix_loop(
                             buffer: VecDeque::new(),
                             volume,
                             muted,
+                            channel_map,
                         },
                     );
                 }
@@ -319,8 +391,27 @@ fn mix_loop(
             loop {
                 match active.receiver.try_recv() {
                     Ok(RawFrameCmd::Data(RawFrame::Audio(frame))) => {
+                        if gain_factor(
+                            active.volume.load(Ordering::Relaxed),
+                            active.muted.load(Ordering::Relaxed),
+                        ) == 0.0
+                        {
+                            active.buffer.clear();
+                            continue;
+                        }
                         match active.resampler.convert(frame.as_audio()) {
-                            Ok(samples) => active.buffer.extend(samples),
+                            Ok(mut samples) => {
+                                let map = active.channel_map.load(Ordering::Relaxed);
+                                for pair in samples.chunks_exact_mut(2) {
+                                    match map {
+                                        1 => pair.swap(0, 1),
+                                        2 => pair[1] = pair[0],
+                                        3 => pair[0] = pair[1],
+                                        _ => {}
+                                    }
+                                }
+                                active.buffer.extend(samples);
+                            }
                             Err(e) => log::warn!("mixer resample '{id}': {e:#}"),
                         }
                         if active.buffer.len() > max_buffer {
@@ -349,7 +440,27 @@ fn mix_loop(
         }
 
         // 3) Mix one tick: gain-scaled sum, then a single saturating clamp.
+        let base = program.as_mut().and_then(|rx| {
+            let mut latest = None;
+            loop {
+                match rx.try_recv() {
+                    Ok(frame) => latest = Some(frame),
+                    Err(TryRecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                }
+            }
+            latest
+        });
         let mut acc = vec![0i32; FRAME_LEN];
+        if let Some(base) = base {
+            if base.sample_rate == rate && base.samples.len() == FRAME_LEN {
+                acc.copy_from_slice(&base.samples);
+                pts = base.pts;
+            }
+        } else if program.is_some() {
+            std::thread::sleep(tick.min(Duration::from_millis(2)));
+            continue;
+        }
         for active in inputs.values_mut() {
             let gain = gain_factor(
                 active.volume.load(Ordering::Relaxed),
@@ -361,6 +472,11 @@ fn mix_loop(
             }
         }
         let mixed = clamp_to_i16(&acc);
+        let _ = wide.send(ProgramPcmFrame {
+            samples: acc.into(),
+            pts,
+            sample_rate: rate,
+        });
 
         // 4) Emit the mixed frame (dropped harmlessly if nobody is subscribed).
         let frame = build_frame(&mixed, rate, pts);

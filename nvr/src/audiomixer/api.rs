@@ -3,6 +3,7 @@
 
 use axum::{
     Json, Router,
+    extract::State,
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -11,7 +12,7 @@ use crate::audiomixer;
 use crate::handler::{ApiJsonResult, ok_empty, ok_json};
 use nvr_audio_mixer::{DEFAULT_VOLUME, MixerSnapshot};
 
-pub fn audiomixer_router() -> Router {
+pub fn audiomixer_router(hub: &'static crate::detect::hub::DetectHub) -> Router {
     Router::new()
         .route("/list", get(list))
         .route("/bus/create", post(create_bus))
@@ -20,6 +21,25 @@ pub fn audiomixer_router() -> Router {
         .route("/bus/input/remove", post(remove_input))
         .route("/bus/input/volume", post(set_volume))
         .route("/bus/input/mute", post(set_muted))
+        .route("/config", get(config).post(set_config))
+        .route("/sources", get(sources))
+        .route("/bus/input/channels", post(set_channels))
+        .with_state(hub)
+}
+
+async fn sources() -> ApiJsonResult<Vec<super::sources::SourceOption>> {
+    Ok(ok_json(super::sources::available().await?))
+}
+
+async fn config() -> ApiJsonResult<super::output::ProgramState> {
+    Ok(ok_json(super::output::state().await?))
+}
+
+async fn set_config(
+    State(hub): State<&'static crate::detect::hub::DetectHub>,
+    Json(config): Json<super::output::ProgramConfig>,
+) -> ApiJsonResult<super::output::ProgramState> {
+    Ok(ok_json(super::output::update(config, hub).await?))
 }
 
 // ---- responses -------------------------------------------------------------
@@ -29,6 +49,7 @@ struct InputDto {
     source_id: String,
     volume: u32,
     muted: bool,
+    channel_map: nvr_audio_mixer::ChannelMap,
 }
 
 #[derive(Serialize)]
@@ -44,6 +65,8 @@ struct BusDto {
 struct SourceDto {
     id: String,
     url: String,
+    ready: bool,
+    error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -60,6 +83,8 @@ fn to_dto(snap: MixerSnapshot) -> MixerDto {
             .map(|s| SourceDto {
                 id: s.id,
                 url: redact_url(&s.url),
+                ready: s.ready,
+                error: s.error,
             })
             .collect(),
         buses: snap
@@ -76,6 +101,7 @@ fn to_dto(snap: MixerSnapshot) -> MixerDto {
                         source_id: i.source_id,
                         volume: i.volume,
                         muted: i.muted,
+                        channel_map: i.channel_map,
                     })
                     .collect(),
             })
@@ -151,6 +177,18 @@ struct MuteReq {
     bus_id: String,
     source_id: String,
     muted: bool,
+}
+
+#[derive(Deserialize)]
+struct ChannelReq {
+    bus_id: String,
+    source_id: String,
+    channel_map: nvr_audio_mixer::ChannelMap,
+}
+
+async fn set_channels(Json(req): Json<ChannelReq>) -> ApiJsonResult<()> {
+    audiomixer::set_channel_map(&req.bus_id, &req.source_id, req.channel_map).await?;
+    Ok(ok_empty())
 }
 
 // ---- handlers --------------------------------------------------------------

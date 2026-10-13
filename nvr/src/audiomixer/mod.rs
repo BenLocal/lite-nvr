@@ -15,14 +15,6 @@ use nvr_audio_mixer::{AudioMixer, DEFAULT_VOLUME, MixerSnapshot};
 
 /// KV key under which the live buses are persisted for restore.
 const PERSIST_KEY: &str = "audio_mixer_buses";
-/// ZLM RTSP pull endpoint — device streams are published here under app `device`.
-const ZLM_RTSP: &str = "rtsp://127.0.0.1:8554";
-/// ZLM RTMP publish endpoint (see `zlm::server`: `rtmp_server_start(8555)`).
-const ZLM_RTMP: &str = "rtmp://127.0.0.1:8555";
-
-/// Grace period before the first restore attempt, letting device pipelines
-/// publish their ZLM streams.
-const RESTORE_GRACE: Duration = Duration::from_secs(3);
 /// Restore retry backoff bounds and total budget: retry `create_bus()` with
 /// exponential backoff from MIN to MAX until BUDGET has elapsed, so a bus whose
 /// device streams are slow to come up on a cold boot still restores.
@@ -30,17 +22,14 @@ const RESTORE_RETRY_MIN: Duration = Duration::from_secs(2);
 const RESTORE_RETRY_MAX: Duration = Duration::from_secs(8);
 const RESTORE_RETRY_BUDGET: Duration = Duration::from_secs(60);
 
-static MIXER: LazyLock<AudioMixer> = LazyLock::new(AudioMixer::new);
-
-/// A device's audio stream URL on ZLM (source id == device id).
-fn device_audio_url(source_id: &str) -> String {
-    let app = crate::init::device::DEVICE_APP;
-    format!("{ZLM_RTSP}/{app}/{source_id}")
-}
+pub(crate) static MIXER: LazyLock<AudioMixer> = LazyLock::new(AudioMixer::new);
 
 /// Default publish URL for a bus when the caller doesn't give one.
-fn default_publish_url(bus_id: &str) -> String {
-    format!("{ZLM_RTMP}/mixer/{bus_id}")
+fn default_publish_url(bus_id: &str) -> Result<String> {
+    Ok(format!(
+        "rtmp://127.0.0.1:{}/mixer/{bus_id}",
+        crate::zlm::server::rtmp_port()?
+    ))
 }
 
 /// The bus's FLV playback path on the dashboard's ZLM HTTP proxy.
@@ -56,15 +45,14 @@ pub fn snapshot() -> MixerSnapshot {
 /// clean process shutdown. Does NOT clear the persisted buses — they restore on
 /// the next start. Call before the process exits so no mixer/publish thread is
 /// still writing into ZLM when its C runtime is torn down.
-pub fn shutdown() {
-    let snap = MIXER.snapshot();
-    for b in &snap.buses {
-        MIXER.remove_bus(&b.id);
-    }
-    for s in &snap.sources {
-        MIXER.remove_source(&s.id);
-    }
+pub async fn shutdown() {
+    output::shutdown().await;
+    MIXER.shutdown().await;
 }
+
+pub mod native;
+pub mod output;
+pub mod sources;
 
 /// Create a bus mixing the given `(device_id, volume)` inputs, publishing to ZLM.
 pub async fn create_bus(
@@ -79,31 +67,44 @@ pub async fn create_bus(
     if inputs.is_empty() {
         anyhow::bail!("bus needs at least one input");
     }
-    for (source_id, _) in &inputs {
-        MIXER
-            .ensure_source(source_id, &device_audio_url(source_id))
-            .await?;
-    }
+    let cfg = output::config();
+    anyhow::ensure!(
+        !cfg.enabled || cfg.active_bus_id.as_deref() != Some(bus_id),
+        "请先关闭或切换全局节目总线"
+    );
+    anyhow::ensure!(
+        inputs.iter().all(|(_, volume)| *volume <= 400),
+        "音量不能超过 400%"
+    );
+    sources::ensure(&inputs.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>()).await?;
     let publish = publish_url
         .filter(|u| !u.trim().is_empty())
-        .unwrap_or_else(|| default_publish_url(bus_id));
-    MIXER.create_bus(bus_id, &publish, &inputs).await?;
+        .map(Ok)
+        .unwrap_or_else(|| default_publish_url(bus_id))?;
+    MIXER
+        .create_bus_with_profile(bus_id, &publish, &inputs, output::config().profile)
+        .await?;
     persist_all().await;
     Ok(())
 }
 
 pub async fn remove_bus(bus_id: &str) -> Result<()> {
-    if !MIXER.remove_bus(bus_id) {
+    let cfg = output::config();
+    anyhow::ensure!(
+        !cfg.enabled || cfg.active_bus_id.as_deref() != Some(bus_id),
+        "请先关闭或切换全局节目总线"
+    );
+    if !MIXER.remove_bus(bus_id).await {
         anyhow::bail!("bus '{bus_id}' not found");
     }
+    MIXER.prune_sources().await;
     persist_all().await;
     Ok(())
 }
 
 pub async fn add_input(bus_id: &str, source_id: &str, volume: u32) -> Result<()> {
-    MIXER
-        .ensure_source(source_id, &device_audio_url(source_id))
-        .await?;
+    anyhow::ensure!(volume <= 400, "音量不能超过 400%");
+    sources::ensure(&[source_id.to_string()]).await?;
     MIXER.bus_add_input(bus_id, source_id, volume)?;
     persist_all().await;
     Ok(())
@@ -111,11 +112,13 @@ pub async fn add_input(bus_id: &str, source_id: &str, volume: u32) -> Result<()>
 
 pub async fn remove_input(bus_id: &str, source_id: &str) -> Result<()> {
     MIXER.bus_remove_input(bus_id, source_id)?;
+    MIXER.prune_sources().await;
     persist_all().await;
     Ok(())
 }
 
 pub async fn set_volume(bus_id: &str, source_id: &str, volume: u32) -> Result<()> {
+    anyhow::ensure!(volume <= 400, "音量不能超过 400%");
     MIXER.bus_set_volume(bus_id, source_id, volume)?;
     persist_all().await;
     Ok(())
@@ -123,6 +126,16 @@ pub async fn set_volume(bus_id: &str, source_id: &str, volume: u32) -> Result<()
 
 pub async fn set_muted(bus_id: &str, source_id: &str, muted: bool) -> Result<()> {
     MIXER.bus_set_muted(bus_id, source_id, muted)?;
+    persist_all().await;
+    Ok(())
+}
+
+pub async fn set_channel_map(
+    bus_id: &str,
+    source_id: &str,
+    mapping: nvr_audio_mixer::ChannelMap,
+) -> Result<()> {
+    MIXER.bus_set_channel_map(bus_id, source_id, mapping)?;
     persist_all().await;
     Ok(())
 }
@@ -136,6 +149,8 @@ struct PersistedInput {
     volume: u32,
     #[serde(default)]
     muted: bool,
+    #[serde(default)]
+    channel_map: nvr_audio_mixer::ChannelMap,
 }
 
 fn default_volume() -> u32 {
@@ -165,6 +180,7 @@ async fn persist_all() {
                     source_id: i.source_id,
                     volume: i.volume,
                     muted: i.muted,
+                    channel_map: i.channel_map,
                 })
                 .collect(),
         })
@@ -214,7 +230,6 @@ pub async fn restore_all() {
         return;
     }
     log::info!("audio mixer restore: {} bus(es) to restore", saved.len());
-    tokio::time::sleep(RESTORE_GRACE).await;
 
     for bus in saved {
         let id = bus.id.clone();
@@ -227,11 +242,31 @@ pub async fn restore_all() {
         let mut backoff = RESTORE_RETRY_MIN;
         let mut elapsed = Duration::ZERO;
         loop {
-            match create_bus(&id, publish.clone(), inputs.clone()).await {
+            let restored: Result<()> = async {
+                for (source, _) in &inputs {
+                    if source == sources::TERMINAL_SOURCE {
+                        MIXER
+                            .ensure_capture_source(source, "hw:CARD=rockchipes8388,DEV=0", "alsa")
+                            .await?;
+                    } else {
+                        MIXER.ensure_shared_source(source);
+                    }
+                }
+                let target = publish
+                    .clone()
+                    .map(Ok)
+                    .unwrap_or_else(|| default_publish_url(&id))?;
+                MIXER
+                    .create_bus_with_profile(&id, &target, &inputs, output::config().profile)
+                    .await
+            }
+            .await;
+            match restored {
                 Ok(()) => {
                     for input in &bus.inputs {
+                        let _ = MIXER.bus_set_channel_map(&id, &input.source_id, input.channel_map);
                         if input.muted {
-                            let _ = set_muted(&id, &input.source_id, true).await;
+                            let _ = MIXER.bus_set_muted(&id, &input.source_id, true);
                         }
                     }
                     log::info!("audio mixer restore: started '{id}'");

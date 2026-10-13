@@ -49,6 +49,7 @@ pub(crate) fn spawn_stream_device(
                     );
                     let started = Instant::now();
                     run_session(
+                        &device_id,
                         &resolved,
                         Arc::clone(&media),
                         include_audio,
@@ -91,6 +92,7 @@ pub(crate) fn spawn_stream_device(
 /// Shared with the ONVIF supervisor (`crate::onvif::ingest`): both resolve an
 /// address just-in-time and drive the same RTSP/network -> ZLM pipe.
 pub(crate) async fn run_session(
+    device_id: &str,
     resolved: &ResolvedStream,
     media: Arc<rszlm::media::Media>,
     include_audio: bool,
@@ -98,7 +100,14 @@ pub(crate) async fn run_session(
     cancel: &CancellationToken,
 ) {
     let options = input_options(resolved);
-    let mut outputs = media_pipe_zlm::zlm_outputs(media, include_audio);
+    let mut outputs =
+        match crate::device_output::outputs(device_id, media, include_audio, output).await {
+            Ok(outputs) => outputs,
+            Err(e) => {
+                log::warn!("program output {device_id}: {e:#}");
+                return;
+            }
+        };
     crate::device_output::apply(&mut outputs, output);
     let config = PipeConfig {
         input: InputConfig::Network {
@@ -107,6 +116,7 @@ pub(crate) async fn run_session(
         outputs,
     };
     let pipe = Arc::new(Pipe::new(config));
+    crate::audiomixer::output::register_pipe(device_id, &pipe);
     let pipe_for_task = Arc::clone(&pipe);
     let mut task = tokio::spawn(async move {
         pipe_for_task.start(options).await;

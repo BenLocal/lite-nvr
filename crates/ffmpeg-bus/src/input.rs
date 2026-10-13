@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use ffmpeg_next::Dictionary;
+use ffmpeg_next::{Dictionary, Rational, Rescale};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -18,6 +18,8 @@ pub struct AvInputTask {
     /// Set once a lossless (File/Net) output exists: the reader then waits for
     /// its slowest subscriber instead of overwriting unread packets.
     lossless: Arc<AtomicBool>,
+    paced: Arc<AtomicBool>,
+    handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     traffic: std::sync::Mutex<HashMap<usize, Arc<crate::metrics::Traffic>>>,
 }
 
@@ -32,6 +34,8 @@ impl AvInputTask {
             cancel,
             raw_chan: sender,
             lossless: Arc::new(AtomicBool::new(false)),
+            paced: Arc::new(AtomicBool::new(false)),
+            handle: std::sync::Mutex::new(None),
             traffic: std::sync::Mutex::new(HashMap::new()),
         }
     }
@@ -40,6 +44,12 @@ impl AvInputTask {
     /// read in a burst) then cannot outrun subscribers and make them lag.
     pub fn set_lossless(&self) {
         self.lossless.store(true, Ordering::Relaxed);
+    }
+
+    /// A finite input sharing a real-time program must advance at playback
+    /// speed instead of outrunning the program audio.
+    pub fn set_paced(&self) {
+        self.paced.store(true, Ordering::Relaxed);
     }
 
     pub async fn start(&self, mut input: AvInput) {
@@ -53,15 +63,36 @@ impl AvInputTask {
         let cancel_clone = self.cancel.clone();
         let sender_clone = self.raw_chan.clone();
         let lossless = self.lossless.clone();
-        tokio::spawn(async move {
+        let paced = self.paced.clone();
+        let task = tokio::spawn(async move {
             let cancel_inner = cancel_clone.clone();
-            let handle = tokio::task::spawn_blocking(move || {
+            let mut handle = tokio::task::spawn_blocking(move || {
+                let mut clock: Option<(i64, Instant)> = None;
                 loop {
                     if cancel_inner.is_cancelled() {
                         break;
                     }
                     match input.read() {
                         ReadOutcome::Packet(packet) => {
+                            if paced.load(Ordering::Relaxed) {
+                                if let Some(pts) = packet.dts().or(packet.pts()) {
+                                    let us =
+                                        pts.rescale(packet.time_base(), Rational(1, 1_000_000));
+                                    let (start, instant) =
+                                        *clock.get_or_insert((us, Instant::now()));
+                                    let delay = Duration::from_micros(
+                                        u64::try_from(us.saturating_sub(start)).unwrap_or(0),
+                                    );
+                                    while !cancel_inner.is_cancelled() && instant.elapsed() < delay
+                                    {
+                                        std::thread::sleep(
+                                            delay
+                                                .saturating_sub(instant.elapsed())
+                                                .min(Duration::from_millis(2)),
+                                        );
+                                    }
+                                }
+                            }
                             if let Some(counter) = traffic.get(&packet.index()) {
                                 counter.record(packet.packet().size());
                             }
@@ -107,7 +138,7 @@ impl AvInputTask {
             });
 
             tokio::select! {
-                _ = handle => {
+                _ = &mut handle => {
                     log::info!("read input packet task finished");
                     cancel_clone.cancel();
                 }
@@ -115,10 +146,12 @@ impl AvInputTask {
                     // Abort a read blocked on a silent source, or the reader
                     // (and process shutdown) would wait on it indefinitely.
                     interrupter.interrupt();
+                    let _ = handle.await;
                     log::info!("read input packet task cancelled");
                 }
             }
         });
+        *self.handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(task);
     }
 
     /// EOF occupies a slot too: apply the same lossless backpressure as data
@@ -157,6 +190,14 @@ impl AvInputTask {
 
     pub fn stop(&self) {
         self.cancel.cancel();
+    }
+
+    pub async fn stop_and_join(&self) {
+        self.stop();
+        let task = self.handle.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(task) = task {
+            let _ = task.await;
+        }
     }
 
     /// Whether the reader waits for its slowest subscriber (see `set_lossless`).

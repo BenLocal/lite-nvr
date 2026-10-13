@@ -20,6 +20,7 @@ use crate::{
     input::{AvInput, AvInputTask},
     output::{AvOutput, AvOutputStream},
     packet::{RawPacket, RawPacketCmd, RawPacketReceiver},
+    shared_audio::SharedEncodedAudio,
     stream::AvStream,
 };
 
@@ -344,6 +345,7 @@ struct MuxPlanEntry {
     codec_id: ffmpeg_next::codec::Id,
     /// Encoder serving this stream, set once its task starts (transcode only).
     encoder_key: Option<EncoderKey>,
+    external_audio: Option<SharedEncodedAudio>,
 }
 
 /// Identity of a shared encoder. Outputs with the same stream, encode config
@@ -407,6 +409,7 @@ impl Bus {
     ) {
         let cancel_clone = cancel.clone();
         let mut state = BusState::new();
+        state.cancel = cancel.clone();
         state.deferred = deferred;
         state.shutdown = shutdown;
         loop {
@@ -610,6 +613,46 @@ impl Bus {
         state: &mut BusState,
         output: &OutputConfig,
     ) -> anyhow::Result<(AvStream, VideoRawFrameStream)> {
+        if let Some(audio) = &output.external_audio {
+            if !state.live {
+                if let Some(input) = &state.input_task {
+                    input.set_paced();
+                }
+            }
+            if output.av_type == OutputAvType::Audio
+                && matches!(output.dest, OutputDest::Demuxed | OutputDest::Encoded)
+            {
+                let (reference, input) = Self::program_reference(state)?;
+                let av = audio
+                    .stream()
+                    .clone()
+                    .with_index(Self::program_index(state));
+                let packets =
+                    audio.aligned_packets(reference, input, av.index(), state.cancel.clone());
+                let frames = packets.filter_map(|cmd| async move {
+                    match cmd {
+                        Ok(RawPacketCmd::Data(p)) => Some(Some(VideoFrame::from(p))),
+                        Ok(RawPacketCmd::EOF) => Some(None),
+                        Err(_) => None,
+                    }
+                });
+                return Ok((av, Box::pin(frames)));
+            }
+            if output.av_type == OutputAvType::Audio {
+                let index = Self::program_index(state);
+                return match &output.dest {
+                    OutputDest::File { path } => {
+                        Self::create_mux_to_file(state, path, index, output).await
+                    }
+                    OutputDest::Net { url, format } => {
+                        Self::create_mux_to_net(state, url, format.as_deref(), index, output).await
+                    }
+                    _ => {
+                        anyhow::bail!("external encoded audio requires an encoded or media output")
+                    }
+                };
+            }
+        }
         let input_stream = state
             .input_streams
             .iter()
@@ -943,6 +986,18 @@ impl Bus {
         primary_index: usize,
         output: &OutputConfig,
     ) -> anyhow::Result<Vec<MuxPlanEntry>> {
+        if output.av_type == OutputAvType::Audio {
+            if let Some(audio) = &output.external_audio {
+                return Ok(vec![MuxPlanEntry {
+                    input_index: primary_index,
+                    transcode: false,
+                    encode: None,
+                    codec_id: audio.stream().parameters().id(),
+                    encoder_key: None,
+                    external_audio: Some(audio.clone()),
+                }]);
+            }
+        }
         let primary = state
             .input_streams
             .iter()
@@ -950,7 +1005,18 @@ impl Bus {
             .ok_or(anyhow::anyhow!("no matching stream in input"))?;
         let mut plan = vec![Self::plan_entry(primary, output.encode.as_ref())];
 
-        if output.include_audio
+        if let Some(audio) = &output.external_audio {
+            if primary.is_video() {
+                plan.push(MuxPlanEntry {
+                    input_index: Self::program_index(state),
+                    transcode: false,
+                    encode: None,
+                    codec_id: audio.stream().parameters().id(),
+                    encoder_key: None,
+                    external_audio: Some(audio.clone()),
+                });
+            }
+        } else if output.include_audio
             && primary.is_video()
             && let Some(audio) = state.input_streams.iter().find(|s| s.is_audio())
         {
@@ -976,6 +1042,7 @@ impl Bus {
             encode: if transcode { encode.cloned() } else { None },
             codec_id,
             encoder_key: None,
+            external_audio: None,
         }
     }
 
@@ -1019,6 +1086,14 @@ impl Bus {
         let mut primary_av: Option<AvStream> = None;
 
         for entry in &plan {
+            if let Some(audio) = &entry.external_audio {
+                let av = audio.stream().clone().with_index(entry.input_index);
+                if primary_av.is_none() {
+                    primary_av = Some(av.clone());
+                }
+                out_streams.push(av);
+                continue;
+            }
             let input_stream = state
                 .input_streams
                 .iter()
@@ -1088,6 +1163,26 @@ impl Bus {
         // EOF too would hang forever when this output joins after a fast
         // source (e.g. a short file) has already been read to the end.
         let input_receiver = (!copied_indices.is_empty()).then(|| input_task.subscribe());
+        let mut program_sources = Vec::new();
+        let program_indices: HashSet<_> = plan
+            .iter()
+            .filter(|p| p.external_audio.is_some())
+            .map(|p| p.input_index)
+            .collect();
+        for entry in &plan {
+            if let Some(audio) = &entry.external_audio {
+                let (reference, input) = Self::program_reference(state)?;
+                program_sources.push((
+                    entry.input_index,
+                    Box::pin(audio.aligned_packets(
+                        reference,
+                        input,
+                        entry.input_index,
+                        state.cancel.clone(),
+                    )),
+                ));
+            }
+        }
 
         tokio::spawn(async move {
             // One MuxSignal stream per source. A source's channel may stay open
@@ -1124,6 +1219,14 @@ impl Bus {
                     }
                 });
                 sources.push(Box::pin(s));
+            }
+            for (idx, packets) in program_sources {
+                let signals = packets.map(move |cmd| match cmd {
+                    Ok(RawPacketCmd::Data(p)) => MuxSignal::Packet(idx, p),
+                    Ok(RawPacketCmd::EOF) => MuxSignal::Eof,
+                    Err(_) => MuxSignal::Gap(vec![idx]),
+                });
+                sources.push(Box::pin(signals));
             }
 
             // Disk / network writes block: a dedicated thread does them, fed
@@ -1165,6 +1268,12 @@ impl Bus {
                         }
                     }
                     MuxSignal::Gap(indices) => {
+                        if !live && indices.iter().any(|idx| program_indices.contains(idx)) {
+                            log::error!(
+                                "mux {label}: recording output failed, shared program queue overflow"
+                            );
+                            break;
+                        }
                         for idx in indices {
                             gate.mark_gap(idx);
                         }
@@ -1359,6 +1468,32 @@ impl Bus {
             target_stream,
             Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)),
         ))
+    }
+
+    fn program_index(state: &BusState) -> usize {
+        state
+            .input_streams
+            .iter()
+            .map(AvStream::index)
+            .max()
+            .unwrap_or(0)
+            + 1
+    }
+
+    fn program_reference(state: &BusState) -> anyhow::Result<(AvStream, RawPacketReceiver)> {
+        let reference = state
+            .input_streams
+            .iter()
+            .find(|s| s.is_video())
+            .or_else(|| state.input_streams.first())
+            .ok_or_else(|| anyhow::anyhow!("program output needs an input clock"))?
+            .clone();
+        let receiver = state
+            .input_task
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("input task not ready"))?
+            .subscribe();
+        Ok((reference, receiver))
     }
 
     async fn create_decoder_raw_output_stream(
@@ -1934,6 +2069,7 @@ impl Drop for Bus {
 }
 
 struct BusState {
+    cancel: CancellationToken,
     input_config: Option<InputConfig>,
     input_options: Option<HashMap<String, String>>,
     output_config: HashMap<String, OutputConfig>,
@@ -1960,6 +2096,7 @@ struct BusState {
 impl BusState {
     fn new() -> Self {
         Self {
+            cancel: CancellationToken::new(),
             input_config: None,
             output_config: HashMap::new(),
             output_metrics: HashMap::new(),
@@ -2039,6 +2176,9 @@ pub struct OutputConfig {
     pub audio_encode: Option<EncodeConfig>,
     /// When true, include both video and audio streams in File/Net outputs.
     pub include_audio: bool,
+    /// Already encoded program audio; shared across outputs without another
+    /// decoder/encoder. Replaces this output's original audio track.
+    pub external_audio: Option<SharedEncodedAudio>,
 }
 
 impl OutputConfig {
@@ -2050,11 +2190,17 @@ impl OutputConfig {
             encode: None,
             audio_encode: None,
             include_audio: false,
+            external_audio: None,
         }
     }
 
     pub fn with_encode(mut self, encode: EncodeConfig) -> Self {
         self.encode = Some(encode);
+        self
+    }
+
+    pub fn with_external_audio(mut self, audio: SharedEncodedAudio) -> Self {
+        self.external_audio = Some(audio);
         self
     }
 

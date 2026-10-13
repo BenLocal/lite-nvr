@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Card from 'primevue/card'
 import Button from 'primevue/button'
 import Slider from 'primevue/slider'
@@ -8,6 +8,10 @@ import Select from 'primevue/select'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Checkbox from 'primevue/checkbox'
+import InputNumber from 'primevue/inputnumber'
+import Message from 'primevue/message'
+import DataTable from 'primevue/datatable'
+import Column from 'primevue/column'
 import { useAppToast } from '../utils/toast'
 import { listDevices, type DeviceItem } from '../api/device'
 import {
@@ -20,7 +24,10 @@ import {
   setBusInputVolume,
   type MixerBus,
   type MixerState,
+  getProgramConfig, saveProgramConfig, getAudioSources, setBusInputChannels,
+  type ProgramConfig, type ProgramState, type AudioSourceOption, type ChannelMap,
 } from '../api/audiomixer'
+import { sampleRateOptions } from '../forms/outputForm'
 import { createStreamPlayer, type StreamPlayerHandle } from '../utils/streamPlayer'
 
 const appToast = useAppToast()
@@ -28,12 +35,66 @@ const appToast = useAppToast()
 const devices = ref<DeviceItem[]>([])
 const state = ref<MixerState>({ sources: [], buses: [] })
 const loading = ref(true)
+const sources = ref<AudioSourceOption[]>([])
+const program = ref<ProgramState | null>(null)
+const programDraft = ref<ProgramConfig>({ enabled: false, mode: 'program', active_bus_id: null, profile: { codec: 'aac', sample_rate: 48000, channels: 2, bitrate: 128000 }, version: 0 })
+const savingProgram = ref(false)
+const deviceRows = computed(() => devices.value.map(device => {
+  const output = program.value?.outputs.find(item => item.device_id === device.id)
+  return {
+    id: device.id,
+    name: device.name,
+    inputType: device.input_type,
+    originalAudio: device.include_audio ? '使用' : '忽略',
+    buses: state.value.buses.filter(bus => bus.inputs.some(input => input.source_id === device.id)).map(bus => bus.id).join('、') || '未加入',
+    globalAudio: (device.config?.output?.use_global_audio ?? true) ? '跟随全局' : '关闭',
+    outputState: output?.state === 'applied' ? '已接入节目' : output?.state === 'waiting' ? '等待连接' : output?.state === 'original' ? '原音路径' : '状态未知',
+  }
+}))
+const modeOptions = [{ label: '统一节目音频，替换设备原音', value: 'program' }, { label: '节目音频叠加设备原音', value: 'add_original' }]
+const codecOptions = [{ label: 'AAC', value: 'aac' }, { label: 'Opus', value: 'opus' }]
+const channelOptions = [{ label: '左右独立', value: 'stereo' }, { label: '交换左右', value: 'swap' }, { label: '左声道到两路', value: 'left_to_both' }, { label: '右声道到两路', value: 'right_to_both' }]
+const programRates = computed(() => sampleRateOptions(programDraft.value.profile.codec).filter(option => option.value !== null))
+watch(() => programDraft.value.profile.codec, () => {
+  if (!programRates.value.some(option => option.value === programDraft.value.profile.sample_rate)) programDraft.value.profile.sample_rate = 48000
+})
+let programTimer: ReturnType<typeof setInterval> | undefined
+const programAbort = new AbortController()
+let loadingProgram = false
+
+async function loadProgram(reset = false): Promise<void> {
+  if (loadingProgram || programAbort.signal.aborted) return
+  loadingProgram = true
+  try {
+    const result = await getProgramConfig(programAbort.signal)
+    if (programAbort.signal.aborted) return
+    program.value = result
+    if (reset) programDraft.value = { ...result.config, profile: { ...result.config.profile } }
+  } finally { loadingProgram = false }
+}
+
+async function onSaveProgram(): Promise<void> {
+  savingProgram.value = true
+  try {
+    const result = await saveProgramConfig(programDraft.value)
+    program.value = result
+    programDraft.value = { ...result.config, profile: { ...result.config.profile } }
+    appToast.success('节目设置已保存', '输出接入状态会在下方更新；等待连接的设备上线后自动使用。')
+  } catch (error) {
+    appToast.errorFrom('保存失败', error, '无法应用节目音频设置')
+  } finally { savingProgram.value = false }
+}
+
+async function onChannels(busId: string, sourceId: string, value: ChannelMap): Promise<void> {
+  try { await setBusInputChannels(busId, sourceId, value) }
+  catch (error) { appToast.errorFrom('设置失败', error, '无法修改声道映射'); await refresh() }
+}
 
 /** Devices that carry audio — the only valid mixer inputs. */
-const audioDevices = computed(() => devices.value.filter((d) => d.include_audio))
+const audioDevices = computed(() => sources.value)
 
 function deviceName(id: string): string {
-  return devices.value.find((d) => d.id === id)?.name ?? id
+  return sources.value.find(s => s.id === id)?.name ?? devices.value.find((d) => d.id === id)?.name ?? id
 }
 
 /** Audio devices not yet mixed into `bus` (candidates for its add-input select). */
@@ -54,14 +115,18 @@ async function refresh() {
 
 onMounted(async () => {
   try {
-    const [devs] = await Promise.all([listDevices(), refresh()])
+    const [devs, available] = await Promise.all([listDevices(), getAudioSources(), refresh(), loadProgram(true)])
     devices.value = devs
+    sources.value = available
+    if (!programAbort.signal.aborted) programTimer = setInterval(() => { void loadProgram().catch(error => { if (!programAbort.signal.aborted) appToast.errorFrom('状态更新失败', error, '无法读取节目输出状态') }) }, 2000)
   } catch (error) {
     appToast.errorFrom('加载失败', error, '无法获取设备列表')
   } finally {
     loading.value = false
   }
 })
+
+onBeforeUnmount(() => { programAbort.abort(); if (programTimer) clearInterval(programTimer) })
 
 // ---- create bus dialog ----------------------------------------------------
 const showCreate = ref(false)
@@ -278,7 +343,7 @@ onBeforeUnmount(() => {
     <div class="page-header">
       <div class="header-content">
         <h1 class="page-title">混音台</h1>
-        <p class="page-subtitle">把多路设备音频混成独立的输出总线，实时增删输入、调音量、静音</p>
+        <p class="page-subtitle">统一设置节目音频，分发到设备输出；输入音量、静音和声道映射实时生效。</p>
       </div>
       <div class="page-actions">
         <Button label="新建输出总线" icon="pi pi-plus" size="small" @click="openCreate" />
@@ -313,6 +378,45 @@ onBeforeUnmount(() => {
         @click="stopListen"
       />
     </div>
+
+    <Card v-if="program" class="data-card program-card">
+      <template #title>设备输出节目音频</template>
+      <template #content>
+        <Message v-if="program.last_error" severity="error" size="small">{{ program.last_error }}</Message>
+        <div class="program-grid">
+          <div class="field"><label for="program-enabled">使用全局节目音频</label><ToggleSwitch input-id="program-enabled" v-model="programDraft.enabled" /></div>
+          <div class="field"><label for="program-bus">节目总线</label><Select input-id="program-bus" v-model="programDraft.active_bus_id" :options="state.buses.map(b => ({ label: b.id, value: b.id }))" option-label="label" option-value="value" placeholder="选择节目总线" /></div>
+          <div class="field"><label for="program-mode">输出音频组成</label><Select input-id="program-mode" v-model="programDraft.mode" :options="modeOptions" option-label="label" option-value="value" /></div>
+          <div class="field"><label for="program-codec">音频编码</label><Select input-id="program-codec" v-model="programDraft.profile.codec" :options="codecOptions" option-label="label" option-value="value" /></div>
+          <div class="field"><label for="program-rate">节目采样率</label><Select input-id="program-rate" v-model="programDraft.profile.sample_rate" :options="programRates" option-label="label" option-value="value" /></div>
+          <div class="field"><label for="program-bitrate">音频码率</label><InputNumber input-id="program-bitrate" v-model="programDraft.profile.bitrate" :min="16000" :max="512000" :step="1000" suffix=" bps" :use-grouping="false" /></div>
+        </div>
+        <p class="field-hint">节目保留左右独立双声道。设备输出可以关闭“使用全局混音”；未使用设备原音的输出仍可接收节目音频。</p>
+        <Button label="保存节目设置" icon="pi pi-check" :loading="savingProgram" @click="onSaveProgram" />
+        <Message v-if="program.config.enabled && program.outputs.some(o => o.state === 'waiting')" severity="info" size="small" class="program-message">部分设备正在连接或等待取流，实际收到节目音轨后才显示为已接入。</Message>
+      </template>
+    </Card>
+
+    <Card class="data-card device-list-card">
+      <template #header>
+        <div class="card-header">
+          <i class="pi pi-video card-header-icon" />
+          <span class="card-header-title">设备列表（{{ devices.length }}）</span>
+        </div>
+      </template>
+      <template #content>
+        <DataTable :value="deviceRows" data-key="id" :loading="loading" size="small" scrollable>
+          <template #empty>暂无设备</template>
+          <Column field="name" header="设备名称" />
+          <Column field="id" header="设备 ID" />
+          <Column field="inputType" header="输入类型" />
+          <Column field="originalAudio" header="设备原音" />
+          <Column field="buses" header="混音总线" />
+          <Column field="globalAudio" header="使用全局混音" />
+          <Column field="outputState" header="输出状态" />
+        </DataTable>
+      </template>
+    </Card>
 
     <div v-if="!loading && state.buses.length === 0" class="empty-hint">
       还没有输出总线。点击「新建输出总线」，选择几路设备音频开始混音。
@@ -350,6 +454,7 @@ onBeforeUnmount(() => {
           <div v-if="bus.inputs.length === 0" class="bus-empty">未混入任何输入</div>
 
           <div v-for="input in bus.inputs" :key="input.source_id" class="input-row">
+            <Message v-if="state.sources.find(s => s.id === input.source_id)?.ready === false" severity="warn" size="small">输入等待连接：{{ state.sources.find(s => s.id === input.source_id)?.error ?? '暂未收到原始音频' }}</Message>
             <div class="input-head">
               <span class="input-name" :class="{ muted: input.muted }">
                 {{ deviceName(input.source_id) }}
@@ -379,6 +484,7 @@ onBeforeUnmount(() => {
               />
               <span class="input-vol">{{ input.volume }}%</span>
             </div>
+            <Select :model-value="input.channel_map ?? 'stereo'" :options="channelOptions" option-label="label" option-value="value" aria-label="输入声道映射" @update:model-value="onChannels(bus.id, input.source_id, $event)" />
           </div>
 
           <div class="add-input">
@@ -411,7 +517,7 @@ onBeforeUnmount(() => {
         <p class="field-hint">推流地址为 rtmp://…/mixer/{名称}，也是试听用的流名。</p>
       </div>
       <div class="field">
-        <label>选择输入（设备音频，至少一路）</label>
+        <label>选择输入（设备或端子音频，至少一路）</label>
         <div v-if="audioDevices.length === 0" class="field-hint">没有带音频的设备。</div>
         <div v-for="d in audioDevices" :key="d.id" class="pick-row">
           <Checkbox v-model="newBusInputs" :value="d.id" :input-id="'nb-' + d.id" />
@@ -650,4 +756,26 @@ onBeforeUnmount(() => {
   color: #e2e8f0;
   font-size: 0.9rem;
 }
+
+.program-card,
+.device-list-card {
+  margin-bottom: 1rem;
+}
+
+.program-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 1rem;
+}
+
+.program-grid .field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.program-message {
+  margin-top: 1rem;
+}
+
 </style>

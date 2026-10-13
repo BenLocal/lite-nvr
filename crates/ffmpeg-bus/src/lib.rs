@@ -34,5 +34,6 @@ pub mod metrics;
 pub mod output;
 pub mod packet;
 pub mod scaler;
+pub mod shared_audio;
 pub mod sink;
 pub mod stream;

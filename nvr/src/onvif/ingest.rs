@@ -50,6 +50,7 @@ pub(crate) fn spawn_onvif_device(
                     // demux policy applies, exactly like a resolved rtsp pull.
                     let resolved = rtsp_stream(rtsp);
                     crate::livestream::run_session(
+                        &device_id,
                         &resolved,
                         Arc::clone(&media),
                         include_audio,

@@ -5,6 +5,10 @@ import { buildOutputConfig, outputFormValues, sampleRateOptions, validateOutputV
 const settings = { video_codec: 'h265', width: 640, height: 360, fps: 15, max_bitrate: 500000, audio_codec: 'opus', sample_rate: 24000 } as const
 
 describe('persisted output settings', () => {
+  it('keeps per-output program opt-out even for native forwarding devices', () => {
+    expect(buildOutputConfig({ input_type: 'gb28181', output_use_global_audio: false })).toEqual({ use_global_audio: false })
+    expect(buildOutputConfig({ input_type: 'rtsp', output_use_global_audio: true })).toBeUndefined()
+  })
   it('round trips all settings and converts Kbps to bps', () => {
     const values: Record<string, unknown> = { ...deviceFormInitialValues(null), input_type: 'rtsp', ...outputFormValues(settings) }
     expect(values.output_max_bitrate).toBe(500)

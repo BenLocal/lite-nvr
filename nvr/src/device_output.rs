@@ -2,11 +2,36 @@
 use media_pipe_core::{EncodeConfig, OutputConfig};
 use nvr_db::device::{AudioCodec, DeviceInfo, OutputConfig as Settings, VideoCodec};
 
+pub(crate) async fn outputs(
+    id: &str,
+    media: std::sync::Arc<rszlm::media::Media>,
+    include_original: bool,
+    settings: Option<&Settings>,
+) -> anyhow::Result<Vec<OutputConfig>> {
+    let use_global = settings.and_then(|s| s.use_global_audio).unwrap_or(true);
+    let audio =
+        crate::audiomixer::output::audio_for_output(id, include_original, use_global).await?;
+    let mut outputs = media_pipe_zlm::zlm_outputs(media, include_original || audio.is_some());
+    for output in &mut outputs {
+        output.use_global_audio = use_global;
+        output.external_audio = audio.clone();
+    }
+    Ok(outputs)
+}
+
 pub(crate) fn validate(device: &DeviceInfo) -> anyhow::Result<()> {
     let Some(cfg) = device.config.output.as_ref() else {
         return Ok(());
     };
-    if matches!(device.input_type.as_str(), "gb28181" | "xiaomi") {
+    if matches!(device.input_type.as_str(), "gb28181" | "xiaomi")
+        && (cfg.video_codec.is_some()
+            || cfg.width.is_some()
+            || cfg.height.is_some()
+            || cfg.fps.is_some()
+            || cfg.max_bitrate.is_some()
+            || cfg.audio_codec.is_some()
+            || cfg.sample_rate.is_some())
+    {
         anyhow::bail!("该设备使用原生转发，暂不支持输出转码参数");
     }
     if cfg.width.is_some() != cfg.height.is_some() {
@@ -66,7 +91,9 @@ pub(crate) fn apply(outputs: &mut [OutputConfig], cfg: Option<&Settings>) {
             });
         }
     }
-    if cfg.audio_codec.is_some() || cfg.sample_rate.is_some() {
+    if (cfg.audio_codec.is_some() || cfg.sample_rate.is_some())
+        && outputs.iter().all(|o| o.external_audio.is_none())
+    {
         if let Some(audio) = outputs.get_mut(1) {
             audio.encode = Some(EncodeConfig {
                 codec: match cfg.audio_codec {

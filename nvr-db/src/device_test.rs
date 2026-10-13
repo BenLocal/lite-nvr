@@ -56,6 +56,7 @@ async fn output_settings_survive_database_reopen() -> anyhow::Result<()> {
         updated_at: chrono::Utc::now(),
         config: DeviceConfig {
             output: Some(OutputConfig {
+                use_global_audio: Some(false),
                 video_codec: Some(VideoCodec::H265),
                 width: Some(640),
                 height: Some(360),

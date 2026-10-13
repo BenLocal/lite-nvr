@@ -143,6 +143,10 @@ pub struct OutputConfig {
     pub include_audio: bool,
     /// Encoding for the audio carried by `include_audio`. None = copy
     pub audio_encode: Option<EncodeConfig>,
+    /// Shared program packets, supplied by the application rather than pulled
+    /// from this pipe's input. Each output can opt out independently.
+    pub external_audio: Option<ffmpeg_bus::shared_audio::SharedEncodedAudio>,
+    pub use_global_audio: bool,
 }
 
 impl OutputConfig {
@@ -155,6 +159,8 @@ impl OutputConfig {
             av_type: OutputAvType::Video,
             include_audio: false,
             audio_encode: None,
+            external_audio: None,
+            use_global_audio: true,
         }
     }
 
@@ -167,6 +173,8 @@ impl OutputConfig {
             av_type: OutputAvType::Video,
             include_audio: false,
             audio_encode: None,
+            external_audio: None,
+            use_global_audio: true,
         }
     }
 
@@ -184,6 +192,14 @@ impl OutputConfig {
     /// Set the encoding for the audio carried by [`Self::with_audio`].
     pub fn with_audio_encode(mut self, encode: EncodeConfig) -> Self {
         self.audio_encode = Some(encode);
+        self
+    }
+
+    pub fn with_external_audio(
+        mut self,
+        audio: ffmpeg_bus::shared_audio::SharedEncodedAudio,
+    ) -> Self {
+        self.external_audio = Some(audio);
         self
     }
 }
@@ -309,6 +325,9 @@ fn to_fb_output(config: &OutputConfig) -> Option<FbOutputConfig> {
     }
     if config.include_audio {
         fb = fb.with_audio();
+    }
+    if config.use_global_audio {
+        fb.external_audio = config.external_audio.clone();
     }
     Some(fb)
 }

@@ -88,6 +88,15 @@ impl Pipe {
         self.started.load(Ordering::Relaxed)
     }
 
+    pub fn audio_revision(&self) -> Option<u64> {
+        self.config
+            .outputs
+            .iter()
+            .filter(|o| o.use_global_audio)
+            .filter_map(|o| o.external_audio.as_ref().map(|s| s.revision()))
+            .max()
+    }
+
     /// Check if the pipeline has been cancelled
     #[allow(dead_code)]
     pub fn is_cancelled(&self) -> bool {

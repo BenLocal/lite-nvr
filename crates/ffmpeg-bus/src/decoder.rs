@@ -474,6 +474,7 @@ pub struct DecoderTask {
     /// Stop once the last subscriber leaves (bus-managed decoders). Off for
     /// long-lived decoders whose subscribers come and go (e.g. audio mixer).
     auto_stop: bool,
+    handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl DecoderTask {
@@ -483,6 +484,7 @@ impl DecoderTask {
             cancel: CancellationToken::new(),
             subscribers: FrameSubscribers::default(),
             auto_stop: false,
+            handle: std::sync::Mutex::new(None),
         }
     }
 
@@ -520,6 +522,14 @@ impl DecoderTask {
         self.cancel.cancel();
     }
 
+    pub async fn stop_and_join(&self) {
+        self.stop();
+        let task = self.handle.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(task) = task {
+            let _ = task.await;
+        }
+    }
+
     pub async fn start(&self, decoder: Decoder, mut decoder_receiver: RawPacketReceiver) {
         log::info!(
             "decoder loop started, stream index: {}",
@@ -533,7 +543,7 @@ impl DecoderTask {
         let auto_stop = self.auto_stop;
         /// Bounded queue: when decoder is slower than producer, back-pressure instead of unbounded growth (OOM).
         const PACKET_QUEUE_BOUND: usize = 16;
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let (packet_tx, packet_rx) =
                 std::sync::mpsc::sync_channel::<RawPacketCmd>(PACKET_QUEUE_BOUND);
             let current_stream_index = decoder.stream_index();
@@ -600,6 +610,7 @@ impl DecoderTask {
             drop(packet_tx);
             let _ = handle.await;
         });
+        *self.handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(task);
     }
 
     /// Send a packet into the bounded decode queue, waiting (async, so the
