@@ -192,7 +192,14 @@ class Runner:
         print('# Building fresh Rockchip package', flush=True)
         env = dict(os.environ, npm_config_cache=str(self.cache / 'npm'))
         self.command(
-            ['make', '-C', str(self.repo), 'package', 'PACKAGE_ARCHS=rockchip'],
+            [
+                'make',
+                '-C',
+                str(self.repo),
+                'package',
+                'PACKAGE_ARCHS=rockchip',
+                'PACKAGE_ARCHIVE=1',
+            ],
             log=self.artifacts / 'build.log',
             timeout=int(os.environ.get('RK_BUILD_TIMEOUT', '7200')),
             env=env,

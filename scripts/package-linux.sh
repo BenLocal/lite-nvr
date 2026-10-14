@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Build GNU Linux release packages with cross; keep native dependencies per target.
+# Update GNU Linux release directories with cross; optionally create archives.
 # Usage: [APT_MIRROR=https://mirrors.example/ubuntu] bash scripts/package-linux.sh [amd64|arm64|rockchip ...]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p target/cross-deps dist
 export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
-export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
 export CROSS_CONTAINER_OPTS="${CROSS_CONTAINER_OPTS:---cpus=2 --memory=4g} --volume \"$PWD/target/cross-deps:/project/target/cross-deps:ro\" --volume \"$PWD/third_party:/project/third_party:ro\""
 command -v cross >/dev/null
 # An optional mirror layer derives from the official cross image.
@@ -37,7 +37,7 @@ docker build --platform "$build_platform" --build-arg HTTP_PROXY --build-arg HTT
     --build-arg "APT_MIRROR=${APT_MIRROR:-}" \
     -t "$native_image" -t lite-nvr-cross:host-native -f scripts/Dockerfile.cross-native scripts
 echo "Build container platform: $build_platform"
-(cd nvr-dashboard/app && npm ci && npm run build)
+python3 scripts/package-cache.py frontend
 version=$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' nvr/Cargo.toml)
 sherpa_version=$(awk '/^name = "sherpa-onnx-sys"/ {found=1; next} found && /^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.lock)
 architectures=("$@")
@@ -84,7 +84,8 @@ for arch in "${architectures[@]}"; do
     fi
     bash scripts/download_sherpa_onnx_libs.sh --os linux --arch "$rust_arch"
     export FFMPEG_DIR="/project/$deps/ffmpeg" ZLM_DIR="/project/$deps/zlm"
-    export SHERPA_ONNX_LIB_DIR="/project/third_party/sherpa-onnx/sherpa-onnx-v${sherpa_version}-linux-$([[ "$arch" == amd64 ]] && echo x64 || echo aarch64)-static-lib/lib"
+    SHERPA_ONNX_LIB_DIR="/project/third_party/sherpa-onnx/sherpa-onnx-v${sherpa_version}-linux-$([[ "$arch" == amd64 ]] && echo x64 || echo aarch64)-static-lib/lib"
+    export SHERPA_ONNX_LIB_DIR
     export PKG_CONFIG_ALLOW_CROSS=1
     export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
     export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
@@ -108,34 +109,57 @@ for arch in "${architectures[@]}"; do
             export CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE="lite-nvr-cross:$arch-$build_arch"
         fi
     fi
+    # Native SDK paths differ even when the Rust target triple is identical.
+    build_target_dir="target/package/$arch"
     if [[ "$arch" == rockchip ]]; then
-        bash scripts/with-rockchip-patch.sh cross build --release --locked -p nvr --target "$target" "${cargo_features[@]}"
+        bash scripts/with-rockchip-patch.sh cross build --release --locked -p nvr --target "$target" --target-dir "$build_target_dir" "${cargo_features[@]}"
     else
-        cross build --release --locked -p nvr --target "$target"
+        cross build --release --locked -p nvr --target "$target" --target-dir "$build_target_dir"
     fi
     package="lite-nvr-${version}-linux-${arch}-gnu"
     if [[ "$arch" == rockchip ]]; then package="lite-nvr-${version}-linux-arm64-rockchip"; fi
-    staging="target/cross-deps/$package"
+    staging="dist/$package"
+    metadata="target/cross-deps/package-metadata/$arch"
+    mkdir -p "$metadata"
+    archive="dist/$package.tar.gz"
+    stamp="target/cross-deps/$package.sha256"
+    binary="$build_target_dir/$target/release/nvr"
+    # Include the image ID: its C++ runtimes are part of the shipped package.
+    image_id=$(docker image inspect --format '{{.Id}}' "$base_image")
+    signature=""
+    if [[ "${PACKAGE_ARCHIVE:-0}" == 1 ]]; then
+        signature=$( {
+            printf '%s\n' "$image_id"
+            python3 scripts/package-cache.py "$binary" "$deps" LICENSE \
+                scripts/package-linux.sh scripts/package-cache.py scripts/rockchip/start.sh
+        } | shasum -a 256 | awk '{print $1}')
+    fi
+    # Keep image-provided runtimes separately; a Rust-only update need not start Docker.
+    runtime="target/cross-deps/runtime-$arch"
+    if [[ ! -f "$runtime/.image-id" || "$(cat "$runtime/.image-id")" != "$image_id" ||
+          ! -f "$runtime/libstdc++.so.6" || ! -f "$runtime/libgcc_s.so.1" || ! -f "$runtime/libgomp.so.1" ]]; then
+        mkdir -p "$runtime"
+        docker run --rm --platform "$build_platform" --cpus=1 --memory=256m \
+            -v "$PWD/$runtime:/package" "$base_image" \
+            bash -ec 'for lib in libstdc++.so.6 libgcc_s.so.1 libgomp.so.1; do
+                path=$("$1" -print-file-name="$lib")
+                cp -L "$path" "/package/$lib"
+            done' _ "${rust_arch}-linux-gnu-g++"
+        printf '%s\n' "$image_id" > "$runtime/.image-id"
+    fi
+    # Synchronize contents, retaining unchanged files and removing obsolete SDK files.
     mkdir -p "$staging/bin" "$staging/lib"
-    cp "target/$target/release/nvr" "$staging/bin/nvr"
-    mkdir -p "$staging/ffmpeg"
-    cp -R "$deps/ffmpeg/." "$staging/ffmpeg/"
-    cp -P "$deps/zlm/lib/"*.so* "$staging/lib/"
-    cp -P "$deps/onnxruntime/lib/"*.so* "$staging/lib/"
-    # Bundle the target C++/OpenMP runtimes; glibc comes from the deployment OS.
-    docker run --rm --platform "$build_platform" --cpus=1 --memory=256m \
-        -v "$PWD/$staging/lib:/package" "$base_image" \
-        bash -c 'for lib in libstdc++.so.6 libgcc_s.so.1 libgomp.so.1; do
-            path=$("$1" -print-file-name="$lib")
-            cp -L "$path" "/package/$lib"
-        done' _ "${rust_arch}-linux-gnu-g++"
-    cp "$deps/onnxruntime/LICENSE" "$staging/ONNXRUNTIME-LICENSE"
-    if [[ -f LICENSE ]]; then cp LICENSE "$staging/"; fi
+    python3 scripts/package-cache.py copy "$binary" "$staging/bin/nvr"
+    python3 scripts/package-cache.py sync "$deps/ffmpeg" "$staging/ffmpeg"
+    python3 scripts/package-cache.py sync-files "$staging/lib" \
+        "$deps/zlm/lib/"*.so* "$deps/onnxruntime/lib/"*.so* "$runtime/"*.so*
+    python3 scripts/package-cache.py copy "$deps/onnxruntime/LICENSE" "$staging/ONNXRUNTIME-LICENSE"
+    if [[ -f LICENSE ]]; then python3 scripts/package-cache.py copy LICENSE "$staging/LICENSE"; fi
     if [[ "$arch" == rockchip ]]; then
         # Board launcher with run/start/stop/restart/status (POSIX sh for BusyBox).
-        cp scripts/rockchip/start.sh "$staging/start.sh"
+        python3 scripts/package-cache.py copy scripts/rockchip/start.sh "$staging/start.sh"
     else
-        cat > "$staging/start.sh" <<'START'
+        cat > "$metadata/start.sh" <<'START'
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "$0")" && pwd)"
@@ -145,8 +169,10 @@ export ORT_DYLIB_PATH="${ORT_DYLIB_PATH:-$root/lib/libonnxruntime.so}"
 cd "$root"
 exec "$root/bin/nvr" "$@"
 START
+        chmod +x "$metadata/start.sh"
+        python3 scripts/package-cache.py copy "$metadata/start.sh" "$staging/start.sh"
     fi
-    cat > "$staging/README.txt" <<'README'
+    cat > "$metadata/README.txt" <<'README'
 Run ./start.sh on GNU Linux with a glibc at least as new as the build image's
 (check what the binary needs: strings bin/nvr | grep -o 'GLIBC_2\.[0-9]*' | sort -V | tail -1).
 Dashboard: http://localhost:18080/nvr/
@@ -155,9 +181,21 @@ ASR/detection model files are configured separately and are not included.
 SMB transport is disabled (the default Cargo feature set).
 README
     if [[ "$arch" == rockchip ]]; then
-        printf '\nRockchip feature enabled; RK FFmpeg and MPP/RGA libraries included.\nRKMPP hardware requires matching Rockchip kernel drivers and device access.\n./start.sh [run|start|stop|restart|status]: run in the foreground (default) or manage a background nvr.\n' >> "$staging/README.txt"
+        printf '\nRockchip feature enabled; RK FFmpeg and MPP/RGA libraries included.\nRKMPP hardware requires matching Rockchip kernel drivers and device access.\n./start.sh [run|start|stop|restart|status]: run in the foreground (default) or manage a background nvr.\n' >> "$metadata/README.txt"
     fi
+    python3 scripts/package-cache.py copy "$metadata/README.txt" "$staging/README.txt"
     chmod +x "$staging/start.sh"
-    tar -czf "dist/$package.tar.gz" -C target/cross-deps "$package"
+    echo "Package directory updated: $staging"
+    if [[ "${PACKAGE_ARCHIVE:-0}" == 1 ]]; then
+        if [[ ! -f "$archive" || ! -f "$stamp" || "$(cat "$stamp")" != "$signature" ]]; then
+            tar -czf "$archive.tmp" -C dist "$package"
+            mv "$archive.tmp" "$archive"
+            printf '%s\n' "$signature" > "$stamp"
+        else
+            echo "Archive unchanged: $archive"
+        fi
+    fi
 done
-(cd dist && shasum -a 256 lite-nvr-*-linux-*.tar.gz > SHA256SUMS)
+if [[ "${PACKAGE_ARCHIVE:-0}" == 1 ]]; then
+    (cd dist && shasum -a 256 lite-nvr-*-linux-*.tar.gz > SHA256SUMS)
+fi

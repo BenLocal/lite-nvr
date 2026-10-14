@@ -15,7 +15,7 @@
 
 ## 生成并上传 arm64 Rockchip 包
 
-开发机需准备 rustup 管理的 Rust 工具链、`cross`、Docker 和 Node/npm。在仓库根目录执行：
+开发机需准备 rustup 管理的 Rust 工具链、`cross`、Docker、Python 3 和 Node/npm。在仓库根目录执行：
 
 ```bash
 make package PACKAGE_ARCHS=rockchip
@@ -23,7 +23,9 @@ make package PACKAGE_ARCHS=rockchip
 APT_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/ubuntu make package PACKAGE_ARCHS=rockchip
 ```
 
-默认 Cargo 并发为 1，构建容器最多使用 2 核 CPU、4 GiB 内存。产物为 `dist/lite-nvr-0.1.0-linux-arm64-rockchip.tar.gz`，版本号来自 `nvr/Cargo.toml`。也可运行不带 `PACKAGE_ARCHS` 的 `make package`，按顺序生成 amd64 GNU、arm64 GNU 和 arm64 Rockchip 三个包。
+默认 Cargo 并发为 2（`PACKAGE_JOBS` 可覆盖），构建容器最多使用 2 核 CPU、4 GiB 内存。产物直接放在 `dist/lite-nvr-0.1.0-linux-arm64-rockchip/`，版本号来自 `nvr/Cargo.toml`；重复执行只同步变化文件，并删除产物目录内已移除的 SDK 文件。前端按内容变化构建，各架构 Cargo 缓存隔离在 `target/package/<arch>/`，首次需重新预热。也可运行不带 `PACKAGE_ARCHS` 的 `make package`，按顺序更新 amd64 GNU、arm64 GNU 和 arm64 Rockchip 三个目录。
+
+需要上传压缩包时运行 `make package PACKAGE_ARCHS=rockchip PACKAGE_ARCHIVE=1`，生成同名 `.tar.gz` 和 `SHA256SUMS`；输入未变化时复用压缩包。默认目录更新不会刷新已有压缩包。
 
 包中有 NVR、内嵌管理后台、RK FFmpeg、ZLM、ONNX Runtime CPU 库、C++ / OpenMP 运行库及 `start.sh`。ASR 和检测模型文件需要另外配置。
 
@@ -32,6 +34,7 @@ APT_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/ubuntu make package PACKAGE_ARCH
 ```bash
 RK_HOST=<测试机地址>
 RK_USER=<SSH用户名>
+make package PACKAGE_ARCHS=rockchip PACKAGE_ARCHIVE=1
 scp dist/lite-nvr-0.1.0-linux-arm64-rockchip.tar.gz "$RK_USER@$RK_HOST:/tmp/"
 ```
 

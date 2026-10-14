@@ -57,10 +57,13 @@ NPROC      := $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
 BUILD_JOBS ?= $(shell n=$$(( $(NPROC) / 2 )); [ $$n -lt 1 ] && n=1; echo $$n)
 BUILD_NICE ?= 10
 
-# GNU Linux packages via official cross images, written to dist/.
+# GNU Linux package directories via host-native cross images, written to dist/.
+# Add PACKAGE_ARCHIVE=1 to also generate cached tar.gz archives.
 # Optional: make package PACKAGE_ARCHS=arm64 APT_MIRROR=https://mirrors.example/ubuntu
 PACKAGE_ARCHS ?= amd64 arm64 rockchip
-PACKAGE_JOBS ?= 1
+PACKAGE_ARCHIVE ?= 0
+export PACKAGE_ARCHIVE
+PACKAGE_JOBS ?= 2
 PACKAGE_CONTAINER_OPTS ?= --cpus=2 --memory=4g --memory-swap=4g
 export APT_MIRROR
 export CROSS_TARGET_X86_64_UNKNOWN_LINUX_GNU_IMAGE
@@ -78,7 +81,8 @@ help:
 	@echo ""
 	@echo "Build / Run:"
 	@echo "  build              scripts/build.sh BUILD_MODE=check|build|release BUILD_ARGS=... (BUILD_JOBS=$(BUILD_JOBS), BUILD_NICE=$(BUILD_NICE))"
-	@echo "  package            cross Linux amd64/arm64 GNU + arm64 Rockchip packages into dist/ (PACKAGE_JOBS=$(PACKAGE_JOBS))"
+	@echo "  package            cross Linux amd64/arm64 GNU + arm64 Rockchip directories into dist/ (PACKAGE_JOBS=$(PACKAGE_JOBS))"
+	@echo "                     PACKAGE_ARCHIVE=1 also writes cached tar.gz archives"
 	@echo "  run                cargo run --package nvr"
 	@echo "  asr-demo           Run nvr-asr streaming demo on a WAV (see ASR_* vars)"
 	@echo "  dummy              Run GB28181 dummy-camera (emulated IPC) vs local NVR"
