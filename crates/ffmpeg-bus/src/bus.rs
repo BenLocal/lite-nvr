@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 
-use futures::{Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, future::Shared};
 use log::error;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;
@@ -371,6 +371,8 @@ pub struct Bus {
     /// Set by [`Bus::stop`]: aborts an input open in progress (the command
     /// loop is busy awaiting it, so cancellation alone cannot reach it).
     shutdown: Arc<std::sync::atomic::AtomicBool>,
+    /// Every waiter observes completion, even during concurrent shutdown.
+    finished: Shared<BoxFuture<'static, ()>>,
 }
 
 impl Bus {
@@ -396,14 +398,22 @@ impl Bus {
         let cancel_clone = cancel.clone();
         let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let shutdown_clone = shutdown.clone();
-        tokio::spawn(
-            async move { Self::inner_loop(cancel_clone, rx, deferred, shutdown_clone).await },
-        );
+        let task = tokio::spawn(async move {
+            Self::inner_loop(cancel_clone, rx, deferred, shutdown_clone).await
+        });
+        let finished = async move {
+            if let Err(e) = task.await {
+                error!("bus task failed during shutdown: {e}");
+            }
+        }
+        .boxed()
+        .shared();
         Self {
             id,
             cancel,
             tx,
             shutdown,
+            finished,
         }
     }
 
@@ -430,6 +440,7 @@ impl Bus {
                 },
             }
         }
+        state.stop_and_join_tasks().await;
     }
 
     pub async fn metrics(&self) -> anyhow::Result<crate::metrics::BusMetrics> {
@@ -512,17 +523,11 @@ impl Bus {
                     .map_err(|e| anyhow::anyhow!("send result error: {:#?}", e))?;
             }
             BusCommand::RemoveInput { result } => {
-                if let Some(input) = state.input_task.take() {
-                    input.stop();
-                    drop(input);
-                }
+                state.stop_and_join_tasks().await;
                 state.pending_input = None;
                 state.input_config = None;
-                // Everything below was derived from the removed input; dropping
-                // the tasks cancels them (no leaked relay / blocking threads),
-                // and a later AddInput starts from a clean state.
-                state.decoder_tasks.clear();
-                state.encoder_tasks.clear();
+                // A later AddInput starts only after the old tasks released
+                // their input/device and codec contexts.
                 state.encoder_output_streams.clear();
                 state.input_streams.clear();
                 state.output_config.clear();
@@ -2066,6 +2071,12 @@ impl Bus {
             .store(true, std::sync::atomic::Ordering::Relaxed);
         self.cancel.cancel();
     }
+
+    /// Stop and wait until all input and codec workers release their resources.
+    pub async fn stop_and_join(&self) {
+        self.stop();
+        self.finished.clone().await;
+    }
 }
 
 impl Drop for Bus {
@@ -2100,6 +2111,30 @@ struct BusState {
 }
 
 impl BusState {
+    async fn stop_and_join_tasks(&mut self) {
+        // Cancel every stage before joining: lossless queues can otherwise
+        // leave an upstream worker waiting on a downstream consumer.
+        if let Some(input) = &self.input_task {
+            input.stop();
+        }
+        for decoder in self.decoder_tasks.values() {
+            decoder.stop();
+        }
+        for encoder in self.encoder_tasks.values() {
+            encoder.stop();
+        }
+        if let Some(input) = self.input_task.take() {
+            input.stop_and_join().await;
+        }
+        self.pending_input = None;
+        for (_, decoder) in self.decoder_tasks.drain() {
+            decoder.stop_and_join().await;
+        }
+        for (_, encoder) in self.encoder_tasks.drain() {
+            encoder.stop_and_join().await;
+        }
+    }
+
     fn new() -> Self {
         Self {
             cancel: CancellationToken::new(),

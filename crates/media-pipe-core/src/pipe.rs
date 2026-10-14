@@ -128,7 +128,7 @@ impl Pipe {
         let cancel = self.cancel.clone();
         // Cover cancellation before the bus was published.
         if cancel.is_cancelled() {
-            bus.stop();
+            bus.stop_and_join().await;
             *self.bus.lock().unwrap() = None;
             self.started.store(false, Ordering::Relaxed);
             return;
@@ -143,7 +143,7 @@ impl Pipe {
                 Backtrace::capture()
             );
             *self.bus.lock().unwrap() = None;
-            bus.stop();
+            bus.stop_and_join().await;
             self.started.store(false, Ordering::Relaxed);
             return;
         }
@@ -242,11 +242,9 @@ impl Pipe {
             }
         }
 
-        // Stop input and outputs: remove input first so the bus stops feeding streams
-        if let Err(e) = bus.remove_input().await {
-            log::warn!("Pipe: remove_input failed: {:#}", e);
-        }
-        bus.stop();
+        // Joining the pipe must also wait for the blocking input reader, so a
+        // replacement pipe can immediately reopen an exclusive device.
+        bus.stop_and_join().await;
         // Unpublish before dropping the last handle; new subscribers now error.
         *self.bus.lock().unwrap() = None;
         while outputs.join_next().await.is_some() {}

@@ -412,7 +412,7 @@ fn mix_loop(
                         match active.resampler.convert(frame.as_audio()) {
                             Ok(mut samples) => {
                                 let map = active.channel_map.load(Ordering::Relaxed);
-                                for pair in samples.chunks_exact_mut(2) {
+                                for pair in samples.as_chunks_mut::<2>().0 {
                                     match map {
                                         1 => pair.swap(0, 1),
                                         2 => pair[1] = pair[0],

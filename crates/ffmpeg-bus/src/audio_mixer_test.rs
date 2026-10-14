@@ -13,7 +13,13 @@ fn resamples_pcm_with_unspecified_channel_order() {
     input.set_channel_layout(layout);
     let samples = SlotResampler::new(48_000).convert(&input).unwrap();
     assert_eq!(samples.len(), FRAME_LEN);
-    assert!(samples.chunks_exact(2).all(|pair| pair == [1000, -2000]));
+    assert!(
+        samples
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .all(|pair| pair == &[1000, -2000])
+    );
 }
 
 // ---- pure PCM helpers -----------------------------------------------------
@@ -135,8 +141,8 @@ async fn device_original_is_added_before_the_program_is_clipped() {
         panic!("expected mixed PCM")
     };
     assert_eq!(frame.pts(), Some(96_000));
-    for sample in frame.as_audio().data(0)[..FRAME_LEN * 2].chunks_exact(2) {
-        assert_eq!(i16::from_ne_bytes(sample.try_into().unwrap()), 15_000);
+    for sample in frame.as_audio().data(0)[..FRAME_LEN * 2].as_chunks::<2>().0 {
+        assert_eq!(i16::from_ne_bytes(*sample), 15_000);
     }
 }
 

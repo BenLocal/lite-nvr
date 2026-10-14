@@ -215,7 +215,7 @@ impl AvInputTask {
 }
 
 impl Drop for AvInputTask {
-    /// Dropping the task stops the blocking reader so it never outlives the bus.
+    /// Request cancellation; owners must join before reopening its device.
     fn drop(&mut self) {
         self.cancel.cancel();
     }

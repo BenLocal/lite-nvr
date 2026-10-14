@@ -9,6 +9,98 @@ use crate::input::AvInput;
 use crate::metadata::probe;
 use crate::test_mp4_path;
 
+/// Joining shutdown must close the real input socket, including when several
+/// callers concurrently wait for the same bus to release its resources.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_stop_and_join_releases_input() -> anyhow::Result<()> {
+    use std::io::{Read, Write};
+    use std::time::Duration;
+
+    crate::init()?;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+    let peer = std::thread::spawn(move || -> std::io::Result<()> {
+        let (mut conn, _) = listener.accept()?;
+        conn.set_read_timeout(Some(Duration::from_secs(5)))?;
+        conn.write_all(&vec![0; 64 * 48 * 3 / 2 * 32])?;
+        let mut byte = [0];
+        match conn.read(&mut byte) {
+            Ok(0) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
+            other => panic!("input socket still open: {other:?}"),
+        }
+        let _ = closed_tx.send(());
+        Ok(())
+    });
+    let bus = Bus::new("join-input");
+    bus.add_input_with_live(
+        InputConfig::Device {
+            display: format!("tcp://127.0.0.1:{port}"),
+            format: "rawvideo".into(),
+        },
+        Some(
+            [
+                ("video_size".into(), "64x48".into()),
+                ("pixel_format".into(), "yuv420p".into()),
+                ("probesize".into(), "32".into()),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+        true,
+    )
+    .await?;
+    let (_, mut stream) = bus
+        .add_output(OutputConfig::new(
+            "video".into(),
+            OutputAvType::Video,
+            OutputDest::Demuxed,
+        ))
+        .await?;
+    assert!(
+        tokio::time::timeout(Duration::from_secs(3), stream.next())
+            .await?
+            .is_some()
+    );
+    // Check the local descriptor immediately after each waiter returns; waiting
+    // for the peer's EOF alone could miss a reader still exiting in background.
+    #[cfg(target_os = "linux")]
+    let input_socket = {
+        let connections = std::fs::read_to_string("/proc/net/tcp")?;
+        let endpoint = format!("0100007F:{port:04X}");
+        let inode = connections
+            .lines()
+            .filter_map(|line| {
+                let fields: Vec<_> = line.split_whitespace().collect();
+                (fields.get(2) == Some(&endpoint.as_str()))
+                    .then(|| fields.get(9).copied())
+                    .flatten()
+            })
+            .next()
+            .expect("input TCP connection missing");
+        format!("socket:[{inode}]")
+    };
+    let join = || async {
+        bus.stop_and_join().await;
+        #[cfg(target_os = "linux")]
+        for fd in std::fs::read_dir("/proc/self/fd").expect("read process descriptors") {
+            if let Ok(target) = std::fs::read_link(fd.expect("descriptor entry").path()) {
+                assert_ne!(target.to_string_lossy(), input_socket);
+            }
+        }
+    };
+    let drain = tokio::spawn(drain_frames(stream));
+    tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::join!(join(), join());
+    })
+    .await?;
+    tokio::time::timeout(Duration::from_secs(1), closed_rx).await??;
+    tokio::time::timeout(Duration::from_secs(1), drain).await???;
+    peer.join().expect("input peer panicked")?;
+    Ok(())
+}
+
 /// Two real MP4 outputs reuse one external encoder, replace the input audio,
 /// keep video stream-copy, and finish with the finite input.
 #[tokio::test]
@@ -113,20 +205,21 @@ async fn shared_program_audio_reaches_multiple_file_outputs() -> anyhow::Result<
         assert!(decoded.status.success(), "audio decode failed");
         let samples: Vec<f64> = decoded
             .stdout
-            .chunks_exact(8)
-            .map(|b| f64::from_le_bytes(b.try_into().unwrap()))
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|b| f64::from_le_bytes(*b))
             .collect();
         assert!(samples.len() >= 48_000, "not enough real decoded audio");
         for (ch, own, other) in [(0, 1000.0, 1500.0), (1, 1500.0, 1000.0)] {
             let power = |freq: f64| -> f64 {
-                let (re, im) =
-                    samples
-                        .chunks_exact(2)
-                        .enumerate()
-                        .fold((0.0, 0.0), |(re, im), (i, v)| {
-                            let phase = 2.0 * std::f64::consts::PI * freq * i as f64 / 48000.0;
-                            (re + v[ch] * phase.cos(), im + v[ch] * phase.sin())
-                        });
+                let (re, im) = samples.as_chunks::<2>().0.iter().enumerate().fold(
+                    (0.0, 0.0),
+                    |(re, im), (i, v)| {
+                        let phase = 2.0 * std::f64::consts::PI * freq * i as f64 / 48000.0;
+                        (re + v[ch] * phase.cos(), im + v[ch] * phase.sin())
+                    },
+                );
                 re.hypot(im)
             };
             assert!(
