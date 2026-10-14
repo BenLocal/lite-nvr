@@ -72,7 +72,7 @@ Alpine 的 musl 与 GNU ABI 不同；改 Rust target 不能转换已有 glibc �
 
 ## 使用 Rockchip FFmpeg
 
-Rockchip 包已在编译期使用 RK FFmpeg 的头文件与共享库，启用 `nvr/rockchip` → `ffmpeg-bus/rockchip`，无需再替换包内的 FFmpeg。下载脚本默认使用 2026-10-09 验证的 8.1 shared RK 资产；如 release 文件名变化，在 `.env` 设置 `RK_FFMPEG_URL`。
+Rockchip 包已在编译期使用 RK FFmpeg 的头文件与共享库，启用 `nvr/rockchip` → `ffmpeg-bus/rockchip`，无需再替换包内的 FFmpeg。下载脚本使用 8.1 shared RK 资产，并核对 release 的 `checksums.sha256`；同名 `latest` 资产更新时会刷新 SDK 缓存，下载或校验失败时保留原 SDK。如 release 文件名变化，在 `.env` 设置 `RK_FFMPEG_URL`；固定资产校验和或镜像不提供校验清单时可设置 `RK_FFMPEG_SHA256`。
 
 ```bash
 export LD_LIBRARY_PATH="$PWD/lib:$PWD/ffmpeg/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
