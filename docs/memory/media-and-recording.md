@@ -104,3 +104,7 @@
 - 2026-10-13：用户确认拓扑底部的音频来源详情只展示混音总线路径，删除重复的「输入原音频 → 已禁用」行；原音频禁用状态仍在输入节点标注。
 
 - 2026-10-14：`5625ad2` 安装包在三路硬件混音测试中均报 `input format not found: alsa`，节目和设备节目音轨解码后全为零 → 缓存的 RK FFmpeg 8.1 SDK（2026-10-05 产物）没有 ALSA 输入/输出注册，系统 `arecord` 可录音不代表 NVR 的 FFmpeg 支持 ALSA → 音频包交付前须检查包内 `ffmpeg -devices` 的 ALSA 支持并实测采集；总线启动成功、AAC 48kHz 双声道轨就绪及设置保存成功均不能作为有声验收。该次设备配置、临时混音总线、PGA 路由和测试输出均已恢复，证据在本地忽略目录 `third_party/rockchip-e2e/audio-three-20261014/summary.json`。
+- 2026-10-14：官方 RK SDK `autobuild-2026-10-14-07-28` 启用 ALSA 后，本次核对 FFmpeg 动态库版本一致、glibc 要求不超过主机版本，在 20 主机保留 NVR 二进制并成功替换 SDK；实际三路采集及混音均有声，音量 100%→50% 下降 6.03 dB、全静音为数字零，设备节目音轨为有声 AAC 48kHz 双声道。端子默认 Differential 路由仍并入左声道，临时 Line 2L/2R 下立体声和交换左右通过，测试后恢复原路由；设备切换节目音轨曾遇 V4L2 busy，原样重开一次后通过。证据：`third_party/rockchip-e2e/alsa-sdk-20261014/summary.json`。
+- 2026-10-14：20 主机切换设备节目音轨时报 busy，日志中旧 reader 取消晚于新 Pipe 启动，重开恢复 → manager 虽等待外层 Pipe，修复前 `Bus::spawn` 未保存后台任务句柄，`Bus::stop` 和 `AvInputTask::Drop` 只取消、不等待资源释放，关停链存在释放竞态；本次 EBUSY 具体来自哪个 V4L2 系统调用仍待插桩确认 → 修复应等待 Bus 和 reader 真正退出后再开启替代管线，不以增加固定 sleep 掩盖问题。
+
+- 2026-10-14：V4L2 切换设备/节目音轨的旧版对照 8 次中 4 次报 busy → Bus 保留可供多个调用者等待的退出结果，关停和 RemoveInput 先取消全部 reader/decoder/encoder，再 join；Pipe 的全部退出路径等待 Bus 释放资源 → 20 主机新版两路 HDMI 共 20 次切换全部恢复实际视频包输出，节目音轨为 48 kHz，约 0.36～0.59 秒完成且日志无 busy；设备、混音和节目配置已恢复，回归测试检查真实输入 socket 在每个 join 调用返回时已关闭。证据：`third_party/rockchip-e2e/v4l2-switch-20261014/summary.json`。
