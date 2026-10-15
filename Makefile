@@ -256,5 +256,6 @@ rockchip-e2e-check:
 	python3 -m ruff check e2e/rockchip
 	python3 -m ruff format --check e2e/rockchip
 	shellcheck e2e/rockchip/run.sh e2e/rockchip/board/*.sh
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s e2e/rockchip -p '*_test.py'
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s e2e/rockchip/host -p '*_test.py'
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s e2e/rockchip/lib -p '*_test.py'

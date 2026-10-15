@@ -7,6 +7,7 @@ select = ["E4", "E7", "E9", "F", "I", "UP"]
 [lint.per-file-ignores]
 # The entry point adds its host/lib directories before importing local modules.
 "run.py" = ["E402"]
+"live.py" = ["E402"]
 
 [format]
 quote-style = "single"

@@ -42,6 +42,18 @@ python3 -m playwright install chromium
 
 ## 配置
 
+### 测试已运行的实例
+
+板端已经部署且正在采集时，可用 `live.py` 复用 API / 媒体断言，无需重新构建、部署或停止现有实例。沿用上面的 SSH、API 账号、RTSP 端口和 Playwright 环境变量，明确提供当前安装目录：
+
+```bash
+python3 e2e/rockchip/live.py --install-dir <board-install-dir> --group all
+```
+
+默认 `--group api`；`media` 包含真实解码、录像和浏览器跨段播放。测试会新建独立命名的设备、合成器和板端证据目录，结束后删除本轮设备与合成器，并校验原有设备配置、进程 PID 和二进制摘要未变。测试录像与证据目录保留。`runtime.json` 记录实际运行二进制 SHA-256；报告中的 commit 表示测试代码版本，不能用来证明现有实例由该源码构建。
+
+此入口主动禁用 HDMI/V4L2 有信号及无信号 fixture，避免争用现有采集；普通运行也跳过需要变异构建的 T1.9。硬件全量和故障注入继续使用 `run.py` 的独立部署流程。
+
 | 环境变量 | 默认 / 用途 |
 |---|---|
 | `RK_HOST`, `RK_USER` | 必填，不在代码中存板端地址/认证 |
@@ -137,6 +149,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 e2e/rockchip/lib/lifecycle_report_test.py
 音频转码用例用 FFmpeg `-copyts` 保留输入时间戳，单独映射视频并以 `setpts=PTS-STARTPTS` 从首帧计时解码 10 秒、至少 200 帧；`-vsync 0` 不补帧。音频另用 ffprobe 检查 codec、采样率和真实解码帧，保存 `audio-<codec>.json`。采样时间戳的注意事项见 [媒体踩坑记录](../../docs/memory/media-and-recording.md)。
 
 ## 真机验收记录
+
+2026-10-15，20 主机运行中实例的 `live.py --group all` 回归：**20 PASS / 0 FAIL / 3 SKIP**，证据在本机 `third_party/rockchip-e2e/live-20261015T034901Z/`。覆盖 API、H.264/H.265、缩放、编码透传、FLV/HLS、真实录像和浏览器两种跨段播放、合成、检测配置保留、AAC/Opus 转码。跳过的是受控故障注入 T1.9、占用中采集节点的 T2.6，以及未提供无信号 fixture 的 T2.7；本轮不声称新增硬件全量验收。三路现有流另行只读解码，两秒分别为 121/121/41 帧，均无解码错误；结果在 `existing-streams.json`。原有三设备配置、进程 PID=14962、二进制 SHA-256 与 boot_id 均保持不变，测试 fixture 已清理。运行二进制摘要为 `42f78ef73bd3437bf35e9bf95beab35f4a801cf0381a29fb0eb145c7c7b5ab53`，与本地 Rockchip 包内二进制一致；这不替代源码构建证据。本轮未发现新问题；已有 [ZLM 生命周期崩溃 #2988](http://172.31.169.114:3456/tasks/2988) 仍等待上游修复，已指派给 benshi3，此串行回归不能证明该并发问题已修复。
 
 2026-10-12 最终全量回归（HEAD `9493697`，包含本轮工作区修复，具体源码摘要在 `build.json`）：**33 PASS / 0 FAIL / 1 SKIP**，本机证据 `third_party/rockchip-e2e/20261012T072216Z-e028187b/report.json`。部署/API、全部媒体用例、真实录像及浏览器跨段、HDMI 回环颜色/模式/帧率、双输出关闭隔离和 1/2/4 路资源观察均通过；无板端重启，清理通过。唯一 SKIP 为普通运行未注入回滚故障的 T1.9，独立配对验证记录见上文。AAC 视频 228 帧 / 32kHz 音频 313 帧，Opus 视频 242 帧 / 48kHz 音频 500 帧，视频门槛仍为 10 秒至少 200 帧。
 
