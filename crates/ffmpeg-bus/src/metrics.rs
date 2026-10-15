@@ -162,6 +162,8 @@ pub struct CodecMetrics {
     pub codec: String,
     pub hardware: bool,
     pub running: bool,
+    /// A video decoder decoding keyframes alone (no subscriber needs every frame).
+    pub key_frames_only: bool,
     pub traffic: TrafficMetrics,
 }
 #[derive(Clone, Default)]

@@ -43,10 +43,80 @@ fn send_frame_backpressure(
     let _ = sender.send(msg);
 }
 
+/// What a subscriber uses decoded video for. The shared decoder derives its
+/// mode from these: any `Full` subscriber means full decoding; otherwise only
+/// keyframes are decoded. Audio decoders ignore it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameDemand {
+    /// Pictures only (snapshot, detection): keyframes suffice when nothing
+    /// else needs the whole stream.
+    Image,
+    /// Every frame, e.g. to re-encode with different video parameters.
+    Full,
+}
+
 /// One consumer of a decoder's output, with its own channel and drop policy.
 struct FrameSubscriber {
     tx: RawFrameSender,
     lossless: bool,
+    demand: FrameDemand,
+}
+
+/// Decides which video packets reach the decoder. Without a `Full` subscriber
+/// only keyframes pass. Switching to full after packets were skipped waits for
+/// the next keyframe, since the skipped packets hold reference pictures; with
+/// nothing skipped, every packet passes exactly as before.
+#[derive(Default)]
+pub(crate) struct DemandGate {
+    skipped: bool,
+}
+
+impl DemandGate {
+    pub(crate) fn admit(&mut self, is_key: bool, wants_full: bool) -> bool {
+        if is_key {
+            self.skipped = false;
+            return true;
+        }
+        if !wants_full {
+            self.skipped = true;
+        }
+        !self.skipped
+    }
+}
+
+/// Whether every packet of this video codec is a whole picture, so decoding
+/// "keyframes only" would skip nothing useful (and their packets may carry no
+/// key flag at all, e.g. lavfi's wrapped frames).
+pub(crate) fn intra_only(codec: ffmpeg_next::codec::Id) -> bool {
+    if matches!(
+        codec,
+        ffmpeg_next::codec::Id::WRAPPED_AVFRAME | ffmpeg_next::codec::Id::RAWVIDEO
+    ) {
+        return true;
+    }
+    // SAFETY: avcodec_descriptor_get takes any codec id and returns either
+    // null or a pointer to a static descriptor that lives for the process, so
+    // reading `props` after the null check is sound.
+    let props = unsafe {
+        let descriptor = ffmpeg_next::ffi::avcodec_descriptor_get(codec.into());
+        if descriptor.is_null() {
+            return false;
+        }
+        (*descriptor).props
+    };
+    props & ffmpeg_next::ffi::AV_CODEC_PROP_INTRA_ONLY as i32 != 0
+}
+
+/// Relay → decode loop message.
+enum DecodeCmd {
+    /// `drain`: keyframes are decoded alone, so output this packet's picture
+    /// right away (drain, then reset) instead of holding it back until the
+    /// next packet, which is a whole GOP later.
+    Packet {
+        packet: RawPacket,
+        drain: bool,
+    },
+    Eof,
 }
 
 /// Fan-out state shared between [`DecoderTask::subscribe`] and the decode loop.
@@ -70,13 +140,17 @@ pub(crate) fn closed_receiver() -> RawFrameReceiver {
 
 impl FrameSubscribers {
     /// `None` once the decoder has ended (see [`Self::close`]).
-    fn add(&self, lossless: bool) -> Option<RawFrameReceiver> {
+    fn add(&self, lossless: bool, demand: FrameDemand) -> Option<RawFrameReceiver> {
         let mut state = self.lock();
         if state.closed {
             return None;
         }
         let (tx, rx) = tokio::sync::broadcast::channel(FRAME_CHAN_CAP);
-        state.subs.push(FrameSubscriber { tx, lossless });
+        state.subs.push(FrameSubscriber {
+            tx,
+            lossless,
+            demand,
+        });
         state.had_any = true;
         Some(rx)
     }
@@ -88,13 +162,7 @@ impl FrameSubscribers {
     fn publish(&self, cancel: &CancellationToken, auto_stop: bool, msg: RawFrameCmd) {
         let targets: Vec<(RawFrameSender, bool)> = {
             let mut state = self.lock();
-            state.subs.retain(|s| s.tx.receiver_count() > 0);
-            if auto_stop && state.had_any && state.subs.is_empty() {
-                // Checked and closed under the lock, so a concurrent
-                // subscribe either lands before (and keeps us alive) or sees
-                // `closed` and is refused.
-                state.closed = true;
-                cancel.cancel();
+            if auto_stop && Self::stop_if_unused(&mut state, cancel) {
                 return;
             }
             state
@@ -108,6 +176,26 @@ impl FrameSubscribers {
         }
     }
 
+    /// Drop gone subscribers; once the last one has left, close the fan-out
+    /// and cancel the decoder. Checked and closed under the lock, so a
+    /// concurrent subscribe either lands before (and keeps us alive) or sees
+    /// `closed` and is refused.
+    fn stop_if_unused(state: &mut SubscriberState, cancel: &CancellationToken) -> bool {
+        state.subs.retain(|s| s.tx.receiver_count() > 0);
+        if state.had_any && state.subs.is_empty() {
+            state.closed = true;
+            cancel.cancel();
+            return true;
+        }
+        false
+    }
+
+    /// Like the check in [`Self::publish`], for the packet relay: decoding
+    /// keyframes alone, frames may be seconds apart.
+    fn stop_when_unused(&self, cancel: &CancellationToken) -> bool {
+        Self::stop_if_unused(&mut self.lock(), cancel)
+    }
+
     /// Refuse new subscriptions and drop the senders, so existing receivers
     /// see `Closed` once they have drained (after the final EOF).
     fn close(&self) {
@@ -118,6 +206,14 @@ impl FrameSubscribers {
 
     fn is_closed(&self) -> bool {
         self.lock().closed
+    }
+
+    /// Whether a live subscriber needs every frame.
+    fn wants_full(&self) -> bool {
+        self.lock()
+            .subs
+            .iter()
+            .any(|s| s.demand == FrameDemand::Full && s.tx.receiver_count() > 0)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, SubscriberState> {
@@ -166,6 +262,14 @@ impl DecoderType {
             }
         }
         Ok(())
+    }
+
+    /// Reset after a drain so the decoder accepts packets again.
+    fn flush(&mut self) {
+        match self {
+            DecoderType::Video(video_decoder) => video_decoder.flush(),
+            DecoderType::Audio(audio_decoder) => audio_decoder.flush(),
+        }
     }
 
     pub fn receive_frame(&mut self) -> anyhow::Result<Option<RawFrame>> {
@@ -406,6 +510,10 @@ impl Decoder {
         self.inner.send_eof()
     }
 
+    fn flush(&mut self) {
+        self.inner.flush();
+    }
+
     pub fn receive_frame(&mut self) -> anyhow::Result<Option<RawFrame>> {
         self.inner.receive_frame()
     }
@@ -505,14 +613,20 @@ impl DecoderTask {
     /// Subscribe to decoded frames. `lossless` subscribers backpressure the
     /// shared decoder; lossy ones drop their own oldest frames when they lag.
     /// On a decoder that has ended, the receiver reports `Closed` at once.
+    /// Such a subscriber counts as [`FrameDemand::Full`].
     pub fn subscribe(&self, lossless: bool) -> RawFrameReceiver {
-        self.try_subscribe(lossless).unwrap_or_else(closed_receiver)
+        self.try_subscribe(lossless, FrameDemand::Full)
+            .unwrap_or_else(closed_receiver)
     }
 
     /// Like [`Self::subscribe`], but `None` if the decoder has ended, so the
     /// caller can start a fresh one.
-    pub(crate) fn try_subscribe(&self, lossless: bool) -> Option<RawFrameReceiver> {
-        self.subscribers.add(lossless)
+    pub(crate) fn try_subscribe(
+        &self,
+        lossless: bool,
+        demand: FrameDemand,
+    ) -> Option<RawFrameReceiver> {
+        self.subscribers.add(lossless, demand)
     }
 
     /// Still decoding and accepting subscribers.
@@ -521,7 +635,10 @@ impl DecoderTask {
     }
 
     pub(crate) fn metrics(&self) -> crate::metrics::CodecMetrics {
-        self.probe.snapshot(self.is_running())
+        let mut metrics = self.probe.snapshot(self.is_running());
+        metrics.key_frames_only =
+            metrics.running && metrics.kind == "video" && !self.subscribers.wants_full();
+        metrics
     }
 
     pub fn stop(&self) {
@@ -546,13 +663,16 @@ impl DecoderTask {
         let probe = self.probe.clone();
         let cancel_clone = self.cancel.clone();
         let subscribers = self.subscribers.clone();
+        let demand = self.subscribers.clone();
         let auto_stop = self.auto_stop;
+        let gate_video = decoder.stream.is_video() && !intra_only(decoder.stream.parameters().id());
         /// Bounded queue: when decoder is slower than producer, back-pressure instead of unbounded growth (OOM).
         const PACKET_QUEUE_BOUND: usize = 16;
         let task = tokio::spawn(async move {
             let (packet_tx, packet_rx) =
-                std::sync::mpsc::sync_channel::<RawPacketCmd>(PACKET_QUEUE_BOUND);
+                std::sync::mpsc::sync_channel::<DecodeCmd>(PACKET_QUEUE_BOUND);
             let current_stream_index = decoder.stream_index();
+            let mut gate = DemandGate::default();
 
             let handle_cancel = cancel_clone.clone();
             let handle = tokio::task::spawn_blocking(move || {
@@ -576,6 +696,13 @@ impl DecoderTask {
                                 if packet.index() != current_stream_index {
                                     continue;
                                 }
+                                if auto_stop && demand.stop_when_unused(&cancel_clone) {
+                                    break;
+                                }
+                                let key_frames_only = gate_video && !demand.wants_full();
+                                if gate_video && !gate.admit(packet.is_key(), !key_frames_only) {
+                                    continue;
+                                }
                                 // Async backpressure (never block this worker): if
                                 // the decode loop is paused applying its own
                                 // backpressure, yield so sibling tasks (e.g. the
@@ -583,7 +710,10 @@ impl DecoderTask {
                                 if Self::packet_send_backpressure(
                                     &packet_tx,
                                     &cancel_clone,
-                                    RawPacketCmd::Data(packet),
+                                    DecodeCmd::Packet {
+                                        packet,
+                                        drain: key_frames_only,
+                                    },
                                 )
                                 .await
                                 {
@@ -594,7 +724,7 @@ impl DecoderTask {
                                 let _ = Self::packet_send_backpressure(
                                     &packet_tx,
                                     &cancel_clone,
-                                    RawPacketCmd::EOF,
+                                    DecodeCmd::Eof,
                                 )
                                 .await;
                                 break;
@@ -623,9 +753,9 @@ impl DecoderTask {
     /// worker stays free) for room instead of blocking the executor thread.
     /// Returns true if the decode loop's receiver has gone away.
     async fn packet_send_backpressure(
-        tx: &std::sync::mpsc::SyncSender<RawPacketCmd>,
+        tx: &std::sync::mpsc::SyncSender<DecodeCmd>,
         cancel: &CancellationToken,
-        msg: RawPacketCmd,
+        msg: DecodeCmd,
     ) -> bool {
         let mut pending = msg;
         loop {
@@ -646,7 +776,7 @@ impl DecoderTask {
     fn decoder_loop(
         mut decoder: Decoder,
         cancel: CancellationToken,
-        packet_rx: std::sync::mpsc::Receiver<RawPacketCmd>,
+        packet_rx: std::sync::mpsc::Receiver<DecodeCmd>,
         subscribers: FrameSubscribers,
         auto_stop: bool,
         probe: crate::metrics::CodecProbe,
@@ -656,10 +786,11 @@ impl DecoderTask {
                 break;
             }
             let mut eof = false;
+            let mut flush = false;
             match packet_rx.recv_timeout(Duration::from_millis(1)) {
                 Ok(packet) => {
                     match packet {
-                        RawPacketCmd::Data(packet) => {
+                        DecodeCmd::Packet { packet, drain } => {
                             let sent = decoder.send_packet(packet);
                             probe.update(&decoder.stream, &decoder.codec_name, decoder.is_hw);
                             if let Err(e) = sent {
@@ -670,8 +801,14 @@ impl DecoderTask {
                                 );
                                 continue;
                             }
+                            if drain {
+                                match decoder.send_eof() {
+                                    Ok(()) => flush = true,
+                                    Err(e) => log::warn!("keyframe drain failed: {e:#}"),
+                                }
+                            }
                         }
-                        RawPacketCmd::EOF => {
+                        DecodeCmd::Eof => {
                             if let Err(e) = decoder.send_eof() {
                                 log::error!(
                                     "decoder send eof error: {}\nbacktrace:\n{}",
@@ -700,6 +837,9 @@ impl DecoderTask {
                                 break 'outer;
                             }
                         }
+                    }
+                    if flush {
+                        decoder.flush();
                     }
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (),

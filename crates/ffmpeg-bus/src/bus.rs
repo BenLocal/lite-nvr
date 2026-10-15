@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use ffmpeg_next::Dictionary;
 
 use crate::{
-    decoder::{Decoder, DecoderTask},
+    decoder::{Decoder, DecoderTask, FrameDemand},
     encoder::{AudioSettings, Encoder, EncoderTask, Settings, pixel_format_for_libx264},
     frame::{RawFrameCmd, VideoFrame, packet_to_raw_video_frame},
     input::{AvInput, AvInputTask},
@@ -556,8 +556,8 @@ impl Bus {
                 let r = Self::subscribe_audio_internal(state).await;
                 let _ = result.send(r);
             }
-            BusCommand::SubscribeVideo { result } => {
-                let r = Self::subscribe_video_internal(state).await;
+            BusCommand::SubscribeVideo { demand, result } => {
+                let r = Self::subscribe_video_internal(state, demand).await;
                 let _ = result.send(r);
             }
         }
@@ -755,6 +755,7 @@ impl Bus {
         state: &mut BusState,
         stream_index: usize,
         lossless: bool,
+        demand: FrameDemand,
     ) -> anyhow::Result<crate::frame::RawFrameReceiver> {
         for _ in 0..2 {
             Self::start_decoder_task(state, stream_index).await?;
@@ -762,7 +763,7 @@ impl Bus {
                 .decoder_tasks
                 .get(&stream_index)
                 .ok_or(anyhow::anyhow!("decoder task not found"))?;
-            if let Some(rx) = task.try_subscribe(lossless) {
+            if let Some(rx) = task.try_subscribe(lossless, demand) {
                 return Ok(rx);
             }
             if !Self::input_running(state) {
@@ -1517,26 +1518,27 @@ impl Bus {
             .find(|s| s.index() == stream_index)
             .ok_or(anyhow::anyhow!("stream not found"))?;
         let av = av.clone();
-        let stream =
-            BroadcastStream::new(Self::subscribe_decoder(state, stream_index, false).await?)
-                .filter_map(|cmd| async move {
-                    match cmd {
-                        Ok(RawFrameCmd::Data(frame)) => match VideoFrame::try_from(frame) {
-                            Ok(frame) => Some(Some(frame)),
-                            Err(e) => {
-                                log::debug!("raw output: skip unconvertible frame: {:#}", e);
-                                None
-                            }
-                        },
-                        Ok(RawFrameCmd::EOF) => Some(None),
-                        // A lossy subscriber that falls behind just loses its oldest
-                        // frames; that is not end of stream.
-                        Err(e) => {
-                            log::debug!("raw output: {}", e);
-                            None
-                        }
+        let stream = BroadcastStream::new(
+            Self::subscribe_decoder(state, stream_index, false, FrameDemand::Full).await?,
+        )
+        .filter_map(|cmd| async move {
+            match cmd {
+                Ok(RawFrameCmd::Data(frame)) => match VideoFrame::try_from(frame) {
+                    Ok(frame) => Some(Some(frame)),
+                    Err(e) => {
+                        log::debug!("raw output: skip unconvertible frame: {:#}", e);
+                        None
                     }
-                });
+                },
+                Ok(RawFrameCmd::EOF) => Some(None),
+                // A lossy subscriber that falls behind just loses its oldest
+                // frames; that is not end of stream.
+                Err(e) => {
+                    log::debug!("raw output: {}", e);
+                    None
+                }
+            }
+        });
 
         Ok((av.clone(), Box::pin(stream)))
     }
@@ -1555,7 +1557,8 @@ impl Bus {
             .find(|s| s.is_audio())
             .ok_or_else(|| anyhow::anyhow!("pipe has no audio stream"))?
             .index();
-        let receiver = Self::subscribe_decoder(state, audio_index, false).await?;
+        let receiver =
+            Self::subscribe_decoder(state, audio_index, false, FrameDemand::Full).await?;
         Self::auto_start_input(state).await?;
         Ok(receiver)
     }
@@ -1564,19 +1567,81 @@ impl Bus {
     /// the decoded-video broadcast. Mirrors `subscribe_audio_internal`.
     async fn subscribe_video_internal(
         state: &mut BusState,
+        demand: FrameDemand,
     ) -> anyhow::Result<crate::frame::RawFrameReceiver> {
         if state.input_task.is_none() && state.input_config.is_some() {
             Self::prepare_input_task(state).await?;
         }
-        let video_index = state
+        let video = state
             .input_streams
             .iter()
             .find(|s| s.is_video())
-            .ok_or_else(|| anyhow::anyhow!("pipe has no video stream"))?
-            .index();
-        let receiver = Self::subscribe_decoder(state, video_index, false).await?;
+            .ok_or_else(|| anyhow::anyhow!("pipe has no video stream"))?;
+        let video_index = video.index();
+        let receiver = if video.parameters().id() == ffmpeg_next::codec::Id::RAWVIDEO {
+            Self::subscribe_raw_video(state, video_index, demand)?
+        } else {
+            Self::subscribe_decoder(state, video_index, false, demand).await?
+        };
         Self::auto_start_input(state).await?;
         Ok(receiver)
+    }
+
+    /// Raw video (e.g. a V4L2 capture) needs no decoder: convert the input
+    /// packets to frames for this subscriber. An [`FrameDemand::Image`]
+    /// subscriber only gets a new frame once it has taken the previous one, so
+    /// a snapshot does not pay for copying every picture of a 60 FPS source.
+    /// The relay ends with the input or once the subscriber is gone.
+    fn subscribe_raw_video(
+        state: &BusState,
+        stream_index: usize,
+        demand: FrameDemand,
+    ) -> anyhow::Result<crate::frame::RawFrameReceiver> {
+        let stream = state
+            .input_streams
+            .iter()
+            .find(|s| s.index() == stream_index)
+            .ok_or_else(|| anyhow::anyhow!("stream not found"))?;
+        let (width, height, pixel_format) =
+            Self::raw_video_params_from_parameters(stream.parameters());
+        let mut packets = state
+            .input_task
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("input task not found"))?
+            .subscribe();
+        /// Same per-subscriber ring size as a decoder's (`FRAME_CHAN_CAP`).
+        const RAW_FRAME_CHAN_CAP: usize = 16;
+        let (frame_tx, frame_rx) = tokio::sync::broadcast::channel(RAW_FRAME_CHAN_CAP);
+        tokio::spawn(async move {
+            loop {
+                let msg = match packets.recv().await {
+                    Ok(RawPacketCmd::Data(packet)) if packet.index() == stream_index => {
+                        if frame_tx.receiver_count() == 0 {
+                            break;
+                        }
+                        if demand == FrameDemand::Image && !frame_tx.is_empty() {
+                            continue;
+                        }
+                        match packet_to_raw_video_frame(packet, width, height, pixel_format) {
+                            Ok(frame) => RawFrameCmd::Data(frame),
+                            Err(e) => {
+                                log::debug!("raw video subscriber: skip packet: {e:#}");
+                                continue;
+                            }
+                        }
+                    }
+                    Ok(RawPacketCmd::Data(_))
+                    | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Ok(RawPacketCmd::EOF) => RawFrameCmd::EOF,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                let eof = matches!(msg, RawFrameCmd::EOF);
+                if frame_tx.send(msg).is_err() || eof {
+                    break;
+                }
+            }
+        });
+        Ok(frame_rx)
     }
 
     async fn add_input_internal(
@@ -1742,7 +1807,8 @@ impl Bus {
         if input_stream.is_audio() {
             let encoder_task = EncoderTask::new_auto_stop();
             let encoder_receiver =
-                Self::subscribe_decoder(state, input_stream_index, lossless).await?;
+                Self::subscribe_decoder(state, input_stream_index, lossless, FrameDemand::Full)
+                    .await?;
             let audio_settings = Self::audio_settings_from_config(encode);
             let stream = input_stream.clone();
             let encoder =
@@ -1827,7 +1893,8 @@ impl Bus {
             encoder_task.start(encoder, frame_rx, lossless).await;
         } else {
             let encoder_receiver =
-                Self::subscribe_decoder(state, input_stream_index, lossless).await?;
+                Self::subscribe_decoder(state, input_stream_index, lossless, FrameDemand::Full)
+                    .await?;
             // Decoded path: decoder outputs RawFrame; encoder needs correct size/format.
             // For WRAPPED_AVFRAME (e.g. lavfi testsrc), take the source size and
             // format from the stream params.
@@ -2059,9 +2126,19 @@ impl Bus {
     /// Subscribe to this pipe's decoded-video broadcast, starting the video
     /// decoder if needed. The receiver yields `RawFrameCmd` (filter `Video`).
     pub async fn subscribe_video(&self) -> anyhow::Result<crate::frame::RawFrameReceiver> {
+        self.subscribe_video_with(FrameDemand::Full).await
+    }
+
+    /// Like [`Self::subscribe_video`], declaring what the frames are for: with
+    /// only [`FrameDemand::Image`] subscribers the decoder decodes keyframes
+    /// alone; a [`FrameDemand::Full`] one switches it to every frame.
+    pub async fn subscribe_video_with(
+        &self,
+        demand: FrameDemand,
+    ) -> anyhow::Result<crate::frame::RawFrameReceiver> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.tx
-            .send(BusCommand::SubscribeVideo { result: tx })
+            .send(BusCommand::SubscribeVideo { demand, result: tx })
             .await?;
         rx.await?
     }
@@ -2193,6 +2270,7 @@ pub enum BusCommand {
     /// Subscribe to the pipe's decoded video broadcast (ensures the video
     /// decoder task is running). Receiver yields `RawFrame::Video`.
     SubscribeVideo {
+        demand: FrameDemand,
         result: tokio::sync::oneshot::Sender<anyhow::Result<crate::frame::RawFrameReceiver>>,
     },
 }

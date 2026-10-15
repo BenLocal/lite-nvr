@@ -4,6 +4,7 @@ use futures::StreamExt;
 use tokio::io::AsyncWriteExt as _;
 
 use crate::bus::{Bus, EncodeConfig, InputConfig, OutputAvType, OutputConfig, OutputDest};
+use crate::decoder::FrameDemand;
 use crate::encoder::{AudioSettings, Encoder, Settings};
 use crate::input::AvInput;
 use crate::metadata::probe;
@@ -2510,4 +2511,116 @@ fn test_output_limits_force_encoding_and_only_downscale() {
     assert_eq!(Bus::encoder_size(Some(&cfg), 640, 360), (640, 360));
     assert_eq!(Bus::encoder_size(Some(&cfg), 1920, 1080), (1280, 720));
     assert_eq!(Bus::encoder_size(Some(&cfg), 1920, 1200), (1152, 720));
+}
+
+/// Count decoded video frames until end of stream.
+async fn count_video_frames(mut rx: crate::frame::RawFrameReceiver) -> usize {
+    use tokio::sync::broadcast::error::RecvError;
+    let mut frames = 0;
+    loop {
+        match rx.recv().await {
+            Ok(crate::frame::RawFrameCmd::Data(crate::frame::RawFrame::Video(_))) => frames += 1,
+            Ok(crate::frame::RawFrameCmd::Data(_)) | Err(RecvError::Lagged(_)) => {}
+            Ok(crate::frame::RawFrameCmd::EOF) | Err(RecvError::Closed) => return frames,
+        }
+    }
+}
+
+async fn deferred_test_bus(name: &str) -> anyhow::Result<Option<Bus>> {
+    let input_path = test_mp4_path();
+    if !input_path.exists() {
+        return Ok(None);
+    }
+    let bus = Bus::new_deferred(name);
+    bus.add_input(
+        InputConfig::File {
+            path: input_path.to_string_lossy().into_owned(),
+        },
+        None,
+    )
+    .await?;
+    Ok(Some(bus))
+}
+
+fn count_key_video_packets(path: &Path) -> anyhow::Result<usize> {
+    let mut input = ffmpeg_next::format::input(path)?;
+    let video = input
+        .streams()
+        .best(ffmpeg_next::media::Type::Video)
+        .ok_or_else(|| anyhow::anyhow!("no video stream"))?
+        .index();
+    Ok(input
+        .packets()
+        .filter(|(stream, packet)| stream.index() == video && packet.is_key())
+        .count())
+}
+
+/// Image-only subscribers make the shared decoder decode keyframes alone:
+/// one frame comes out per source keyframe.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_image_demand_decodes_only_keyframes() -> anyhow::Result<()> {
+    let Some(bus) = deferred_test_bus("image-only").await? else {
+        return Ok(());
+    };
+    let image = bus.subscribe_video_with(FrameDemand::Image).await?;
+    bus.start().await?;
+    let frames = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        count_video_frames(image),
+    )
+    .await?;
+    let keys = count_key_video_packets(&test_mp4_path())?;
+    assert!(keys > 0);
+    assert_eq!(frames, keys, "only the keyframes are decoded");
+    let metrics = bus.metrics().await?;
+    assert_eq!(metrics.decoders.len(), 1);
+    Ok(())
+}
+
+/// A Full subscriber switches the same decoder to full decoding; Image
+/// subscribers then get every decoded frame instead of keyframes only.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_full_demand_shares_decoder_with_image() -> anyhow::Result<()> {
+    let Some(bus) = deferred_test_bus("image-full").await? else {
+        return Ok(());
+    };
+    let image = bus.subscribe_video_with(FrameDemand::Image).await?;
+    let full = bus.subscribe_video_with(FrameDemand::Full).await?;
+    let metrics = bus.metrics().await?;
+    assert_eq!(metrics.decoders.len(), 1, "one decoder serves both demands");
+    bus.start().await?;
+    let timeout = std::time::Duration::from_secs(10);
+    let (image, full) = tokio::join!(
+        tokio::time::timeout(timeout, count_video_frames(image)),
+        tokio::time::timeout(timeout, count_video_frames(full)),
+    );
+    let (image, full) = (image?, full?);
+    let keys = count_key_video_packets(&test_mp4_path())?;
+    assert!(
+        full > keys,
+        "full decode yields more than keyframes, got {full}"
+    );
+    assert!(
+        image > keys,
+        "image subscriber takes the decoded frames, got {image}"
+    );
+    Ok(())
+}
+
+/// Raw video (e.g. a V4L2 HDMI capture) needs no decoder: video subscribers
+/// get frames converted straight from the input packets.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_rawvideo_input_serves_video_subscribers() -> anyhow::Result<()> {
+    let yuv = write_raw_yuv("input_64x48_subscribe.yuv", 64, 48, 20);
+    let bus = raw_yuv_bus(&yuv).await?;
+    let mut image = bus.subscribe_video_with(FrameDemand::Image).await?;
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(10), image.recv()).await??;
+    let crate::frame::RawFrameCmd::Data(crate::frame::RawFrame::Video(frame)) = frame else {
+        anyhow::bail!("expected a video frame");
+    };
+    assert_eq!((frame.width(), frame.height()), (64, 48));
+    assert_eq!(frame.format(), ffmpeg_next::format::Pixel::YUV420P);
+    let metrics = bus.metrics().await?;
+    assert!(metrics.decoders.is_empty(), "raw video is never decoded");
+    Ok(())
 }

@@ -208,7 +208,10 @@ async fn test_auto_stop_decoder_stops_without_subscribers() -> anyhow::Result<()
     );
     assert!(!feed.is_finished(), "must stop before the source ends");
     // A late subscriber sees end-of-stream instead of waiting forever.
-    assert!(task.try_subscribe(false).is_none());
+    assert!(
+        task.try_subscribe(false, crate::decoder::FrameDemand::Full)
+            .is_none()
+    );
     let mut late = task.subscribe(false);
     let r = tokio::time::timeout(Duration::from_secs(1), late.recv()).await?;
     assert!(r.is_err(), "late subscriber must see Closed");
@@ -323,5 +326,61 @@ fn sdp_parameter_sets_are_prepended_without_losing_packet_properties() -> anyhow
     assert_eq!(packet.packet().duration(), 30);
     assert_eq!(packet.index(), 2);
     assert!(packet.is_key());
+    Ok(())
+}
+
+#[test]
+fn test_demand_gate_follows_subscriber_demand() {
+    let mut gate = crate::decoder::DemandGate::default();
+    // Full from the start: every packet passes, even before a keyframe.
+    assert!(gate.admit(false, true));
+    // Image-only: keyframes alone reach the decoder.
+    assert!(gate.admit(true, false));
+    assert!(!gate.admit(false, false));
+    // A Full subscriber arrives mid-GOP: wait for the next keyframe.
+    assert!(!gate.admit(false, true), "upgrade must start on a keyframe");
+    assert!(gate.admit(true, true));
+    assert!(gate.admit(false, true), "full decode passes every packet");
+    // Last Full subscriber leaves: back to keyframes at once.
+    assert!(!gate.admit(false, false));
+    assert!(gate.admit(true, false));
+}
+
+#[test]
+fn test_intra_only_codecs_skip_the_keyframe_gate() {
+    use ffmpeg_next::codec::Id;
+    assert!(crate::decoder::intra_only(Id::MJPEG));
+    assert!(crate::decoder::intra_only(Id::WRAPPED_AVFRAME));
+    assert!(!crate::decoder::intra_only(Id::H264));
+    assert!(!crate::decoder::intra_only(Id::HEVC));
+}
+
+/// Decoding keyframes alone, a keyframe's picture must come out without
+/// waiting for the next packet: decoders with reorder delay (B-frames) or
+/// frame threading otherwise hold it back for a whole GOP.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_image_keyframe_is_output_without_next_packet() -> anyhow::Result<()> {
+    let Some((_input, stream, packets)) = video_packets() else {
+        return Ok(());
+    };
+    let key = packets
+        .into_iter()
+        .find(|p| matches!(p, RawPacketCmd::Data(p) if p.is_key()))
+        .ok_or_else(|| anyhow::anyhow!("no keyframe"))?;
+    let (tx, rx) = tokio::sync::broadcast::channel(16);
+    let task = DecoderTask::new_auto_stop();
+    let mut image = task
+        .try_subscribe(false, crate::decoder::FrameDemand::Image)
+        .ok_or_else(|| anyhow::anyhow!("decoder closed"))?;
+    task.start(Decoder::new(&stream)?, rx).await;
+    // Only the keyframe; the source stays open (no EOF to flush the decoder).
+    tx.send(key)
+        .map_err(|_| anyhow::anyhow!("decoder relay gone"))?;
+    let frame = tokio::time::timeout(Duration::from_secs(2), image.recv()).await;
+    assert!(
+        matches!(frame, Ok(Ok(RawFrameCmd::Data(_)))),
+        "keyframe picture held back by the decoder"
+    );
+    drop(tx);
     Ok(())
 }

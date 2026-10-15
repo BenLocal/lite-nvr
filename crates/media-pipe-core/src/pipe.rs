@@ -49,16 +49,26 @@ impl Pipe {
         bus.subscribe_audio().await
     }
 
-    /// Subscribe to this pipe's decoded-video broadcast (for detection). Errors
-    /// if the pipe is not currently started.
+    /// Subscribe to this pipe's decoded-video broadcast as a full-frame
+    /// consumer. Errors if the pipe is not currently started.
     pub async fn subscribe_video(&self) -> anyhow::Result<ffmpeg_bus::frame::RawFrameReceiver> {
+        self.subscribe_video_with(ffmpeg_bus::decoder::FrameDemand::Full)
+            .await
+    }
+
+    /// Subscribe to decoded video, declaring what it is for (see
+    /// [`ffmpeg_bus::decoder::FrameDemand`]). Errors if the pipe is not started.
+    pub async fn subscribe_video_with(
+        &self,
+        demand: ffmpeg_bus::decoder::FrameDemand,
+    ) -> anyhow::Result<ffmpeg_bus::frame::RawFrameReceiver> {
         let bus = self
             .bus
             .lock()
             .unwrap()
             .clone()
             .ok_or_else(|| anyhow::anyhow!("pipe not started"))?;
-        bus.subscribe_video().await
+        bus.subscribe_video_with(demand).await
     }
 
     /// Passive snapshot: never subscribes to a stream or starts a codec.
