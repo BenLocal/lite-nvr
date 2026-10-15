@@ -515,6 +515,30 @@ pub struct Encoder {
 }
 
 impl Encoder {
+    /// Raw video (e.g. a BGR24 or NV12 V4L2 capture) goes to an RKMPP encoder
+    /// in its own format when the encoder accepts it: the conversion then
+    /// happens in hardware instead of a per-frame CPU swscale to `default`
+    /// (the libx264-friendly format). Raw-video frames keep the stream's
+    /// format, so `send_frame` passes them through unconverted.
+    pub(crate) fn input_pixel_format(
+        stream: &AvStream,
+        codec: ffmpeg_next::Codec,
+        default: ffmpeg_next::format::Pixel,
+    ) -> ffmpeg_next::format::Pixel {
+        if !codec.name().ends_with("_rkmpp")
+            || stream.parameters().id() != ffmpeg_next::codec::Id::RAWVIDEO
+        {
+            return default;
+        }
+        let source = crate::decoder::source_pixel_format(stream);
+        let accepted = codec
+            .video()
+            .ok()
+            .and_then(|video| video.formats())
+            .is_some_and(|mut formats| formats.any(|format| format == source));
+        if accepted { source } else { default }
+    }
+
     fn open_video_encoder_with_codec(
         stream: &AvStream,
         codec: ffmpeg_next::Codec,
@@ -525,7 +549,11 @@ impl Encoder {
         let mut encoder = encoder_context.encoder().video()?;
         encoder.set_width(settings.width);
         encoder.set_height(settings.height);
-        encoder.set_format(settings.pixel_format);
+        encoder.set_format(Self::input_pixel_format(
+            stream,
+            codec,
+            settings.pixel_format,
+        ));
         let rate = settings
             .fps
             .map(|fps| Rational(fps as i32, 1))
@@ -1257,7 +1285,9 @@ impl EncoderTask {
                 break;
             }
             let mut eof = false;
-            match rx.recv_timeout(Duration::from_millis(1)) {
+            // The timeout only bounds how long a cancel goes unnoticed: a frame
+            // or a closed relay wakes the loop at once.
+            match rx.recv_timeout(Duration::from_millis(20)) {
                 Ok(frame) => {
                     if auto_stop {
                         // Checked under the subscription lock, so a concurrent

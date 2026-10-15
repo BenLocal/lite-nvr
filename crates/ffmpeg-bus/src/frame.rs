@@ -72,6 +72,9 @@ impl From<ffmpeg_next::frame::Video> for RawVideoFrame {
 
 /// Converts a raw video packet into a RawFrame::Video. Used when input is already raw (e.g. RAWVIDEO)
 /// and needs to be fed to the encoder as frame. Requires stream dimensions and pixel format.
+/// The frame references the packet's (ref-counted) buffer instead of copying a
+/// whole picture per frame; pixel writes go through [`RawVideoFrame::get_mut`],
+/// which copies first while the buffer is still shared.
 pub fn packet_to_raw_video_frame(
     packet: RawPacket,
     width: u32,
@@ -97,37 +100,35 @@ pub fn packet_to_raw_video_frame(
         packet_data.len() >= usize::try_from(required)?,
         "truncated raw video packet"
     );
-    let mut source = [std::ptr::null_mut(); 4];
-    let mut strides = [0; 4];
-    // SAFETY: the source buffer contains the complete, tightly packed image.
-    // fill_arrays only creates pointers; the packet stays borrowed through copy.
-    let ret = unsafe {
-        ffmpeg_next::ffi::av_image_fill_arrays(
-            source.as_mut_ptr(),
-            strides.as_mut_ptr(),
+    let buffer = {
+        use ffmpeg_next::codec::packet::Ref;
+        // SAFETY: reading the buffer field of a live packet.
+        unsafe { (*packet.packet().as_ptr()).buf }
+    };
+    anyhow::ensure!(!buffer.is_null(), "raw video packet is not ref-counted");
+    let mut frame = Video::empty();
+    // SAFETY: `frame` is a fresh, exclusively owned AVFrame. buf[0] takes its
+    // own reference to the packet's buffer, which keeps `packet_data` (inside
+    // that buffer) alive for the frame's lifetime; av_frame_free drops it.
+    // fill_arrays only computes plane pointers/strides into the tightly packed
+    // image, whose full size was checked above.
+    unsafe {
+        let destination = &mut *frame.as_mut_ptr();
+        destination.buf[0] = ffmpeg_next::ffi::av_buffer_ref(buffer);
+        anyhow::ensure!(!destination.buf[0].is_null(), "out of memory");
+        destination.format = ffmpeg_next::ffi::AVPixelFormat::from(pixel_format) as i32;
+        destination.width = width_i;
+        destination.height = height_i;
+        let ret = ffmpeg_next::ffi::av_image_fill_arrays(
+            destination.data.as_mut_ptr(),
+            destination.linesize.as_mut_ptr(),
             packet_data.as_ptr(),
             pixel_format.into(),
             width_i,
             height_i,
             1,
-        )
-    };
-    anyhow::ensure!(ret >= 0, "invalid raw video plane layout");
-    let source = source.map(|p| p.cast_const());
-    let mut frame = Video::new(pixel_format, width, height);
-    // SAFETY: the allocated destination owns all writable planes. Source and
-    // destination have matching formats/dimensions and disjoint valid buffers.
-    unsafe {
-        let destination = &mut *frame.as_mut_ptr();
-        ffmpeg_next::ffi::av_image_copy(
-            destination.data.as_ptr(),
-            destination.linesize.as_ptr(),
-            source.as_ptr(),
-            strides.as_ptr(),
-            pixel_format.into(),
-            width_i,
-            height_i,
         );
+        anyhow::ensure!(ret >= 0, "invalid raw video plane layout");
     }
     frame.set_pts(packet.pts());
     Ok(RawFrame::Video(RawVideoFrame::from(frame)))

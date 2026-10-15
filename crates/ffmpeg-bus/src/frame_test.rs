@@ -129,9 +129,15 @@ fn raw_packet_preserves_all_planes_and_row_padding() {
         let mut packet = ffmpeg_next::codec::packet::Packet::copy(&data);
         packet.set_pts(Some(123));
         let raw = RawPacket::from((packet, Rational(1, 1000)));
+        let packet_pixels = raw.packet().data().unwrap().as_ptr();
         let RawFrame::Video(frame) = packet_to_raw_video_frame(raw, 6, 4, format).unwrap() else {
             panic!("expected video")
         };
+        assert_eq!(
+            frame.as_video().data(0).as_ptr(),
+            packet_pixels,
+            "{format:?}: the frame references the packet's pixels instead of copying them"
+        );
         assert_eq!(frame.pts(), Some(123));
         assert_eq!(frame.packed_data().unwrap().as_ref(), data.as_slice());
         let short = ffmpeg_next::codec::packet::Packet::copy(&data[..data.len() - 1]);
@@ -140,4 +146,24 @@ fn raw_packet_preserves_all_planes_and_row_padding() {
                 .is_err()
         );
     }
+}
+
+/// Writing to a frame that still shares the packet's pixels must not change
+/// the packet another subscriber may be holding.
+#[test]
+fn raw_packet_frame_copies_before_write() {
+    let data: Vec<u8> = (0..36).collect();
+    let raw = RawPacket::from((
+        ffmpeg_next::codec::packet::Packet::copy(&data),
+        Rational(1, 1000),
+    ));
+    let kept = raw.clone();
+    let RawFrame::Video(mut frame) =
+        packet_to_raw_video_frame(raw, 6, 4, ffmpeg_next::format::Pixel::YUV420P).unwrap()
+    else {
+        panic!("expected video")
+    };
+    frame.get_mut().data_mut(0)[0] = 200;
+    assert_eq!(kept.packet().data().unwrap()[0], 0);
+    assert_eq!(frame.as_video().data(0)[0], 200);
 }

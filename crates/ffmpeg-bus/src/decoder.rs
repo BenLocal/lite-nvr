@@ -544,7 +544,7 @@ fn prepend_parameter_sets(packet: &mut RawPacket, sets: &[u8]) -> anyhow::Result
 
 /// The source pixel format from the stream parameters, `Pixel::None` when
 /// unknown. Read without opening a decoder.
-fn source_pixel_format(stream: &AvStream) -> ffmpeg_next::format::Pixel {
+pub(crate) fn source_pixel_format(stream: &AvStream) -> ffmpeg_next::format::Pixel {
     match ffmpeg_next::codec::Context::from_parameters(stream.parameters().clone()) {
         // SAFETY: the context is valid and owned here; pix_fmt is a plain field.
         Ok(ctx) => unsafe { (*ctx.as_ptr()).pix_fmt }.into(),
@@ -574,6 +574,9 @@ unsafe extern "C" fn rockchip_software_format(
     }
     AVPixelFormat::AV_PIX_FMT_NONE
 }
+
+/// Idle wait of the blocking decode loop between cancellation checks.
+const LOOP_IDLE_WAIT: Duration = Duration::from_millis(20);
 
 pub struct DecoderTask {
     probe: crate::metrics::CodecProbe,
@@ -787,7 +790,9 @@ impl DecoderTask {
             }
             let mut eof = false;
             let mut flush = false;
-            match packet_rx.recv_timeout(Duration::from_millis(1)) {
+            // The timeout only bounds how long a cancel goes unnoticed: a packet
+            // or a closed relay wakes the loop at once.
+            match packet_rx.recv_timeout(LOOP_IDLE_WAIT) {
                 Ok(packet) => {
                     match packet {
                         DecodeCmd::Packet { packet, drain } => {

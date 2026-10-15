@@ -545,3 +545,45 @@ fn video_fps_limit_drops_frames_without_changing_timeline() -> anyhow::Result<()
     assert!(timestamps.last().unwrap() - timestamps.first().unwrap() >= 900_000);
     Ok(())
 }
+
+fn rawvideo_stream(format: ffmpeg_next::format::Pixel) -> crate::stream::AvStream {
+    let params = ffmpeg_next::codec::Parameters::new();
+    // SAFETY: the parameters were just allocated and are exclusively owned
+    // here; only plain fields are written.
+    unsafe {
+        let p = params.as_ptr() as *mut ffmpeg_next::ffi::AVCodecParameters;
+        (*p).codec_type = ffmpeg_next::ffi::AVMediaType::AVMEDIA_TYPE_VIDEO;
+        (*p).codec_id = ffmpeg_next::ffi::AVCodecID::AV_CODEC_ID_RAWVIDEO;
+        (*p).format = ffmpeg_next::ffi::AVPixelFormat::from(format) as i32;
+        (*p).width = 64;
+        (*p).height = 48;
+    }
+    crate::stream::AvStream::new(
+        0,
+        params,
+        ffmpeg_next::Rational(1, 60),
+        ffmpeg_next::Rational(60, 1),
+    )
+}
+
+/// Only RKMPP takes raw video in its own format; software encoders keep the
+/// libx264-friendly conversion.
+#[test]
+fn test_raw_video_input_format_per_encoder() -> anyhow::Result<()> {
+    use ffmpeg_next::format::Pixel;
+    crate::init()?;
+    let stream = rawvideo_stream(Pixel::BGR24);
+    if let Some(x264) = ffmpeg_next::encoder::find_by_name("libx264") {
+        assert_eq!(
+            super::Encoder::input_pixel_format(&stream, x264, Pixel::YUV420P),
+            Pixel::YUV420P
+        );
+    }
+    if let Some(rkmpp) = ffmpeg_next::encoder::find_by_name("h264_rkmpp") {
+        assert_eq!(
+            super::Encoder::input_pixel_format(&stream, rkmpp, Pixel::YUV420P),
+            Pixel::BGR24
+        );
+    }
+    Ok(())
+}
