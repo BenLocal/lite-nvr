@@ -500,6 +500,16 @@ impl Bus {
         output.sort_by(|a, b| a.id.cmp(&b.id));
         crate::metrics::BusMetrics {
             running: state.pending_input.is_none() && Self::input_running(state),
+            capture: if state.capture_drops.is_some() {
+                "dmabuf"
+            } else {
+                "ffmpeg"
+            }
+            .into(),
+            capture_dropped: state
+                .capture_drops
+                .as_ref()
+                .map(|drops| drops.load(std::sync::atomic::Ordering::Relaxed)),
             input,
             decoders,
             encoders,
@@ -1840,6 +1850,11 @@ impl Bus {
                 height: target_h,
                 pixel_format: pixel_format_for_libx264(pixel_format),
                 codec: Some(codec),
+                // A DMABUF capture encoded at its own size and format: RKMPP
+                // reads the capture buffers directly.
+                drm_prime_input: state.capture_drops.is_some()
+                    && (target_w, target_h) == (width, height)
+                    && encode.and_then(|e| e.pixel_format.as_ref()).is_none(),
                 ..Settings::default()
             };
             let packet_receiver: tokio::sync::broadcast::Receiver<RawPacketCmd> = state
@@ -1990,6 +2005,17 @@ impl Bus {
         // Opening probes the source (an RTSP connect can take seconds): run it
         // on a blocking thread so the async workers stay free.
         let input = tokio::task::spawn_blocking(move || {
+            // Rockchip: hand V4L2 capture buffers to the hardware encoder as
+            // DMABUFs; anything unsupported falls back to FFmpeg's V4L2 input.
+            #[cfg(feature = "rockchip")]
+            if format.as_deref() == Some("v4l2") && crate::v4l2_dmabuf::enabled() {
+                match AvInput::open_v4l2_dmabuf(&url, options.as_ref()) {
+                    Ok(input) => return Ok(input),
+                    Err(e) => {
+                        log::warn!("v4l2 dmabuf capture of {url} unavailable ({e:#}); using FFmpeg")
+                    }
+                }
+            }
             let options = options.map(|o| {
                 ffmpeg_next::Dictionary::from_iter(o.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             });
@@ -1998,6 +2024,7 @@ impl Bus {
         })
         .await
         .map_err(|e| anyhow::anyhow!("open input task failed: {e}"))??;
+        state.capture_drops = input.capture_drops();
 
         let streams = input.streams();
         log::info!("start add input streams:");
@@ -2185,6 +2212,8 @@ struct BusState {
     live: bool,
     /// Shared with `Bus::stop`, which sets it to abort a blocking input open.
     shutdown: Arc<std::sync::atomic::AtomicBool>,
+    /// Set when the input is a DMABUF V4L2 capture: its dropped-frame count.
+    capture_drops: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
 impl BusState {
@@ -2229,6 +2258,7 @@ impl BusState {
             started: false,
             live: false,
             shutdown: Arc::default(),
+            capture_drops: None,
         }
     }
 }

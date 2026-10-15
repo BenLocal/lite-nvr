@@ -55,6 +55,7 @@ impl ProgramSink {
             codec: Some("h264".to_string()),
             pixel_format: Pixel::YUV420P,
             fps: None,
+            drm_prime_input: false,
         };
         let mut opts = ffmpeg_next::Dictionary::new();
         opts.set("preset", "ultrafast");

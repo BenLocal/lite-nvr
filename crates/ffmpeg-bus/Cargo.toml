@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-rockchip = []
+rockchip = ["dep:rustix"]
 
 [dependencies]
 ffmpeg-next = { workspace = true, features = ["device"] }
@@ -17,3 +17,5 @@ log = { workspace = true }
 tokio-stream = { workspace = true, features = ["sync"] }
 futures-util = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+# Rockchip DMABUF V4L2 capture (ioctl, mmap, poll).
+rustix = { workspace = true, features = ["fs", "mm", "time"], optional = true }

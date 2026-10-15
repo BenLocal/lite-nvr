@@ -313,10 +313,18 @@ fn needs_stream_probe(format: Option<&str>) -> bool {
     format != Some("alsa")
 }
 
+/// Where packets come from: an FFmpeg demuxer, or (Rockchip) a V4L2 capture
+/// whose buffers are exported as DMABUFs for the hardware encoder.
+enum Source {
+    Ffmpeg(ffmpeg_next::format::context::Input),
+    #[cfg(feature = "rockchip")]
+    Dmabuf(crate::v4l2_dmabuf::DmabufCapture),
+}
+
 pub struct AvInput {
     // Field order matters: `inner` (the format context, which may call the
     // interrupt callback) must drop before `interrupt`.
-    inner: ffmpeg_next::format::context::Input,
+    inner: Source,
     streams: HashMap<usize, AvStream>,
     interrupt: Arc<InterruptState>,
 }
@@ -426,10 +434,43 @@ impl AvInput {
         }
 
         Ok(Self {
-            inner: input,
+            inner: Source::Ffmpeg(input),
             streams,
             interrupt,
         })
+    }
+
+    /// Open a V4L2 capture device with DMABUF-exported buffers (Rockchip).
+    /// Errors explain why the device cannot use it; callers then fall back to
+    /// [`Self::open`]. `options` may carry the requested `framerate`.
+    #[cfg(feature = "rockchip")]
+    pub(crate) fn open_v4l2_dmabuf(
+        device: &str,
+        options: Option<&HashMap<String, String>>,
+    ) -> anyhow::Result<Self> {
+        let rate = options
+            .and_then(|o| o.get("framerate"))
+            .and_then(|value| parse_capture_frame_rate(value));
+        let capture = crate::v4l2_dmabuf::DmabufCapture::open(device, rate)?;
+        let stream = capture.stream().clone();
+        Ok(Self {
+            inner: Source::Dmabuf(capture),
+            streams: HashMap::from([(stream.index(), stream)]),
+            interrupt: Arc::new(InterruptState {
+                local: AtomicBool::new(false),
+                external: None,
+            }),
+        })
+    }
+
+    /// Counter of frames a DMABUF capture dropped because its buffers were
+    /// held downstream; `None` for FFmpeg inputs.
+    pub(crate) fn capture_drops(&self) -> Option<Arc<std::sync::atomic::AtomicU64>> {
+        match &self.inner {
+            Source::Ffmpeg(_) => None,
+            #[cfg(feature = "rockchip")]
+            Source::Dmabuf(capture) => Some(capture.drops()),
+        }
     }
 
     /// A handle to abort this input's blocking I/O (e.g. a read stuck on a
@@ -447,11 +488,15 @@ impl AvInput {
     /// camera hangs the reader, unable to even see cancellation), errors are
     /// reported to the caller.
     pub fn read(&mut self) -> ReadOutcome {
+        let input = match &mut self.inner {
+            Source::Ffmpeg(input) => input,
+            #[cfg(feature = "rockchip")]
+            Source::Dmabuf(capture) => return capture.read(),
+        };
         let mut packet = ffmpeg_next::Packet::empty();
-        match packet.read(&mut self.inner) {
+        match packet.read(input) {
             Ok(()) => {
-                let time_base = self
-                    .inner
+                let time_base = input
                     .stream(packet.stream())
                     .map(|s| s.time_base())
                     // A packet's stream always exists; 0/1 is a never-hit fallback.

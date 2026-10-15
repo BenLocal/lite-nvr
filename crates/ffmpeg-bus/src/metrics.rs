@@ -201,6 +201,12 @@ pub struct OutputMetrics {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct BusMetrics {
     pub running: bool,
+    /// How the input is captured: `ffmpeg`, or `dmabuf` (Rockchip V4L2
+    /// buffers handed to the hardware encoder).
+    pub capture: String,
+    /// Frames a DMABUF capture dropped because its buffers were held downstream.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_dropped: Option<u64>,
     pub input: Vec<StreamMetrics>,
     pub decoders: Vec<CodecMetrics>,
     pub encoders: Vec<CodecMetrics>,

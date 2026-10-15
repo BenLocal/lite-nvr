@@ -16,6 +16,9 @@ pub enum RawPacketCmd {
 pub struct RawPacket {
     packet: Arc<ffmpeg_next::codec::packet::Packet>,
     time_base: Rational,
+    /// The capture buffer behind this packet, exported as a DMABUF.
+    #[cfg(feature = "rockchip")]
+    dmabuf: Option<crate::v4l2_dmabuf::DmabufRef>,
 }
 
 impl RawPacket {
@@ -80,6 +83,18 @@ impl RawPacket {
         Ok(packet)
     }
 
+    /// Attach the DMABUF of the capture buffer this packet points into.
+    #[cfg(feature = "rockchip")]
+    pub(crate) fn with_dmabuf(mut self, dmabuf: crate::v4l2_dmabuf::DmabufRef) -> Self {
+        self.dmabuf = Some(dmabuf);
+        self
+    }
+
+    #[cfg(feature = "rockchip")]
+    pub fn dmabuf(&self) -> Option<&crate::v4l2_dmabuf::DmabufRef> {
+        self.dmabuf.as_ref()
+    }
+
     /// Get a reference to the inner packet (for BSF and other FFmpeg operations).
     pub fn packet(&self) -> &ffmpeg_next::codec::packet::Packet {
         &self.packet
@@ -91,6 +106,8 @@ impl From<(ffmpeg_next::codec::packet::Packet, Rational)> for RawPacket {
         Self {
             packet: Arc::new(packet),
             time_base,
+            #[cfg(feature = "rockchip")]
+            dmabuf: None,
         }
     }
 }

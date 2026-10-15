@@ -37,3 +37,5 @@ pub mod scaler;
 pub mod shared_audio;
 pub mod sink;
 pub mod stream;
+#[cfg(feature = "rockchip")]
+pub mod v4l2_dmabuf;

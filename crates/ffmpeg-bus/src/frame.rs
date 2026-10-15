@@ -60,12 +60,18 @@ impl From<ffmpeg_next::frame::Audio> for RawAudioFrame {
 #[derive(Clone)]
 pub struct RawVideoFrame {
     frame: Arc<ffmpeg_next::frame::Video>,
+    /// The capture buffer holding these pixels, exported as a DMABUF, so a
+    /// hardware encoder can read it directly. Cleared once pixels are copied.
+    #[cfg(feature = "rockchip")]
+    dmabuf: Option<crate::v4l2_dmabuf::DmabufRef>,
 }
 
 impl From<ffmpeg_next::frame::Video> for RawVideoFrame {
     fn from(frame: ffmpeg_next::frame::Video) -> Self {
         Self {
             frame: Arc::new(frame),
+            #[cfg(feature = "rockchip")]
+            dmabuf: None,
         }
     }
 }
@@ -131,7 +137,13 @@ pub fn packet_to_raw_video_frame(
         anyhow::ensure!(ret >= 0, "invalid raw video plane layout");
     }
     frame.set_pts(packet.pts());
-    Ok(RawFrame::Video(RawVideoFrame::from(frame)))
+    #[allow(unused_mut)]
+    let mut frame = RawVideoFrame::from(frame);
+    #[cfg(feature = "rockchip")]
+    {
+        frame.dmabuf = packet.dmabuf().cloned();
+    }
+    Ok(RawFrame::Video(frame))
 }
 
 impl RawVideoFrame {
@@ -152,6 +164,12 @@ impl RawVideoFrame {
     }
 
     pub fn get_mut(&mut self) -> &mut ffmpeg_next::frame::Video {
+        // Pixels may be rewritten (after a copy): they no longer match the
+        // capture buffer.
+        #[cfg(feature = "rockchip")]
+        {
+            self.dmabuf = None;
+        }
         let frame = Arc::make_mut(&mut self.frame);
         // SAFETY: `frame` owns a live AVFrame. This only checks whether its
         // FFmpeg buffers (possibly shared by a property copy) are exclusive.
@@ -159,6 +177,11 @@ impl RawVideoFrame {
             *frame = frame.clone();
         }
         frame
+    }
+
+    #[cfg(feature = "rockchip")]
+    pub fn dmabuf(&self) -> Option<&crate::v4l2_dmabuf::DmabufRef> {
+        self.dmabuf.as_ref()
     }
 
     /// Change PTS without exposing mutable access to shared pixel buffers.

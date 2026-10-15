@@ -135,6 +135,9 @@ pub struct Settings {
     pub fps: Option<u32>,
     pub codec: Option<String>,
     pub pixel_format: ffmpeg_next::format::Pixel,
+    /// Frames come from a DMABUF capture (Rockchip): an RKMPP encoder then
+    /// takes them as DRM_PRIME and reads the capture buffers directly.
+    pub drm_prime_input: bool,
 }
 
 impl Default for Settings {
@@ -146,6 +149,7 @@ impl Default for Settings {
             fps: None,
             codec: Some("h264".to_string()),
             pixel_format: ffmpeg_next::format::Pixel::YUV420P,
+            drm_prime_input: false,
         }
     }
 }
@@ -549,11 +553,20 @@ impl Encoder {
         let mut encoder = encoder_context.encoder().video()?;
         encoder.set_width(settings.width);
         encoder.set_height(settings.height);
-        encoder.set_format(Self::input_pixel_format(
-            stream,
-            codec,
-            settings.pixel_format,
-        ));
+        if settings.drm_prime_input && codec.name().ends_with("_rkmpp") {
+            encoder.set_format(ffmpeg_next::format::Pixel::DRM_PRIME);
+            // SAFETY: plain field of the context being configured, before open.
+            unsafe {
+                (*encoder.as_mut_ptr()).sw_pix_fmt =
+                    crate::decoder::source_pixel_format(stream).into();
+            }
+        } else {
+            encoder.set_format(Self::input_pixel_format(
+                stream,
+                codec,
+                settings.pixel_format,
+            ));
+        }
         let rate = settings
             .fps
             .map(|fps| Rational(fps as i32, 1))
@@ -817,6 +830,15 @@ impl Encoder {
                     EncoderType::Video(e) => (e.format(), e.width(), e.height()),
                     _ => anyhow::bail!("video frame sent to non-video encoder"),
                 };
+                // RKMPP opened for DRM_PRIME input reads the capture buffer itself.
+                #[cfg(feature = "rockchip")]
+                if ef == ffmpeg_next::format::Pixel::DRM_PRIME {
+                    let dmabuf = vf.dmabuf().ok_or_else(|| {
+                        anyhow::anyhow!("DRM_PRIME encoder got a frame without DMABUF")
+                    })?;
+                    let drm = crate::v4l2_dmabuf::drm_frame(dmabuf, vf.pts())?;
+                    return self.send_to_inner(RawFrame::Video(drm.into()));
+                }
                 // Read-only: the scaler writes into a new frame.
                 let f = vf.as_video();
                 if f.format() != ef || f.width() != ew || f.height() != eh {

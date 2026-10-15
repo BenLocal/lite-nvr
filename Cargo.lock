@@ -1695,6 +1695,7 @@ dependencies = [
  "futures",
  "futures-util",
  "log",
+ "rustix 1.1.4",
  "serde",
  "tokio",
  "tokio-stream",
