@@ -2,7 +2,7 @@
 
 > Rockchip 构建下，HDMI/MIPI 采集缓冲区以 DMABUF 直接交给 RKMPP 硬件编码，CPU 不再拷贝或读取像素；现有 FFmpeg V4L2 采集路径完整保留，作为非 Rockchip 构建的唯一路径和 Rockchip 下的回退路径。
 
-状态：业务选择已确认，待 Phase 0 验证，2026-10-15。
+状态：业务选择已确认，Phase 0 已通过（2026-10-15），待实现。
 
 ## 1. 目标和已经明确的约定
 
@@ -17,7 +17,7 @@
 
 | 开销 | 位置 | 约占单核 | 原因 |
 | --- | --- | --- | --- |
-| 读帧拷贝 | `av_read_frame` → FFmpeg `libavdevice/v4l2.c` | HDMI1 约 60%、HDMI2 约 10% | FFmpeg 每帧把 DMA 缓冲区 memcpy 到新包（含缺页清零）；FFmpeg 命令行单独读 `/dev/video11` 也是如此（0.61 核），属于这版 FFmpeg + 驱动的固有行为 |
+| 读帧拷贝 | `av_read_frame` → FFmpeg `libavdevice/v4l2.c` | hdmi2（BGR24）约 60%、HDMI 1（NV12）约 10% | FFmpeg 每帧把 DMA 缓冲区 memcpy 到新包（含缺页清零）；FFmpeg 命令行单独读 `/dev/video11` 也是如此（0.61 核），属于这版 FFmpeg + 驱动的固有行为 |
 | 编码导入拷贝 | `avcodec_send_frame` → `av_hwframe_transfer_data` | 约 20% | rkmpp 编码器收到 CPU 帧时先拷进自己的 DMA 缓冲区 |
 
 两次拷贝合计约 0.9 核。DMA 内存对 CPU 来说读取慢，单纯改 FFmpeg 为零拷贝只会把开销转移到编码导入；只有让硬件直接读采集缓冲区，才能同时消掉两次拷贝。
@@ -26,8 +26,8 @@
 
 | 设备 | 驱动 | 接口 | 格式 | 每行字节 | 缓冲区数（FFmpeg 申请后） |
 | --- | --- | --- | --- | --- | --- |
-| HDMI1 `/dev/video11`（`stream_hdmirx`） | `rk_hdmirx` | 单平面 multiplanar | BGR3（BGR24） | 5760 | 41 |
-| HDMI2 `/dev/video0`（`stream_cif_mipi_id0`） | `rkcif` | 单平面 multiplanar | NV12 | 1920 | 64 |
+| hdmi2 `/dev/video11`（`stream_hdmirx`） | `rk_hdmirx` | 单平面 multiplanar | BGR3（BGR24） | 5760 | 41 |
+| HDMI 1 `/dev/video0`（`stream_cif_mipi_id0`） | `rkcif` | 单平面 multiplanar | NV12 | 1920 | 64 |
 
 板上 RK FFmpeg 的 `libavcodec` 含 `mpp_buffer_import_with_tag`，rkmpp 编码器支持 `drm_prime` 输入（`ffmpeg -h encoder=h264_rkmpp` 列出 `drm_prime`）。
 
@@ -67,12 +67,12 @@ flowchart LR
 ### 4.3 编码转发
 
 - `start_encoder_task` 的 RAWVIDEO 分支：输入为 dmabuf 且编码器为 `*_rkmpp`、输出尺寸与源一致时，转发任务为每个包构造 `AV_PIX_FMT_DRM_PRIME` 帧：`AVDRMFrameDescriptor` 的 object 为 dmabuf fd 与大小，layer 格式按下表，plane 偏移和 pitch 取自 V4L2 格式；帧的 `buf` 引用包的缓冲区，编码器用完后缓冲区才回到驱动。
-- 编码器以 `pix_fmt = DRM_PRIME` 打开，并配置 `hw_frames_ctx`（`sw_format` 为源格式）。具体要求以 RK FFmpeg rkmppenc 的源码为准，Phase 0 确认。
+- 编码器以 `pix_fmt = DRM_PRIME`、`sw_pix_fmt = 源格式`（BGR24 / NV12）打开，不需要 `hw_device_ctx` / `hw_frames_ctx`（rkmppenc 在 DRM_PRIME 输入时跳过硬件上下文初始化，格式由 `sw_pix_fmt` 决定）。DRM 描述符只需：一个对象（dmabuf fd、大小、`DRM_FORMAT_MOD_LINEAR`），一层，plane0 的 pitch，NV12 时 plane1 的偏移（= 每行字节 × 高度）；层的 fourcc 不被编码器使用。编码器内部 `av_frame_clone` 持有帧，编码完成后才释放，释放回调里 QBUF。
 - 需要缩放、换格式或编码器不是 rkmpp 时，不构造 DRM 帧，走现有 CPU 帧路径（直接读 mmap 区，较慢但正确）。硬件编码运行时降级为软件（`downgrade_to_software`）时同样切到 CPU 帧路径。
 
 | V4L2 | DRM fourcc | 说明 |
 | --- | --- | --- |
-| `BGR3`（字节序 B,G,R） | `DRM_FORMAT_RGB888`（小端 [23:0] R:G:B，内存顺序 B,G,R） | 名称相反，按内存字节序对应，Phase 0 用色块核对 |
+| `BGR3`（字节序 B,G,R） | `DRM_FORMAT_RGB888`（仅作描述，编码器按 `sw_pix_fmt = BGR24` 解读） | Phase 0 输出颜色与现有路径一致 |
 | `NV12` | `DRM_FORMAT_NV12` | UV 平面偏移 = 每行字节 × 高度 |
 
 ### 4.4 等待、取消与异常
@@ -103,6 +103,23 @@ flowchart LR
 6. 运行中格式/分辨率变化与无信号的行为与现有路径一致。
 
 Phase 0 只做独立原型（`#[cfg(feature = "rockchip")]` 下的 `*_test.rs`，用 `FFMPEG_BUS_RK_TEST_*` 环境变量启用），确认 1~4 后再进入实现。任何一项不成立，本 spec 回到评审，不硬上。
+
+### Phase 0 结果（2026-10-15，20 主机）
+
+独立 C 原型（未入库：V4L2 multiplanar mmap + EXPBUF，h264_rkmpp 以 DRM_PRIME 编码；用 `lite-nvr-cross:rockchip-amd64` 镜像交叉编译，只依赖 GLIBC_2.17）在暂停 nvr 后对两路设备各编码 300 帧：
+
+| 设备 | 模式 | 帧 | 丢帧 | 帧率 | 进程 CPU（单核） | 最大在途缓冲区 |
+| --- | --- | --- | --- | --- | --- | --- |
+| hdmi2 rk_hdmirx BGR24 | DMABUF | 300/300 | 0 | 59.0 | 1.6% | 2 |
+| hdmi2 rk_hdmirx BGR24 | CPU 帧（编码器导入拷贝） | 300/300 | 0 | 58.8 | 38.5% | 1 |
+| HDMI 1 rkcif NV12 | DMABUF | 300/300 | 0 | 59.9 | 1.5% | 2 |
+| HDMI 1 rkcif NV12 | CPU 帧（编码器导入拷贝） | 300/300 | 0 | 59.8 | 5.2% | 1 |
+
+- 第 6 节 1~3 项成立：两个驱动 EXPBUF 均成功；rkmppenc 直接导入 dmabuf，硬件读取，无需 cache 同步或额外配置。
+- 第 4 项成立：两种模式输出的同一位置像素一致（hdmi2 `db0000`、HDMI 1 `0200d4`），与 nvr 线上直播流取色一致；色彩范围/空间标签一致；各 300 帧解码 0 错误。
+- CPU 帧模式的 CPU 只含编码导入拷贝；nvr 中 FFmpeg 读帧拷贝另计（hdmi2 约 0.6 核），所以新路径相对现状的节省大于表中差值。
+- 未完成：CPU 读取单帧 DMA 内存的耗时（原型的测量被编译器优化掉，结果无效）。按 FFmpeg 命令行读 hdmi2 的 0.61 核 / 60 帧估算，单帧拷贝含缺页约 10ms 量级，实现阶段在截图路径上实测确认。
+- 第 5、6 项（在途上限与长时运行、格式变化/无信号）留到实现阶段验收。
 
 ## 7. 实施步骤
 
