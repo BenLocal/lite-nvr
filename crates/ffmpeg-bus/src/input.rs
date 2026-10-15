@@ -304,6 +304,15 @@ fn capture_frame_rate(
     }
 }
 
+/// Whether the opened input needs `avformat_find_stream_info`. ALSA's header
+/// already gives the whole stream description, and on a silent capture card
+/// (no clock, e.g. an HDMI-in with no audio) the nonblocking probe gets
+/// nothing but EAGAIN and retries without pausing: one core spinning forever
+/// and the open never finishing.
+fn needs_stream_probe(format: Option<&str>) -> bool {
+    format != Some("alsa")
+}
+
 pub struct AvInput {
     // Field order matters: `inner` (the format context, which may call the
     // interrupt callback) must drop before `interrupt`.
@@ -384,10 +393,12 @@ impl AvInput {
             if res < 0 {
                 return Err(ffmpeg_next::Error::from(res).into());
             }
-            let res = ffmpeg_next::ffi::avformat_find_stream_info(ps, std::ptr::null_mut());
-            if res < 0 {
-                ffmpeg_next::ffi::avformat_close_input(&mut ps);
-                return Err(ffmpeg_next::Error::from(res).into());
+            if needs_stream_probe(format) {
+                let res = ffmpeg_next::ffi::avformat_find_stream_info(ps, std::ptr::null_mut());
+                if res < 0 {
+                    ffmpeg_next::ffi::avformat_close_input(&mut ps);
+                    return Err(ffmpeg_next::Error::from(res).into());
+                }
             }
             ffmpeg_next::format::context::Input::wrap(ps)
         };

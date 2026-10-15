@@ -158,3 +158,10 @@ fn v4l2_capture_rate_rejects_clock_and_inverted_fallbacks() {
         assert!(parse_capture_frame_rate(value).is_none());
     }
 }
+
+#[test]
+fn alsa_input_skips_stream_probe() {
+    assert!(!super::needs_stream_probe(Some("alsa")));
+    assert!(super::needs_stream_probe(Some("v4l2")));
+    assert!(super::needs_stream_probe(None));
+}
