@@ -14,7 +14,7 @@ Project docs live here; some stay at fixed paths because tooling expects them (C
 
 - [../README.md](../README.md) — project README
 - [../AGENTS.md](../AGENTS.md) (= `CLAUDE.md`) — agent guidance, auto-loaded by Claude Code
-- [../.agent/skills/](../.agent/skills/) — project skills (e.g. `build-nvr`)
+- [../.agents/skills/](../.agents/skills/) — project skills (e.g. `build-nvr`)
 
 ## Per-crate / per-package
 

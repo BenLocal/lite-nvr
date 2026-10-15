@@ -10,7 +10,7 @@ description: 问答式准备 lite-nvr 本地开发环境（含 Rockchip 测试�
 ## 1. 摸底
 
 ```bash
-bash .agent/skills/setup-env/scripts/check-env.sh
+bash .agents/skills/setup-env/scripts/check-env.sh
 ```
 
 只读，输出 `OK / MISSING / INFO`。把结果压成一张短表给用户看，作为后面提问的依据：已经 OK 的项不再问。
