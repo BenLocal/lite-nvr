@@ -2,7 +2,7 @@
 
 > Rockchip 构建下，HDMI/MIPI 采集缓冲区以 DMABUF 直接交给 RKMPP 硬件编码，CPU 不再拷贝或读取像素；现有 FFmpeg V4L2 采集路径完整保留，作为非 Rockchip 构建的唯一路径和 Rockchip 下的回退路径。
 
-状态：业务选择已确认，Phase 0 已通过（2026-10-15），待实现。
+状态：已实现，默认关闭（`NVR_V4L2_DMABUF=1` 开启），20 主机验收进行中，2026-10-15。
 
 ## 1. 目标和已经明确的约定
 
@@ -120,6 +120,23 @@ Phase 0 只做独立原型（`#[cfg(feature = "rockchip")]` 下的 `*_test.rs`�
 - CPU 帧模式的 CPU 只含编码导入拷贝；nvr 中 FFmpeg 读帧拷贝另计（hdmi2 约 0.6 核），所以新路径相对现状的节省大于表中差值。
 - 未完成：CPU 读取单帧 DMA 内存的耗时（原型的测量被编译器优化掉，结果无效）。按 FFmpeg 命令行读 hdmi2 的 0.61 核 / 60 帧估算，单帧拷贝含缺页约 10ms 量级，实现阶段在截图路径上实测确认。
 - 第 5、6 项（在途上限与长时运行、格式变化/无信号）留到实现阶段验收。
+
+### 实现与验收结果（2026-10-15，20 主机）
+
+实现：`crates/ffmpeg-bus/src/v4l2_dmabuf.rs`（V4L2 multiplanar mmap + EXPBUF，24 个缓冲区，在途达到“总数 − 4”时丢帧计数）；`AvInput` 内部按来源分 FFmpeg / DMABUF；包与帧在 rockchip 构建下携带 `DmabufRef`；rkmpp 编码器在 `Settings::drm_prime_input` 时以 DRM_PRIME 打开，由编码器自行构造 DRM 帧（软件降级时仍读 CPU 帧）；指标 `capture`（`ffmpeg` / `dmabuf`）与 `capture_dropped`。
+
+| 验收项 | 结果 |
+| --- | --- |
+| 同负载 A/B（2 路 HDMI、4 路 RTMP、1 个合成器，60 秒） | `NVR_V4L2_DMABUF=0`：nvr 267.6%、整机 42.4%；`=1`：195.8%、34.2%，节省约 0.72 核 |
+| 帧率与丢帧 | 两路采集与编码 60/60，`capture_dropped` 为 0 |
+| 画面 | 直播流与截图同位置像素与 FFmpeg 路径一致；各 5 秒解码 0 错误 |
+| 截图（CPU 读 DMA 内存） | 0.09~0.11 秒（FFmpeg 路径 0.12~0.19 秒） |
+| 设备切换 | 两路各重建 20 次，每次约 1.65 秒恢复为 dmabuf + 60 帧，丢帧 0；fd 361→358、`/dev/video` 映射保持 48，无 busy/QBUF 报错 |
+| 回退开关 | `NVR_V4L2_DMABUF=0` 时两路走 FFmpeg，行为与改动前一致 |
+| 断信号 | 与 FFmpeg 路径一致：rkcif（HDMI 1）恢复信号后自动恢复；rk_hdmirx（hdmi2）重新锁定后两条路径都停在 0 帧，需重建管线（既有问题，见下） |
+| 1 小时持续运行 | 进行中 |
+
+既有问题（两条路径相同，非本次引入）：rk_hdmirx 失锁再锁定后不再出帧（内核日志 `signal lock ok`，但 DQBUF 一直无数据），管线不报错也不结束。后续可在 DMABUF 路径订阅 `V4L2_EVENT_SOURCE_CHANGE` 或检测长时间无帧，结束输入流交给现有重建机制。
 
 ## 7. 实施步骤
 
