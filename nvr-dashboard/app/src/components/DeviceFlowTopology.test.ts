@@ -35,6 +35,14 @@ describe('device flow topology', () => {
     expect(wrapper.text()).not.toContain('硬件')
     expect(wrapper.text()).toContain('更新中断')
   })
+  it('marks a decoder that decodes keyframes only', () => {
+    const keyOnly = structuredClone(sample)
+    if (!keyOnly.pipeline) throw new Error('fixture pipeline missing')
+    keyOnly.pipeline.decoders = [{ stream_index: 0, kind: 'video', codec: 'h264_rkmpp', hardware: true, running: true, key_frames_only: true, traffic: { bytes_total: 0, packets_total: 2, bytes_per_second: 0, packets_per_second: 0.5, last_packet_age_ms: 0 } }]
+    const wrapper = mount(DeviceFlowTopology, { props: { metrics: keyOnly } })
+    expect(wrapper.text()).toContain('硬件 · 仅关键帧')
+    expect(parseDeviceMetrics([keyOnly])[0]?.pipeline?.decoders[0]?.key_frames_only).toBe(true)
+  })
   it('omits RTMP metadata streams from audio/video inputs', () => {
     const metadata = structuredClone(sample)
     if (!metadata.pipeline) throw new Error('fixture pipeline missing')

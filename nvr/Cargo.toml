@@ -29,6 +29,8 @@ chrono = { workspace = true }
 sysinfo = "0.33"
 ffmpeg-bus = { path = "../crates/ffmpeg-bus" }
 ffmpeg-next = { workspace = true }
+# JPEG snapshots of decoded frames (already in the tree via nvr-detect).
+image = { workspace = true, features = ["jpeg"] }
 nvr-db = { path = "../nvr-db" }
 nvr-dashboard = { path = "../nvr-dashboard" }
 nvr-asr = { path = "../crates/nvr-asr" }

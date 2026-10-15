@@ -13,6 +13,7 @@ mod config;
 mod db;
 mod detect;
 mod device_output;
+mod frames;
 mod gb;
 mod handler;
 mod init;

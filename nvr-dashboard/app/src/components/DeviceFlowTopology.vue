@@ -64,7 +64,7 @@ function mediaDetail(stream: MediaStreamMetrics): string {
   return stream.kind
 }
 function codecLabel(codec: CodecMetrics): string {
-  return `${codec.hardware ? '硬件' : '软件'}${codec.running ? '' : ' · 已停止'}`
+  return `${codec.hardware ? '硬件' : '软件'}${codec.key_frames_only ? ' · 仅关键帧' : ''}${codec.running ? '' : ' · 已停止'}`
 }
 const inputRate = computed(() => pipeline.value ? inputStreams.value.reduce((sum, stream) => sum + stream.traffic.bytes_per_second, 0) : null)
 const outputRate = computed(() => pipeline.value?.output.filter(output => output.traffic_available).reduce((sum, output) => sum + output.stream.traffic.bytes_per_second, 0) ?? distribution.value?.bytes_per_second ?? null)

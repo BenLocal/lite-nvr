@@ -105,8 +105,10 @@ pub(crate) async fn start_tap(
     let handle = crate::manager::get_pipe(pipe)
         .await
         .ok_or_else(|| anyhow::anyhow!("pipe not found"))?;
+    // Detection only looks at pictures: keyframes suffice unless the device
+    // is already decoding every frame for a transcode.
     let video = handle
-        .subscribe_video()
+        .subscribe_video_with(ffmpeg_bus::decoder::FrameDemand::Image)
         .await
         .map_err(|e| anyhow::anyhow!("no video: {e:#}"))?;
 

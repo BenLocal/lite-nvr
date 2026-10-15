@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     db::app_db_conn,
-    handler::{ApiJsonResult, ok_json},
+    handler::{ApiJsonResult, ApiResult, ok_json},
     init::device::{build_flv_url, build_gb_flv_url, ensure_device_pipe},
     manager,
 };
@@ -37,6 +37,7 @@ pub fn device_router(hub: &'static crate::detect::hub::DetectHub) -> Router {
         .route("/list", get(list_devices))
         .route("/metrics", get(metrics))
         .route("/metrics/{id}", get(device_metrics))
+        .route("/snapshot/{id}", get(snapshot))
         .route("/add", post(add_device))
         .route("/update/{id}", post(update_device))
         .route("/remove/{id}", post(remove_device))
@@ -189,6 +190,13 @@ async fn device_metrics(Path(id): Path<String>) -> ApiJsonResult<DeviceMetrics> 
         .next()
         .ok_or_else(|| anyhow::anyhow!("device metrics unavailable"))?;
     Ok(ok_json(metric))
+}
+
+/// The device's next decoded picture as JPEG. Without a transcode only
+/// keyframes are decoded, so allow for a long GOP.
+async fn snapshot(Path(id): Path<String>) -> ApiResult<impl axum::response::IntoResponse> {
+    let jpeg = crate::frames::snapshot_jpeg(&id, std::time::Duration::from_secs(15)).await?;
+    Ok(([(axum::http::header::CONTENT_TYPE, "image/jpeg")], jpeg))
 }
 
 async fn add_device(

@@ -114,6 +114,8 @@ export interface CodecMetrics {
   codec: string
   hardware: boolean
   running: boolean
+  /** Video decoder decoding keyframes only: no subscriber needs every frame. */
+  key_frames_only?: boolean
   traffic: TrafficMetrics
 }
 export interface MediaOutputMetrics {
@@ -175,7 +177,8 @@ function isMediaStream(value: unknown): value is MediaStreamMetrics {
 }
 function isCodec(value: unknown): value is CodecMetrics {
   return isRecord(value) && numbers(value, ['stream_index']) && typeof value.kind === 'string' &&
-    typeof value.codec === 'string' && typeof value.hardware === 'boolean' && typeof value.running === 'boolean' && isTraffic(value.traffic)
+    typeof value.codec === 'string' && typeof value.hardware === 'boolean' && typeof value.running === 'boolean' &&
+    (value.key_frames_only === undefined || typeof value.key_frames_only === 'boolean') && isTraffic(value.traffic)
 }
 function isOutput(value: unknown): value is MediaOutputMetrics {
   return isRecord(value) && typeof value.id === 'string' && typeof value.destination === 'string' && typeof value.traffic_available === 'boolean' && isMediaStream(value.stream)

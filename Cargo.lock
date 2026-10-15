@@ -3536,6 +3536,7 @@ dependencies = [
  "gb28181",
  "harsh",
  "hyper-util",
+ "image",
  "log",
  "md5",
  "media-pipe-core",
