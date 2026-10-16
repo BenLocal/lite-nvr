@@ -34,6 +34,8 @@ image = { workspace = true, features = ["jpeg"] }
 nvr-db = { path = "../nvr-db" }
 nvr-dashboard = { path = "../nvr-dashboard" }
 nvr-asr = { path = "../crates/nvr-asr" }
+# On-board LLM; only built for Rockchip (`rockchip` feature).
+nvr-rkllm = { path = "../crates/nvr-rkllm", optional = true }
 nvr-detect = { path = "../crates/nvr-detect" }
 nvr-switcher = { path = "../crates/nvr-switcher" }
 nvr-compositor = { path = "../crates/nvr-compositor" }
@@ -59,7 +61,7 @@ pavao = { version = "0.2", optional = true }
 tokio-linux-video = { workspace = true }
 
 [features]
-rockchip = ["ffmpeg-bus/rockchip"]
+rockchip = ["ffmpeg-bus/rockchip", "dep:nvr-rkllm"]
 # Set by build.rs when compiling for Linux; satisfies check-cfg
 linux = []
 # SMB transport backend. Off by default so the base build needs no Samba dev

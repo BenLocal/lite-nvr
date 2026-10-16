@@ -3549,6 +3549,7 @@ dependencies = [
  "nvr-db",
  "nvr-detect",
  "nvr-onvif",
+ "nvr-rkllm",
  "nvr-switcher",
  "nvr-yt-dlp",
  "pavao",

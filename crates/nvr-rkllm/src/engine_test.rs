@@ -188,3 +188,27 @@ async fn dropping_the_generation_stops_the_backend() {
     // One token from the cancelled run, four from the second.
     assert_eq!(accepted.load(Ordering::SeqCst), 5);
 }
+
+#[tokio::test]
+async fn shutdown_ends_the_running_request_and_rejects_new_ones() {
+    let (mut s, accepted, _) = script(vec![(1, "a"), (2, "b"), (3, "c")]);
+    let (release, gate) = channel();
+    s.gate = Some(Mutex::new(gate));
+    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move || Ok(s));
+    engine.wait_ready().await.unwrap();
+    let mut g = engine.generate(ask("hi")).unwrap();
+    release.send(()).unwrap();
+    assert_eq!(g.next().await, Some(Delta::Content("a".into())));
+
+    let shutdown = engine.shutdown(Duration::from_secs(5));
+    let releaser = async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = release.send(());
+    };
+    tokio::join!(shutdown, releaser);
+    assert_eq!(accepted.load(Ordering::SeqCst), 1, "stopped after shutdown");
+    assert!(matches!(
+        engine.generate(ask("again")),
+        Err(GenerateError::NotReady(_))
+    ));
+}

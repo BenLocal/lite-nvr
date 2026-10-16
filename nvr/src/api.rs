@@ -8,7 +8,10 @@ pub(crate) fn start_api_server(
     port: u16,
 ) {
     tokio::spawn(async move {
-        let api = Router::new()
+        let api = Router::new();
+        #[cfg(feature = "rockchip")]
+        let api = api.nest("/llm", crate::llm::api::llm_router());
+        let api = api
             .nest("/device", crate::handler::device::device_router(detect_hub))
             .nest("/playback", crate::handler::playback::playback_router())
             .nest("/user", crate::handler::user::user_router())

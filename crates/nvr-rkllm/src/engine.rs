@@ -80,6 +80,13 @@ struct Settings {
     queue_depth: usize,
 }
 
+/// State shared with the inference thread for shutdown.
+struct Shared {
+    closing: AtomicBool,
+    /// True while the backend is running a request.
+    busy: watch::Sender<bool>,
+}
+
 /// Handle to the inference thread. Cheap to clone; the thread exits once every
 /// handle is dropped and the queue drains.
 #[derive(Clone)]
@@ -87,6 +94,7 @@ pub struct Engine {
     jobs: SyncSender<Job>,
     state: watch::Receiver<EngineState>,
     settings: Arc<Settings>,
+    shared: Arc<Shared>,
 }
 
 impl Engine {
@@ -110,6 +118,11 @@ impl Engine {
         let (jobs, queue) = sync_channel::<Job>(settings.queue_depth);
         let (state_tx, state) = watch::channel(EngineState::Loading);
         let stop_ids = settings.stop_token_ids.clone();
+        let shared = Arc::new(Shared {
+            closing: AtomicBool::new(false),
+            busy: watch::channel(false).0,
+        });
+        let thread_shared = Arc::clone(&shared);
         let spawned = std::thread::Builder::new()
             .name("rkllm".into())
             .spawn(move || {
@@ -123,7 +136,9 @@ impl Engine {
                 };
                 let _ = state_tx.send(EngineState::Ready);
                 while let Ok(job) = queue.recv() {
-                    serve(&mut backend, job, &stop_ids);
+                    thread_shared.busy.send_replace(true);
+                    serve(&mut backend, job, &stop_ids, &thread_shared.closing);
+                    thread_shared.busy.send_replace(false);
                 }
             });
         if let Err(err) = spawned {
@@ -135,12 +150,28 @@ impl Engine {
                 jobs,
                 state: failed,
                 settings: Arc::new(settings),
+                shared,
             };
         }
         Engine {
             jobs,
             state,
             settings: Arc::new(settings),
+            shared,
+        }
+    }
+
+    /// Stop accepting requests, end the running one at its next token and
+    /// wait up to `timeout` for the runtime to go idle, so the process can
+    /// exit without the runtime mid-inference. Queued requests are dropped.
+    pub async fn shutdown(&self, timeout: std::time::Duration) {
+        self.shared.closing.store(true, Ordering::Relaxed);
+        let mut busy = self.shared.busy.subscribe();
+        if tokio::time::timeout(timeout, busy.wait_for(|b| !*b))
+            .await
+            .is_err()
+        {
+            log::warn!("rkllm: still generating after {timeout:?}; exiting anyway");
         }
     }
 
@@ -172,6 +203,11 @@ impl Engine {
         match self.state() {
             EngineState::Ready => {}
             other => return Err(GenerateError::NotReady(other)),
+        }
+        if self.shared.closing.load(Ordering::Relaxed) {
+            return Err(GenerateError::NotReady(EngineState::Failed(
+                "shutting down".into(),
+            )));
         }
         let prompt = self
             .settings
@@ -205,8 +241,8 @@ impl Engine {
     }
 }
 
-fn serve<B: Backend>(backend: &mut B, job: Job, stop_ids: &[i32]) {
-    if job.cancelled.load(Ordering::Relaxed) {
+fn serve<B: Backend>(backend: &mut B, job: Job, stop_ids: &[i32], closing: &AtomicBool) {
+    if job.cancelled.load(Ordering::Relaxed) || closing.load(Ordering::Relaxed) {
         return;
     }
     let mut splitter = ThinkSplitter::new(job.starts_in_reasoning);
@@ -219,7 +255,10 @@ fn serve<B: Backend>(backend: &mut B, job: Job, stop_ids: &[i32]) {
             sampling: &job.sampling,
         },
         &mut |id, text| {
-            if job.cancelled.load(Ordering::Relaxed) || job.deltas.is_closed() {
+            if job.cancelled.load(Ordering::Relaxed)
+                || closing.load(Ordering::Relaxed)
+                || job.deltas.is_closed()
+            {
                 return Step::Stop;
             }
             if stop_ids.contains(&id) {

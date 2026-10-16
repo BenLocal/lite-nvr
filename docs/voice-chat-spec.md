@@ -2,7 +2,7 @@
 
 > Rockchip 构建下，nvr 进程内加载 RKLLM 模型提供对话服务（OpenAI 兼容接口），并在后台加一个语音对话机器人：网页麦克风说话 → ASR 识别 → 大模型回复 → TTS 合成语音，文字和语音同时回给网页。
 
-状态：已确认（2026-10-16），按第 8 节分阶段实现。默认模型 Qwen3.5-0.8B 纯文本；麦克风采用第 6.3 节的做法 1（nvr 可选 HTTPS 端口）。
+状态：已确认（2026-10-16），按第 8 节分阶段实现；第 1、2 阶段已完成并在 20 主机验收（结果见第 10 节）。默认模型 Qwen3.5-0.8B 纯文本；麦克风采用第 6.3 节的做法 1（nvr 可选 HTTPS 端口）。
 
 ## 1. 目标和已经明确的约定
 
@@ -167,3 +167,28 @@ pub fn split_sentences(buf: &mut String) -> Vec<String>;      // 从流式文本
 - 第 6.3 节：nvr 增加可选的 HTTPS 端口，未配置证书时自动生成自签名证书。
 - 默认模型：`Qwen3.5-0.8B_w8a8_rk3588.rkllm`，模板 `qwen`，只用纯文本，不加载视觉编码器。
 - 板上的外部 `rkllm-demo/rkllm-server`：进程内版本验收通过后再停掉，在那之前两者不同时加载模型。
+
+## 10. 验收记录
+
+### 第 1 阶段：`nvr-rkllm`（2026-10-16，20 主机，runtime 1.3.0）
+
+- `nvr-rkllm-demo` 加载 Qwen3.5-0.8B 约 5.3 s；首个输出约 1.4 s，生成约 6 token/s；多轮对话、停止 token（`finish_reason=stop`）和进程退出正常。
+- 手写绑定时 `RKLLMResult` 布局算错（64 字节，实际 72 字节），被布局测试发现；之后改为 bindgen 生成，并由编译期断言固定布局。
+
+### 第 2 阶段：nvr 进程内 LLM（2026-10-16，20 主机）
+
+启动参数：`NVR_LLM_MODEL=/userdata/rkllm-demo/model/Qwen3.5-0.8B_w8a8_rk3588.rkllm`、`NVR_LLM_LIB=/userdata/rkllm-demo/lib/librkllmrt.so`。`librkllmrt.so` 依赖的 `libgomp`、`libstdc++` 由包内 `lib/` 提供。
+
+| 项 | 结果 |
+| --- | --- |
+| 加载 | 启动后约 4 s 内 `health` 由 `loading` 变为 `ready` |
+| 非流式 / 流式 | 非流式 2.6 s 返回，`usage` 正确；SSE 依次为 role、content、finish、usage、`[DONE]` |
+| 错误处理 | 空 messages 返回 400；不带 token 返回 401 |
+| 并发 | 6 个并发请求：3 个 200、3 个 429（1 个在跑 + 2 个排队） |
+| 客户端断开 | 400 token 的流式请求读到第 5 行就断开，下一个请求 7.2 s 返回；不中止的话光生成就要 60 s 以上 |
+| 资源 | nvr RSS 约 560 MB → 1.55 GB（增加约 1 GB）；NPU 三核约 17–21%；194 token 用 36 s（约 5.4 token/s） |
+| 采集 | 生成期间两路 HDMI 均为 60 帧、0 丢帧，编码约 60 包/s |
+| 加载失败 | 模型路径错误：`health` 返回 failed 并给出原因，nvr 和采集照常 |
+| 关停 | 生成过程中发 SIGINT，1.25 s 内正常退出，无“仍在生成”警告、无崩溃 |
+
+发现的既有问题（与本功能无关）：nvr 只处理 SIGINT，`start.sh stop` 发出的 SIGTERM 会让进程直接终止，跳过正常关停流程（停止媒体生产者、拆除 ZLM）。

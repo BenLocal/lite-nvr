@@ -19,6 +19,8 @@ mod handler;
 mod init;
 mod lifecycle;
 mod livestream;
+#[cfg(feature = "rockchip")]
+mod llm;
 mod manager;
 mod metrics;
 mod onvif;
@@ -101,6 +103,10 @@ async fn main() -> ! {
     // dashboard homepage polls)
     metrics::spawn_worker(cancel.clone());
 
+    // Starts loading the on-board model (if configured) in the background.
+    #[cfg(feature = "rockchip")]
+    llm::init();
+
     // start api server
     let cancel_clone = cancel.clone();
     api::start_api_server(detect_hub, cancel_clone, 18080);
@@ -127,6 +133,9 @@ async fn main() -> ! {
     // device pipes; GB is best-effort.
     log::info!("shutting down: stopping media producers…");
     let teardown = async {
+        // Not a ZLM producer, but its runtime must be idle before exit.
+        #[cfg(feature = "rockchip")]
+        crate::llm::shutdown().await;
         crate::program::shutdown().await;
         crate::compositor::shutdown().await;
         crate::audiomixer::shutdown().await;
