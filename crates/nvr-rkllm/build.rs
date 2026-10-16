@@ -1,5 +1,6 @@
 //! Generates dlopen bindings for the vendored RKLLM runtime header
-//! (`include/rkllm.h`, runtime 1.3.0). The header is parsed as freestanding C
+//! (`include/rkllm.h`, runtime 1.3.0, from airockchip/rknn-llm under the
+//! license in `include/LICENSE.rknn-llm`). The header is parsed as freestanding C
 //! so neither host nor cross builds need a target sysroot.
 
 use std::path::PathBuf;
