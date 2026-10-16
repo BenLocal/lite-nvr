@@ -7,7 +7,7 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use crate::{db::app_db_conn, manager};
-use media_pipe_core::{EncodeConfig, InputConfig, PipeConfig};
+use media_pipe_core::{InputConfig, PipeConfig};
 
 pub(crate) fn init_device_pipes(
     detect_hub: &'static crate::detect::hub::DetectHub,
@@ -216,15 +216,16 @@ pub(crate) async fn ensure_device_pipe(
         return Ok(());
     }
 
-    if matches!(device.input_type.as_str(), "net" | "rtsp" | "rtmp") {
-        return manager::upsert_network_device(device, detect_hub).await;
+    // V4L2 too: an HDMI capture ends its stream when the signal stalls it.
+    if matches!(device.input_type.as_str(), "net" | "rtsp" | "rtmp" | "v4l2") {
+        return manager::upsert_reconnecting_device(device, detect_hub).await;
     }
 
     let input = match device.input_type.as_str() {
         "file" => InputConfig::File {
             path: device.input_value.clone(),
         },
-        "v4l2" | "x11grab" | "lavfi" => InputConfig::Device {
+        "x11grab" | "lavfi" => InputConfig::Device {
             display: device.input_value.clone(),
             format: device.input_type.clone(),
         },
@@ -253,12 +254,8 @@ pub(crate) async fn ensure_device_pipe(
         device.config.output.as_ref(),
     )
     .await?;
-    // Capture devices produce raw frames, which ZLM cannot distribute directly.
-    if matches!(device.input_type.as_str(), "v4l2" | "x11grab" | "lavfi") {
-        outputs[0].encode = Some(EncodeConfig {
-            pixel_format: Some("yuv420p".to_string()),
-            ..EncodeConfig::default()
-        });
+    if matches!(device.input_type.as_str(), "x11grab" | "lavfi") {
+        crate::device_output::encode_capture(&mut outputs);
     }
 
     crate::device_output::apply(&mut outputs, device.config.output.as_ref());

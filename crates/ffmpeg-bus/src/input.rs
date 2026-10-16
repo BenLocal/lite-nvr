@@ -313,6 +313,47 @@ fn needs_stream_probe(format: Option<&str>) -> bool {
     format != Some("alsa")
 }
 
+/// Ends a V4L2 capture that stops delivering frames. rk_hdmirx keeps
+/// streaming but never delivers again after the HDMI signal drops and
+/// relocks; it only resumes once streaming is restarted, so the stream is
+/// ended for the owner to reopen the device.
+struct Stall {
+    limit: Duration,
+    last: Option<Instant>,
+}
+
+impl Stall {
+    /// A live capture delivers well within this; a fresh rk_hdmirx stream
+    /// starts in about 0.6s.
+    const CAPTURE_LIMIT: Duration = Duration::from_secs(5);
+
+    fn new(limit: Duration) -> Self {
+        Self { limit, last: None }
+    }
+
+    /// Pass `outcome` through, turning a run of `Again` longer than the limit
+    /// (counted from the first read or the last packet) into `End`.
+    fn check(&mut self, outcome: ReadOutcome, now: Instant) -> ReadOutcome {
+        let last = *self.last.get_or_insert(now);
+        match outcome {
+            ReadOutcome::Packet(_) => self.last = Some(now),
+            ReadOutcome::Again if now.duration_since(last) > self.limit => {
+                log::warn!(
+                    "capture delivered no frame for {:?}; ending the stream",
+                    self.limit
+                );
+                return ReadOutcome::End;
+            }
+            _ => {}
+        }
+        outcome
+    }
+}
+
+fn is_v4l2(format: Option<&str>) -> bool {
+    matches!(format, Some("v4l2" | "video4linux2"))
+}
+
 /// Where packets come from: an FFmpeg demuxer, or (Rockchip) a V4L2 capture
 /// whose buffers are exported as DMABUFs for the hardware encoder.
 enum Source {
@@ -327,6 +368,7 @@ pub struct AvInput {
     inner: Source,
     streams: HashMap<usize, AvStream>,
     interrupt: Arc<InterruptState>,
+    stall: Option<Stall>,
 }
 
 impl AvInput {
@@ -415,7 +457,7 @@ impl AvInput {
         for stream in input.streams() {
             let description = AvStream::from(stream);
             #[cfg(feature = "rockchip")]
-            let description = if matches!(format, Some("v4l2" | "video4linux2"))
+            let description = if is_v4l2(format)
                 && description.is_video()
                 && let Some(requested) = capture_rate
             {
@@ -437,6 +479,7 @@ impl AvInput {
             inner: Source::Ffmpeg(input),
             streams,
             interrupt,
+            stall: is_v4l2(format).then(|| Stall::new(Stall::CAPTURE_LIMIT)),
         })
     }
 
@@ -460,6 +503,7 @@ impl AvInput {
                 local: AtomicBool::new(false),
                 external: None,
             }),
+            stall: Some(Stall::new(Stall::CAPTURE_LIMIT)),
         })
     }
 
@@ -488,6 +532,14 @@ impl AvInput {
     /// camera hangs the reader, unable to even see cancellation), errors are
     /// reported to the caller.
     pub fn read(&mut self) -> ReadOutcome {
+        let outcome = self.read_source();
+        match &mut self.stall {
+            Some(stall) => stall.check(outcome, Instant::now()),
+            None => outcome,
+        }
+    }
+
+    fn read_source(&mut self) -> ReadOutcome {
         let input = match &mut self.inner {
             Source::Ffmpeg(input) => input,
             #[cfg(feature = "rockchip")]

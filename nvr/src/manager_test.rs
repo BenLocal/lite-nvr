@@ -270,3 +270,16 @@ fn rockchip_mipi_uses_nv12_without_changing_other_capture_devices() {
         assert!(rockchip_capture_options(name).is_none());
     }
 }
+
+#[test]
+fn capture_devices_retry_sooner_than_network_cameras() {
+    let capture = InputConfig::Device {
+        display: "/dev/video11".into(),
+        format: "v4l2".into(),
+    };
+    let network = InputConfig::Network {
+        url: "rtsp://camera/stream".into(),
+    };
+    assert_eq!(max_backoff(&capture), std::time::Duration::from_secs(5));
+    assert_eq!(max_backoff(&network), std::time::Duration::from_secs(60));
+}

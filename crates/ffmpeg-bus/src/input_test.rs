@@ -165,3 +165,53 @@ fn alsa_input_skips_stream_probe() {
     assert!(super::needs_stream_probe(Some("v4l2")));
     assert!(super::needs_stream_probe(None));
 }
+
+/// A capture that keeps answering "try again" past the limit ends, so its
+/// owner can reopen it; any packet restarts the count.
+#[test]
+fn stalled_capture_ends_after_the_limit() {
+    use super::{ReadOutcome, Stall};
+    use std::time::Instant;
+    let packet = || {
+        ReadOutcome::Packet(crate::packet::RawPacket::from((
+            ffmpeg_next::Packet::copy(&[0]),
+            ffmpeg_next::Rational(1, 1),
+        )))
+    };
+    let start = Instant::now();
+    let at = |ms| start + Duration::from_millis(ms);
+    let mut stall = Stall::new(Duration::from_secs(5));
+    assert!(matches!(
+        stall.check(ReadOutcome::Again, at(0)),
+        ReadOutcome::Again
+    ));
+    assert!(matches!(
+        stall.check(ReadOutcome::Again, at(5000)),
+        ReadOutcome::Again
+    ));
+    assert!(matches!(
+        stall.check(packet(), at(5001)),
+        ReadOutcome::Packet(_)
+    ));
+    assert!(matches!(
+        stall.check(ReadOutcome::Again, at(10_000)),
+        ReadOutcome::Again
+    ));
+    assert!(matches!(
+        stall.check(ReadOutcome::Again, at(10_002)),
+        ReadOutcome::End
+    ));
+    assert!(matches!(
+        stall.check(ReadOutcome::Failed(ffmpeg_next::Error::Bug), at(20_000)),
+        ReadOutcome::Failed(_)
+    ));
+}
+
+#[test]
+fn only_v4l2_inputs_watch_for_stalls() {
+    assert!(super::is_v4l2(Some("v4l2")));
+    assert!(super::is_v4l2(Some("video4linux2")));
+    assert!(!super::is_v4l2(Some("alsa")));
+    assert!(!super::is_v4l2(Some("x11grab")));
+    assert!(!super::is_v4l2(None));
+}

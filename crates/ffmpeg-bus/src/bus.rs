@@ -1360,12 +1360,21 @@ impl Bus {
             .ok_or_else(|| anyhow::anyhow!("no encoder output stream"))?;
         let encoder_receiver = Self::subscribe_encoder(state, key).await?;
 
-        let stream = BroadcastStream::new(encoder_receiver).filter_map(|r| async move {
+        let frames = BroadcastStream::new(encoder_receiver).filter_map(|r| async move {
             match r {
                 Ok(RawPacketCmd::Data(packet)) => Some(Some(VideoFrame::from(packet))),
                 Ok(RawPacketCmd::EOF) => Some(None),
                 Err(_) => None,
             }
+        });
+        // The encoder's channel outlives its input, so end the stream after
+        // EOF ourselves (as the demuxed output does): its consumer, and the
+        // session waiting on it, must see the input finish.
+        let stream = futures::stream::unfold(Some(Box::pin(frames)), |frames| async move {
+            let mut frames = frames?;
+            let frame = frames.next().await?;
+            let rest = frame.is_some().then_some(frames);
+            Some((frame, rest))
         });
 
         Ok((av, Box::pin(stream)))

@@ -2624,3 +2624,41 @@ async fn test_rawvideo_input_serves_video_subscribers() -> anyhow::Result<()> {
     assert!(metrics.decoders.is_empty(), "raw video is never decoded");
     Ok(())
 }
+
+/// An encoded output ends after the input's EOF instead of waiting forever,
+/// so a pipe session over it ends and can be restarted.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_encoded_output_ends_after_input_eof() -> anyhow::Result<()> {
+    crate::init()?;
+    let bus = Bus::new("encoded_eof_test");
+    bus.add_input(
+        InputConfig::Device {
+            display: "testsrc=duration=1:size=160x120:rate=10".to_string(),
+            format: "lavfi".to_string(),
+        },
+        None,
+    )
+    .await?;
+    let (_, mut stream) = bus
+        .add_output(OutputConfig::new(
+            "enc".to_string(),
+            OutputAvType::Video,
+            OutputDest::Encoded,
+        ))
+        .await?;
+    let (mut frames, mut eof) = (0, false);
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while let Some(frame) = stream.next().await {
+            assert!(!eof, "nothing follows EOF");
+            match frame {
+                Some(_) => frames += 1,
+                None => eof = true,
+            }
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "never ended: frames={frames} eof={eof}");
+    assert!(eof && frames > 0, "frames={frames} eof={eof}");
+    bus.stop_and_join().await;
+    Ok(())
+}

@@ -215,10 +215,10 @@ pub(crate) async fn update_pipe(id: &str, config: PipeConfig) -> anyhow::Result<
     upsert_pipe(id, config, true).await
 }
 
-/// Keep an ordinary network camera alive across EOF/read/open failures. Each
-/// session builds fresh ZLM tracks/coordinators, and exposes its current pipe
-/// for ASR/detection subscriptions just like a non-supervised pipe.
-pub(crate) async fn upsert_network_device(
+/// Keep a network camera or V4L2 capture alive across EOF/read/open failures.
+/// Each session builds fresh ZLM tracks/coordinators, and exposes its current
+/// pipe for ASR/detection subscriptions just like a non-supervised pipe.
+pub(crate) async fn upsert_reconnecting_device(
     device: &DeviceInfo,
     detect_hub: &'static DetectHub,
 ) -> anyhow::Result<()> {
@@ -229,7 +229,8 @@ pub(crate) async fn upsert_network_device(
         move || {
             let cancel = CancellationToken::new();
             let current = Arc::new(std::sync::RwLock::new(None));
-            let handle = spawn_network_device(device, detect_hub, current.clone(), cancel.clone());
+            let handle =
+                spawn_reconnecting_device(device, detect_hub, current.clone(), cancel.clone());
             Entry::ReconnectingPipe {
                 pipe: current,
                 cancel,
@@ -241,14 +242,35 @@ pub(crate) async fn upsert_network_device(
     .await
 }
 
-fn spawn_network_device(
+/// Longest wait between sessions. A local capture retries sooner: its device
+/// is gone only while the HDMI signal is, and the picture should come back
+/// within seconds of the signal.
+fn max_backoff(input: &InputConfig) -> std::time::Duration {
+    match input {
+        InputConfig::Device { .. } => std::time::Duration::from_secs(5),
+        _ => std::time::Duration::from_secs(60),
+    }
+}
+
+fn spawn_reconnecting_device(
     device: DeviceInfo,
     detect_hub: &'static DetectHub,
     current: Arc<std::sync::RwLock<Option<Arc<Pipe>>>>,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut backoff = std::time::Duration::from_secs(2);
+        let input = if device.input_type == "v4l2" {
+            InputConfig::Device {
+                display: device.input_value.clone(),
+                format: device.input_type.clone(),
+            }
+        } else {
+            InputConfig::Network {
+                url: device.input_value.clone(),
+            }
+        };
+        let max_backoff = max_backoff(&input);
+        let mut backoff = std::time::Duration::from_secs(2).min(max_backoff);
         while !cancel.is_cancelled() {
             let started = std::time::Instant::now();
             let media = Arc::new(rszlm::media::Media::new_with_default_vhost(
@@ -272,11 +294,12 @@ fn spawn_network_device(
                     break;
                 }
             };
+            if matches!(input, InputConfig::Device { .. }) {
+                crate::device_output::encode_capture(&mut outputs);
+            }
             crate::device_output::apply(&mut outputs, device.config.output.as_ref());
             let config = PipeConfig {
-                input: InputConfig::Network {
-                    url: device.input_value.clone(),
-                },
+                input: input.clone(),
                 outputs,
             };
             let options = input_options(&config.input);
@@ -294,7 +317,7 @@ fn spawn_network_device(
                     let _ = (&mut session).await;
                 }
                 result = &mut session => {
-                    if let Err(e) = result { log::warn!("network device {} task failed: {e}", device.id); }
+                    if let Err(e) = result { log::warn!("device {} task failed: {e}", device.id); }
                 }
             }
             *current.write().expect("network pipe lock poisoned") = None;
@@ -304,17 +327,14 @@ fn spawn_network_device(
                 break;
             }
             if started.elapsed() >= std::time::Duration::from_secs(30) {
-                backoff = std::time::Duration::from_secs(2);
+                backoff = std::time::Duration::from_secs(2).min(max_backoff);
             }
-            log::warn!(
-                "network device {}: session ended, retry in {backoff:?}",
-                device.id
-            );
+            log::warn!("device {}: session ended, retry in {backoff:?}", device.id);
             tokio::select! {
                 _ = cancel.cancelled() => break,
                 _ = tokio::time::sleep(backoff) => {}
             }
-            backoff = (backoff * 2).min(std::time::Duration::from_secs(60));
+            backoff = (backoff * 2).min(max_backoff);
         }
     })
 }

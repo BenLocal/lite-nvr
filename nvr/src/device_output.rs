@@ -77,6 +77,16 @@ pub(crate) fn validate(device: &DeviceInfo) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Capture devices produce raw frames, which ZLM cannot distribute directly.
+pub(crate) fn encode_capture(outputs: &mut [OutputConfig]) {
+    if let Some(video) = outputs.first_mut() {
+        video.encode = Some(EncodeConfig {
+            pixel_format: Some("yuv420p".to_string()),
+            ..EncodeConfig::default()
+        });
+    }
+}
+
 pub(crate) fn apply(outputs: &mut [OutputConfig], cfg: Option<&Settings>) {
     let Some(cfg) = cfg else {
         return;
