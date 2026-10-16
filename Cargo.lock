@@ -3694,6 +3694,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvr-rkllm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bindgen 0.72.1",
+ "clap",
+ "env_logger",
+ "futures",
+ "libloading",
+ "log",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "nvr-switcher"
 version = "0.1.0"
 dependencies = [

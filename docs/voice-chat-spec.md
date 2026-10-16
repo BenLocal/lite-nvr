@@ -48,7 +48,8 @@ flowchart LR
 pub struct LlmConfig { model, lib, template, max_context_len, max_new_tokens, stop_token_ids, ignore_eos, queue_depth }
 pub struct Engine;                       // Clone，内部是到推理线程的通道
 impl Engine {
-    pub fn start(cfg: LlmConfig) -> Result<Engine>;   // 起推理线程并加载模型，加载完成或失败才返回
+    pub fn spawn(cfg: LlmConfig) -> Engine;           // 起推理线程并在其上加载模型，立即返回（Loading）
+    pub async fn wait_ready(&self) -> Result<()>;     // 等加载完成；失败时返回原因
     pub fn generate(&self, req: ChatRequest) -> Result<Generation, Busy>;
     pub fn state(&self) -> EngineState;  // Loading / Ready / Failed(原因)
 }
@@ -63,7 +64,7 @@ pub enum Delta { Reasoning(String), Content(String), Done { usage, finish_reason
 
 ### 4.2 绑定与线程
 
-- 按 runtime 1.3.0 公开的 `rkllm.h` 手写 `#[repr(C)]` 绑定，用 `libloading` dlopen `librkllmrt.so`，路径由配置给出。结构体大小和字段偏移用单测固定，升级 runtime 时必须重新核对。
+- runtime 1.3.0 的 `rkllm.h` 放在 `crates/nvr-rkllm/include/`，`build.rs` 用 bindgen 生成绑定（`--dynamic-loading`，经 `libloading` dlopen `librkllmrt.so`，路径由配置给出）。头文件按 freestanding C 解析（`include/shim/cstdint` 垫片），主机和交叉编译都不需要目标 sysroot；bindgen 生成的编译期断言固定每个结构体的大小和字段偏移。升级 runtime 时替换头文件即可。
 - 只有一个专用推理线程。它持有 handle，串行处理请求，所以 NPU 同一时刻只跑一个生成任务。`rkllm_run` 的回调通过有界通道把 token 交出去。
 - 排队上限 `queue_depth`，默认 2，超出时返回 `Busy`。HTTP 接口把它映射为 429，对话机器人映射为提示“正在回答别人”。
 - 调用方 drop 掉 `Generation` 后，推理线程在下一个回调返回非 0，或调用 `rkllm_abort` 中止，不会继续占用 NPU。

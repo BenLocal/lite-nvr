@@ -1,0 +1,28 @@
+[package]
+name = "nvr-rkllm"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "On-board LLM inference via the Rockchip RKLLM runtime: dlopens librkllmrt.so, renders chat templates and streams tokens from a single inference thread."
+
+[dependencies]
+# librkllmrt.so is loaded at run time, so host builds and tests never need the
+# vendor library.
+libloading = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+
+# src/main.rs is the demo binary; src/lib.rs is the reusable engine.
+[[bin]]
+name = "nvr-rkllm-demo"
+path = "src/main.rs"
+
+[build-dependencies]
+bindgen = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

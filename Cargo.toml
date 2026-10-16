@@ -11,6 +11,7 @@ members = [
     "crates/nvr-switcher",
     "crates/nvr-audio-mixer",
     "crates/nvr-asr",
+    "crates/nvr-rkllm",
     "crates/nvr-detect",
     "crates/xiaomi",
     "crates/nvr-yt-dlp",
@@ -53,6 +54,8 @@ drm = "0.15"
 rustix = { version = "1", features = ["event"] }
 alsa = "0.11"
 signal-hook = "0.3"
+libloading = "0.8"
+bindgen = "0.72"
 # Utilities
 anyhow = "1"
 log = "0.4"

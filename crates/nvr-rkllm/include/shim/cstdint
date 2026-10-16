@@ -1,0 +1,5 @@
+/* Lets bindgen parse rkllm.h as freestanding C: the header includes the C++
+ * <cstdint> but otherwise only needs these C headers, which clang ships. */
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
