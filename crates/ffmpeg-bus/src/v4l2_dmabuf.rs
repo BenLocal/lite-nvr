@@ -3,8 +3,8 @@
 //! `docs/v4l2-dmabuf-rkmpp-spec.md`). Packets still point into the mmap'd
 //! buffers, so CPU consumers (snapshots, detection) keep working.
 //!
-//! Opt-in with `NVR_V4L2_DMABUF=1`; anything unsupported falls back to the
-//! FFmpeg V4L2 input.
+//! On by default; `NVR_V4L2_DMABUF=0` turns it off. Anything unsupported
+//! falls back to the FFmpeg V4L2 input.
 
 use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
 use std::sync::Arc;
@@ -29,13 +29,13 @@ const DRIVER_RESERVE: usize = 4;
 /// How long one read waits for a frame, bounding cancellation latency.
 const READ_WAIT: Duration = Duration::from_millis(100);
 
-/// Whether the DMABUF capture may be used (`NVR_V4L2_DMABUF=1`).
+/// Whether the DMABUF capture may be used (unless `NVR_V4L2_DMABUF=0`).
 pub(crate) fn enabled() -> bool {
     enabled_from(std::env::var("NVR_V4L2_DMABUF").ok().as_deref())
 }
 
 pub(crate) fn enabled_from(value: Option<&str>) -> bool {
-    value.map(str::trim) == Some("1")
+    value.map(str::trim) != Some("0")
 }
 
 /// Geometry of one captured picture (single plane, tightly described by the

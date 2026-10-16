@@ -16,12 +16,12 @@ fn layout(pixel: Pixel, bytes_per_line: u32) -> Layout {
 }
 
 #[test]
-fn enabled_only_when_explicitly_set() {
+fn enabled_unless_explicitly_turned_off() {
+    assert!(enabled_from(None));
     assert!(enabled_from(Some("1")));
-    assert!(enabled_from(Some(" 1 ")));
-    assert!(!enabled_from(None));
+    assert!(enabled_from(Some("")));
     assert!(!enabled_from(Some("0")));
-    assert!(!enabled_from(Some("true")));
+    assert!(!enabled_from(Some(" 0 ")));
 }
 
 #[test]
