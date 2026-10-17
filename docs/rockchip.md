@@ -7,7 +7,7 @@
 - `uname -m` 应为 `aarch64`。32 位系统不能运行 arm64 包。
 - 板端需要 glibc（musl 系统见下文 Alpine 一节），最低版本取决于打包用的 Cross 镜像：
   - 官方镜像 `ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main`（Ubuntu 24.04）：需要 glibc 2.39 及以上。
-  - Ubuntu 20.04 的 Cross 镜像（在 `.env` 设置 `CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE`）：需要 glibc 2.30 及以上，可原生运行在 Buildroot 等较老的系统上。该镜像的 GCC 9 缺少 sherpa-onnx 预编译库需要的 libstdc++ 符号，由 `crates/nvr-asr/src/libstdcxx_compat.cpp` 补齐。
+  - Ubuntu 20.04 的 Cross 镜像（在 `.env` 设置 `CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE`）：需要 glibc 2.30 及以上，可原生运行在 Buildroot 等较老的系统上。该镜像的 GCC 9 缺少 sherpa-onnx 预编译库需要的 libstdc++ 符号，由 `crates/nvr-sherpa-compat/src/libstdcxx_compat.cpp`（nvr-asr 和 nvr-tts 共用） 补齐。
   - 包内 RK FFmpeg、ZLM、ONNX Runtime 的要求都不高于 glibc 2.28。
 - 检查板端 glibc：`getconf GNU_LIBC_VERSION`；BusyBox 系统没有 `getconf`，可执行 `/lib/libc.so.6` 查看版本。检查包实际需要的版本：`strings bin/nvr | grep -o 'GLIBC_2\.[0-9]*' | sort -V | tail -1`。不能按 SoC 型号判断是否兼容，单独替换 FFmpeg 也不能解决 NVR 本身的 glibc 版本要求。
 - 使用 **FFmpeg 8.1 shared RK** 包，名称匹配 `linuxarm64-gpl-shared-8.1-rk.tar.xz`。工程使用 `ffmpeg-next = 8`，不要替换成 release 中的 6.1 / 7.1；不带 `shared` 的包不能替代 NVR 链接的共享库。

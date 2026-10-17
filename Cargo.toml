@@ -13,6 +13,7 @@ members = [
     "crates/nvr-asr",
     "crates/nvr-sherpa-compat",
     "crates/nvr-rkllm",
+    "crates/nvr-tts",
     "crates/nvr-detect",
     "crates/xiaomi",
     "crates/nvr-yt-dlp",
@@ -57,6 +58,8 @@ alsa = "0.11"
 signal-hook = "0.3"
 libloading = "0.8"
 bindgen = "0.72"
+# Same version nvr-detect gets through usls; loaded at run time (ORT_DYLIB_PATH).
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "load-dynamic"] }
 # Utilities
 anyhow = "1"
 log = "0.4"

@@ -3731,6 +3731,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvr-tts"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "env_logger",
+ "hound",
+ "libloading",
+ "log",
+ "nvr-sherpa-compat",
+ "ort",
+ "sherpa-onnx",
+]
+
+[[package]]
 name = "nvr-yt-dlp"
 version = "0.1.0"
 dependencies = [

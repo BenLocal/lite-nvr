@@ -1,0 +1,25 @@
+[package]
+name = "nvr-tts"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Offline text-to-speech via sherpa-onnx, with sentence splitting for streamed text and cleanup of text that should not be read aloud."
+
+[dependencies]
+# Same bindings and native libs as nvr-asr (see crates/nvr-asr/README.md for
+# SHERPA_ONNX_LIB_DIR).
+sherpa-onnx = { version = "1.13", default-features = false }
+hound = "3"
+nvr-sherpa-compat = { path = "../nvr-sherpa-compat" }
+# MeloRknn backend: encoder on onnxruntime, decoder via a dlopened librknnrt.
+ort = { workspace = true }
+libloading = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+
+# src/main.rs is the demo binary; src/lib.rs is the reusable engine.
+[[bin]]
+name = "nvr-tts-demo"
+path = "src/main.rs"
