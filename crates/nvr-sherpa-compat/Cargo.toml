@@ -1,0 +1,9 @@
+[package]
+name = "nvr-sherpa-compat"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "libstdc++ shim that lets the prebuilt sherpa-onnx static libs link with GCC < 11 toolchains; shared by nvr-asr and nvr-tts so it is linked once."
+
+[build-dependencies]
+cc = { workspace = true }

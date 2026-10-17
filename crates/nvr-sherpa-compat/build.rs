@@ -6,5 +6,5 @@ fn main() {
         .cpp(true)
         .file("src/libstdcxx_compat.cpp")
         .link_lib_modifier("+whole-archive")
-        .compile("nvr_asr_libstdcxx_compat");
+        .compile("nvr_sherpa_libstdcxx_compat");
 }

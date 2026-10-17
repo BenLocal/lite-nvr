@@ -19,6 +19,9 @@
 
 use std::{path::PathBuf, time::Duration};
 
+// Links the libstdc++ shim for older cross toolchains.
+use nvr_sherpa_compat as _;
+
 mod engine;
 mod wav;
 

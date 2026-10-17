@@ -3575,11 +3575,11 @@ name = "nvr-asr"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "cc",
  "clap",
  "env_logger",
  "hound",
  "log",
+ "nvr-sherpa-compat",
  "sherpa-onnx",
 ]
 
@@ -3707,6 +3707,13 @@ dependencies = [
  "log",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "nvr-sherpa-compat"
+version = "0.1.0"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

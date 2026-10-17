@@ -13,13 +13,12 @@ description = "Real-time speech-to-text via sherpa-onnx: Silero VAD segments spe
 # README.md.
 sherpa-onnx = { version = "1.13", default-features = false }
 hound = "3"
+nvr-sherpa-compat = { path = "../nvr-sherpa-compat" }
 anyhow = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 
-[build-dependencies]
-cc = { workspace = true }
 
 # src/main.rs is the demo binary; src/lib.rs is the reusable engine.
 [[bin]]
