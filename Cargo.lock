@@ -3551,6 +3551,7 @@ dependencies = [
  "nvr-onvif",
  "nvr-rkllm",
  "nvr-switcher",
+ "nvr-tts",
  "nvr-yt-dlp",
  "pavao",
  "reqwest 0.13.2",

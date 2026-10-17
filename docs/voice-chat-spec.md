@@ -108,20 +108,23 @@ pub fn split_sentences(buf: &mut String) -> Vec<String>;      // 从流式文本
 
 ### 6.1 后端（`nvr/src/chat/`）
 
-- Socket.IO 新增命名空间 `/chat`，复用现有的 socketioxide 层。连接即创建一个会话，保存对话历史（最多保留最近 N 轮，并受上下文长度限制）和 system prompt。
+- Socket.IO 新增命名空间 `/chat`，复用现有的 socketioxide 层。连接时用登录 token 鉴权（`io('/chat', { auth: { token } })`，无效则拒绝连接）。连接即创建一个会话，保存对话历史（最近 8 轮，且历史文字不超过 2000 字；被打断的一轮不计入）和 system prompt（`NVR_CHAT_SYSTEM_PROMPT`，默认要求简短口语化、不用 Markdown）。
 - 客户端到服务端：
-  - `audio`：二进制，16 kHz 单声道 f32le 或 s16le，每片约 100 ms；
+  - `audio`：二进制，16 kHz 单声道 s16le，每片约 100 ms；
   - `start` / `stop`：按住说话的开始和结束；
   - `text`：可选，直接打字提问；
   - `reset`：清空历史；`cancel`：打断当前回答。
 - 服务端到客户端：
-  - `asr_partial` / `asr_final`：识别的中间结果和最终结果；
-  - `reply_delta`：回复文字增量；
-  - `reply_audio`：一句语音，带序号、采样率和 PCM 数据；
-  - `reply_done`；
-  - `error`：例如模型未就绪、忙、ASR 不可用。
+  - `asr_partial` / `asr_final`：识别的中间结果和最终结果（`{text}`）；`asr_final` 文本为空表示没听到话，不会开始回答；
+  - `reply_delta`：回复文字增量（`{turn, text}`）；
+  - `reply_audio`：一句语音（`{turn, seq, sample_rate, pcm}`，`pcm` 为二进制单声道 s16le，`seq` 从 0 起）；
+  - `reply_done`（`{turn}`）：每一轮都会发，出错时也发；
+  - `error`（`{message}`，属于某一轮时带 `turn`）：例如模型未就绪、忙、ASR 不可用。
+  - 回答相关事件都带 `turn`；新问题会取消旧的一轮，客户端丢弃旧 `turn` 的语音。
 - 采用**按住说话**，不做全双工：松开时对 ASR 执行 `flush` 得到整句，再发给 LLM。这样避免 TTS 播放的声音被麦克风收进去形成回声，也不需要回声消除。新问题会打断上一轮回答：停止生成，并丢掉还没下发的语音。
-- ASR 模型复用现有 ASR 字幕加载的那份，每个会话只新建 VAD。TTS 全局只加载一份，合成串行执行。
+- ASR 模型复用现有 ASR 字幕加载的那份，每个会话只新建 VAD，识别跑在会话自己的线程上。TTS 全局只加载一份（`TTS_MODELS_DIR`，默认 `third_party/tts-models`；先试 NPU 的 `MeloTTS-RKNN2`，`librknnrt.so` 路径由 `NVR_TTS_RKNN_LIB` 指定，失败再用 CPU 的 `vits-melo-tts-zh_en`），合成串行执行；连接时就在后台预加载 ASR 和 TTS 模型。加载失败的结果会保留，改好模型后要重启 nvr。
+- 关停时先停止新的合成并等待正在进行的那句（最多 2 s），再关 LLM。
+- 不用浏览器验证：`e2e/rockchip/chat.py --url http://<板子>:18080 --wav q.wav --rounds 20`（或 `--text`），输出识别结果、回复、松开后首句语音延迟，并把语音存成 WAV。
 - LLM 或 TTS 不可用时，对话入口仍然可以打开，并明确提示缺什么。例如没开 LLM 时只返回识别结果，不会卡住。
 
 ### 6.2 前端（`nvr-dashboard`）

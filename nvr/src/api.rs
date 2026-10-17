@@ -33,6 +33,9 @@ pub(crate) fn start_api_server(
             .layer(axum::middleware::from_fn(crate::auth::require_auth));
 
         let (asr_layer, asr_io) = crate::asr::build_socketio();
+        // Socket.IO `/chat` namespace for the voice chat robot.
+        #[cfg(feature = "rockchip")]
+        crate::chat::register(&asr_io);
 
         let app = Router::new()
             .nest("/api", api)

@@ -7,6 +7,8 @@ mod api;
 mod asr;
 mod audiomixer;
 mod auth;
+#[cfg(feature = "rockchip")]
+mod chat;
 mod cleanup;
 mod compositor;
 mod config;
@@ -135,7 +137,10 @@ async fn main() -> ! {
     let teardown = async {
         // Not a ZLM producer, but its runtime must be idle before exit.
         #[cfg(feature = "rockchip")]
-        crate::llm::shutdown().await;
+        {
+            crate::chat::shutdown().await;
+            crate::llm::shutdown().await;
+        }
         crate::program::shutdown().await;
         crate::compositor::shutdown().await;
         crate::audiomixer::shutdown().await;

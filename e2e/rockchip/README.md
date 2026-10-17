@@ -54,6 +54,16 @@ python3 e2e/rockchip/live.py --install-dir <board-install-dir> --group all
 
 此入口主动禁用 HDMI/V4L2 有信号及无信号 fixture，避免争用现有采集；普通运行也跳过需要变异构建的 T1.9。硬件全量和故障注入继续使用 `run.py` 的独立部署流程。
 
+### 语音对话
+
+`chat.py` 连接已运行实例的 Socket.IO `/chat`（需 `NVR_LLM_MODEL` 和 TTS 模型），用 WAV 按住说话或直接发文字，输出识别结果、回复、松开后首句语音延迟，并把回复语音存成 WAV；有错误或某轮没有语音时非零退出。依赖 `python-socketio[client]` 和 `requests`，可装进上面的 `.cache/rockchip-e2e-python`。API 账号沿用 `RK_API_USER` / `RK_API_PASSWORD`。
+
+```bash
+ffmpeg -i in.m4a -ar 16000 -ac 1 -sample_fmt s16 question.wav   # 需要 16 kHz 单声道 16 位
+python3 e2e/rockchip/chat.py --url http://<board>:18080 --wav question.wav --rounds 20
+python3 e2e/rockchip/chat.py --url http://<board>:18080 --text "你好"
+```
+
 | 环境变量 | 默认 / 用途 |
 |---|---|
 | `RK_HOST`, `RK_USER` | 必填，不在代码中存板端地址/认证 |

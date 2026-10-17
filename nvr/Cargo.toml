@@ -23,7 +23,8 @@ tokio-tungstenite = "0.29"
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 tokio-util = { workspace = true }
 futures = { workspace = true }
-bytes = { workspace = true }
+# `serde` carries binary Socket.IO payloads (voice chat audio).
+bytes = { workspace = true, features = ["serde"] }
 chrono = { workspace = true }
 # System performance metrics (CPU / memory / network) for the dashboard homepage.
 sysinfo = "0.33"
@@ -36,6 +37,8 @@ nvr-dashboard = { path = "../nvr-dashboard" }
 nvr-asr = { path = "../crates/nvr-asr" }
 # On-board LLM; only built for Rockchip (`rockchip` feature).
 nvr-rkllm = { path = "../crates/nvr-rkllm", optional = true }
+# Speaks the voice chat replies; only built for Rockchip with the chat.
+nvr-tts = { path = "../crates/nvr-tts", optional = true }
 nvr-detect = { path = "../crates/nvr-detect" }
 nvr-switcher = { path = "../crates/nvr-switcher" }
 nvr-compositor = { path = "../crates/nvr-compositor" }
@@ -61,7 +64,7 @@ pavao = { version = "0.2", optional = true }
 tokio-linux-video = { workspace = true }
 
 [features]
-rockchip = ["ffmpeg-bus/rockchip", "dep:nvr-rkllm"]
+rockchip = ["ffmpeg-bus/rockchip", "dep:nvr-rkllm", "dep:nvr-tts"]
 # Set by build.rs when compiling for Linux; satisfies check-cfg
 linux = []
 # SMB transport backend. Off by default so the base build needs no Samba dev
