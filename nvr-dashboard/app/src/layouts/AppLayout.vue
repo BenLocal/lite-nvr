@@ -22,6 +22,7 @@ const menuItems = ref([
   { label: '导播台', route: '/switcher', icon: 'pi pi-clone' },
   { label: '混音台', route: '/mixer', icon: 'pi pi-sliders-h' },
   { label: '回放', route: '/playback', icon: 'pi pi-play-circle' },
+  { label: '问答机器人', route: '/chat', icon: 'pi pi-comments' },
   { label: '设置', route: '/settings', icon: 'pi pi-cog' },
 ])
 
@@ -376,6 +377,7 @@ function onLogoutRequest() {
 }
 
 .layout-menuitem-text {
+  white-space: nowrap;
   font-size: 0.625rem;
   font-weight: 500;
   text-align: center;
