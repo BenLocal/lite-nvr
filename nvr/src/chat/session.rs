@@ -54,10 +54,13 @@ pub(super) enum Event {
 
 pub(super) async fn on_connect(socket: SocketRef) {
     let (tx, rx) = unbounded_channel();
+    // Enqueue synchronously: async Socket.IO handlers are spawned separately
+    // and can reorder cancel/text or start/audio/stop before the session sees them.
     let on = |name: &'static str, make: fn() -> Event| {
         let tx = tx.clone();
-        socket.on(name, async move || {
+        socket.on(name, move || {
             let _ = tx.send(make());
+            std::future::ready(())
         });
     };
     on("start", || Event::Start);
@@ -65,12 +68,14 @@ pub(super) async fn on_connect(socket: SocketRef) {
     on("cancel", || Event::Cancel);
     on("reset", || Event::Reset);
     let audio = tx.clone();
-    socket.on("audio", async move |Data::<Bytes>(pcm)| {
+    socket.on("audio", move |Data::<Bytes>(pcm)| {
         let _ = audio.send(Event::Audio(s16le_to_f32(&pcm)));
+        std::future::ready(())
     });
     let text = tx.clone();
-    socket.on("text", async move |Data::<String>(question)| {
+    socket.on("text", move |Data::<String>(question)| {
         let _ = text.send(Event::Text(question));
+        std::future::ready(())
     });
     let closed = CancellationToken::new();
     let on_close = closed.clone();
