@@ -17,6 +17,9 @@ struct Script {
     prompts: Arc<Mutex<Vec<String>>>,
 }
 
+/// Prompts sent to the backend, with `CLEAR` marking each cache clear.
+const CLEAR: &str = "<clear>";
+
 impl Backend for Script {
     fn run(&mut self, run: Run<'_>, on_token: &mut dyn FnMut(i32, &str) -> Step) -> Result<u32> {
         self.prompts.lock().unwrap().push(run.prompt.to_string());
@@ -34,11 +37,17 @@ impl Backend for Script {
         }
         Ok(7)
     }
+
+    fn clear_history(&mut self) -> Result<()> {
+        self.prompts.lock().unwrap().push(CLEAR.into());
+        Ok(())
+    }
 }
 
 fn settings(template: Template, queue_depth: usize) -> Settings {
     Settings {
         template,
+        max_context_len: 4096,
         max_new_tokens: 64,
         stop_token_ids: vec![99],
         queue_depth,
@@ -90,7 +99,7 @@ async fn streams_content_and_stops_on_a_stop_token() {
             }
         ]
     );
-    assert!(prompts.lock().unwrap()[0].contains("<|im_start|>user\nhi<|im_end|>"));
+    assert!(prompts.lock().unwrap()[1].contains("<|im_start|>user\nhi<|im_end|>"));
 }
 
 #[tokio::test]
@@ -211,4 +220,114 @@ async fn shutdown_ends_the_running_request_and_rejects_new_ones() {
         engine.generate(ask("again")),
         Err(GenerateError::NotReady(_))
     ));
+}
+
+fn follow_up(first: &str, reply: &str, next: &str) -> ChatRequest {
+    ChatRequest {
+        messages: vec![
+            Message::user(first),
+            Message::assistant(reply),
+            Message::user(next),
+        ],
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn a_follow_up_only_prefills_the_new_messages() {
+    let (s, _, prompts) = script(vec![(1, "你"), (2, "好"), (99, "")]);
+    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move || Ok(s));
+    engine.wait_ready().await.unwrap();
+    collect(engine.generate(ask("hi")).unwrap()).await;
+    let deltas = collect(engine.generate(follow_up("hi", "你好", "again")).unwrap()).await;
+    let prompts = prompts.lock().unwrap();
+    assert_eq!(prompts.len(), 3, "{prompts:?}");
+    assert_eq!(prompts[0], CLEAR);
+    assert_eq!(
+        prompts[2],
+        "<|im_end|>\n<|im_start|>user\nagain<|im_end|>\n\
+         <|im_start|>assistant\n<think>\n\n</think>\n\n"
+    );
+    // 7 prefilled + 2 generated before, 7 prefilled now.
+    assert!(matches!(
+        deltas.last(),
+        Some(Delta::Done {
+            usage: Usage {
+                prompt_tokens: 16,
+                ..
+            },
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn a_different_conversation_clears_the_cache() {
+    let (s, _, prompts) = script(vec![(1, "你"), (2, "好"), (99, "")]);
+    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move || Ok(s));
+    engine.wait_ready().await.unwrap();
+    collect(engine.generate(ask("hi")).unwrap()).await;
+    // The client's copy of the reply differs from what was generated.
+    collect(engine.generate(follow_up("hi", "你好！", "again")).unwrap()).await;
+    let prompts = prompts.lock().unwrap();
+    assert_eq!(prompts[2], CLEAR);
+    assert!(prompts[3].starts_with("<|im_start|>user\nhi<|im_end|>"));
+}
+
+#[tokio::test]
+async fn a_cancelled_reply_is_not_reused() {
+    let (mut s, _, prompts) = script(vec![(1, "你"), (2, "好"), (99, "")]);
+    let (release, gate) = channel();
+    s.gate = Some(Mutex::new(gate));
+    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move || Ok(s));
+    engine.wait_ready().await.unwrap();
+    let mut g = engine.generate(ask("hi")).unwrap();
+    release.send(()).unwrap();
+    assert_eq!(g.next().await, Some(Delta::Content("你".into())));
+    drop(g);
+    let next = engine.generate(follow_up("hi", "你", "again")).unwrap();
+    for _ in 0..6 {
+        let _ = release.send(());
+    }
+    collect(next).await;
+    let prompts = prompts.lock().unwrap();
+    assert_eq!(prompts[2], CLEAR, "{prompts:?}");
+}
+
+#[tokio::test]
+async fn a_follow_up_that_would_overflow_the_context_starts_over() {
+    let (s, _, prompts) = script(vec![(1, "你"), (2, "好"), (99, "")]);
+    let mut settings = settings(Template::Qwen, 2);
+    // 9 cached tokens + the continuation + 64 new tokens do not fit.
+    settings.max_context_len = 100;
+    let engine = Engine::spawn_with(settings, move || Ok(s));
+    engine.wait_ready().await.unwrap();
+    collect(engine.generate(ask("hi")).unwrap()).await;
+    collect(engine.generate(follow_up("hi", "你好", "again")).unwrap()).await;
+    assert_eq!(prompts.lock().unwrap()[2], CLEAR);
+}
+
+#[tokio::test]
+async fn a_reply_ended_by_the_model_itself_is_reused() {
+    // No stop token: the runtime ends on the model's own EOS.
+    let (s, _, prompts) = script(vec![(1, "你"), (2, "好")]);
+    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move || Ok(s));
+    engine.wait_ready().await.unwrap();
+    collect(engine.generate(ask("hi")).unwrap()).await;
+    collect(engine.generate(follow_up("hi", "你好", "again")).unwrap()).await;
+    let prompts = prompts.lock().unwrap();
+    assert_eq!(prompts.len(), 3, "{prompts:?}");
+    assert!(prompts[2].starts_with("<|im_end|>\n<|im_start|>user\nagain"));
+}
+
+#[tokio::test]
+async fn a_truncated_reply_is_not_reused() {
+    let (s, _, prompts) = script(vec![(1, "你"), (2, "好"), (3, "呀")]);
+    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move || Ok(s));
+    engine.wait_ready().await.unwrap();
+    let mut req = ask("hi");
+    req.max_tokens = Some(2);
+    collect(engine.generate(req).unwrap()).await;
+    collect(engine.generate(follow_up("hi", "你好", "again")).unwrap()).await;
+    assert_eq!(prompts.lock().unwrap()[2], CLEAR);
 }

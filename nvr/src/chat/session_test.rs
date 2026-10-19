@@ -17,19 +17,19 @@ fn keeps_history_within_limits() {
 }
 
 #[test]
-fn drops_the_oldest_turns_beyond_the_turn_limit() {
-    let mut h = turns(5, 1);
+fn beyond_the_turn_limit_only_the_latest_turn_is_kept() {
+    let mut h = turns(3, 1);
     trim_history(&mut h, 2, 2000);
-    assert_eq!(h.len(), 4);
-    assert_eq!(h[0].content, "3");
+    assert_eq!(h.len(), 2);
+    assert_eq!(h[0].content, "2");
 }
 
 #[test]
-fn drops_the_oldest_turns_beyond_the_char_budget() {
+fn beyond_the_char_budget_only_the_latest_turn_is_kept() {
     let mut h = turns(3, 10);
     trim_history(&mut h, 8, 45);
-    assert_eq!(h.len(), 4);
-    assert_eq!(h[0].content, "1".repeat(10));
+    assert_eq!(h.len(), 2);
+    assert_eq!(h[0].content, "2".repeat(10));
 }
 
 #[test]

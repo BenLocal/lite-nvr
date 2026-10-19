@@ -45,6 +45,22 @@ fn deepseek_r1_starts_inside_the_think_section() {
 }
 
 #[test]
+fn continuation_closes_the_cached_reply_and_renders_only_new_messages() {
+    let p = Template::Qwen.render_continuation(&[Message::user("1+1=?")], false);
+    assert_eq!(
+        p.text,
+        "<|im_end|>\n<|im_start|>user\n1+1=?<|im_end|>\n\
+         <|im_start|>assistant\n<think>\n\n</think>\n\n"
+    );
+    let p = Template::DeepseekR1.render_continuation(&[Message::user("1+1=?")], true);
+    assert_eq!(
+        p.text,
+        "<｜end▁of▁sentence｜><｜User｜>1+1=?<｜Assistant｜><think>\n"
+    );
+    assert!(p.starts_in_reasoning);
+}
+
+#[test]
 fn template_names_parse() {
     assert_eq!("qwen".parse::<Template>().unwrap(), Template::Qwen);
     assert_eq!(

@@ -248,12 +248,19 @@ impl Session {
     }
 }
 
-/// Drop the oldest turns until at most `max_turns` remain and their text fits
-/// in `max_chars`. `history` alternates user / assistant messages.
+/// Once the history outgrows `max_turns` or `max_chars`, keep only the latest
+/// turn (or nothing, if that alone is too long). Dropping turns changes the
+/// prompt's start, so the LLM must prefill the whole prompt again instead of
+/// continuing from its KV cache; trimming rarely and deeply keeps that rare
+/// and short. `history` alternates user / assistant messages.
 pub(super) fn trim_history(history: &mut Vec<Message>, max_turns: usize, max_chars: usize) {
     let chars = |h: &[Message]| h.iter().map(|m| m.content.chars().count()).sum::<usize>();
-    while !history.is_empty() && (history.len() > max_turns * 2 || chars(history) > max_chars) {
-        history.drain(..2.min(history.len()));
+    if history.len() <= max_turns * 2 && chars(history) <= max_chars {
+        return;
+    }
+    history.drain(..history.len().saturating_sub(2));
+    if chars(history) > max_chars {
+        history.clear();
     }
 }
 

@@ -58,7 +58,7 @@ pub enum Delta { Reasoning(String), Content(String), Done { usage, finish_reason
 ```
 
 - `ChatRequest` 包含 messages（system/user/assistant）、`max_tokens`、`temperature`、`top_p`、`top_k`、`repetition_penalty`、`enable_thinking`。
-- 模板：`qwen`（ChatML，适用 Qwen2/2.5/3/3.5）和 `deepseek-r1`。每次请求渲染全量历史，`keep_history = 0`；加载后调用 `rkllm_set_chat_template(h, "", "", "")` 关掉 runtime 自带的模板。
+- 模板：`qwen`（ChatML，适用 Qwen2/2.5/3/3.5）和 `deepseek-r1`。`keep_history = 1`，推理线程记住 KV cache 里是哪段对话：新请求如果是在它后面续写（前面的消息原样一致，且上一条 assistant 内容正好是上次生成、以停止 token 或模型自己的 EOS 结束的回复；结束 token 本身不在 KV cache 里），只渲染并 prefill 新消息（先补上一条回复的结束标记）；否则，或预计会超出上下文长度时，`rkllm_clear_kv_cache` 后渲染全量历史。原因是 prefill 很慢（RK3588 上 0.8B 约 30 token/s），每轮重读历史会让首字延迟随轮数增长。被打断或截断的回复不复用。加载后调用 `rkllm_set_chat_template(h, "", "", "")` 关掉 runtime 自带的模板。
 - 把 `<think>…</think>` 拆成 `Reasoning`。语音对话默认 `enable_thinking = false`，思考段不进 TTS。
 - 命中停止 token 时主动 `rkllm_abort`，`finish_reason = stop`；到 `max_tokens` 时为 `length`。
 
@@ -108,7 +108,7 @@ pub fn split_sentences(buf: &mut String) -> Vec<String>;      // 从流式文本
 
 ### 6.1 后端（`nvr/src/chat/`）
 
-- Socket.IO 新增命名空间 `/chat`，复用现有的 socketioxide 层。连接时用登录 token 鉴权（`io('/chat', { auth: { token } })`，无效则拒绝连接）。连接即创建一个会话，保存对话历史（最近 8 轮，且历史文字不超过 2000 字；被打断的一轮不计入）和 system prompt（`NVR_CHAT_SYSTEM_PROMPT`，默认要求简短口语化、不用 Markdown）。
+- Socket.IO 新增命名空间 `/chat`，复用现有的 socketioxide 层。连接时用登录 token 鉴权（`io('/chat', { auth: { token } })`，无效则拒绝连接）。连接即创建一个会话，保存对话历史（超过 8 轮或 2000 字时只保留最近一轮：裁掉旧轮会让 LLM 无法续用 KV cache、重新 prefill 全部历史，所以裁得少而狠；被打断的一轮不计入）和 system prompt（`NVR_CHAT_SYSTEM_PROMPT`，默认要求简短口语化、不用 Markdown）。
 - 客户端到服务端：
   - `audio`：二进制，16 kHz 单声道 s16le，每片约 100 ms；
   - `start` / `stop`：按住说话的开始和结束；
@@ -118,7 +118,7 @@ pub fn split_sentences(buf: &mut String) -> Vec<String>;      // 从流式文本
   - `asr_partial` / `asr_final`：识别的中间结果和最终结果（`{text}`）；`asr_final` 文本为空表示没听到话，不会开始回答；
   - `reply_delta`：回复文字增量（`{turn, text}`）；
   - `reply_audio`：一句语音（`{turn, seq, sample_rate, pcm}`，`pcm` 为二进制单声道 s16le，`seq` 从 0 起）；
-  - `reply_done`（`{turn}`）：每一轮都会发，出错时也发；
+  - `reply_done`（`{turn, interrupted}`）：每一轮都会发，出错时也发；被打断的一轮也发，`interrupted` 为 true；
   - `error`（`{message}`，属于某一轮时带 `turn`）：例如模型未就绪、忙、ASR 不可用。
   - 回答相关事件都带 `turn`；新问题会取消旧的一轮，客户端丢弃旧 `turn` 的语音。
 - 采用**按住说话**，不做全双工：松开时对 ASR 执行 `flush` 得到整句，再发给 LLM。这样避免 TTS 播放的声音被麦克风收进去形成回声，也不需要回声消除。新问题会打断上一轮回答：停止生成，并丢掉还没下发的语音。
@@ -195,3 +195,43 @@ pub fn split_sentences(buf: &mut String) -> Vec<String>;      // 从流式文本
 | 关停 | 生成过程中发 SIGINT，1.25 s 内正常退出，无“仍在生成”警告、无崩溃 |
 
 发现的既有问题（与本功能无关）：nvr 只处理 SIGINT，`start.sh stop` 发出的 SIGTERM 会让进程直接终止，跳过正常关停流程（停止媒体生产者、拆除 ZLM）。
+
+### 第 4 阶段：`/chat` 对话后端（2026-10-19，20 主机）
+
+HEAD `fd4b828` 交叉构建（需求 GLIBC_2.30），只替换原安装目录的 `bin/nvr`（旧版留作 `bin/nvr-before-chat-20261019`）。启动参数在第 2 阶段基础上加 `NVR_TTS_RKNN_LIB=/userdata/rkllm-demo/lib/librknnrt.so`；`third_party/` 下补了 `asr-models`（SenseVoice int8 + silero VAD + 标点）和 `tts-models/MeloTTS-RKNN2`，日志确认 TTS 走 `MeloRknn`（NPU）。外部 `rkllm-server` 仍在运行（两份模型同时常驻）。用 `e2e/rockchip/chat.py` 驱动，问题 WAV 由 `nvr-tts-demo` 合成后转 16 kHz，`--realtime` 按实时速度推送。
+
+| 项 | 结果 |
+| --- | --- |
+| 链路 | 文字和 WAV 两种输入都跑通：ASR 识别正确（`北京有哪些好玩的地方？`），回复分句合成并回传；松开后 `asr_final` 约 0.01 s 到达 |
+| 首句语音延迟（新会话第一轮） | 3.1–5.8 s，**未达 < 3 s**。拆开看：LLM 首字约 1.5–1.8 s，生成第一句（约 27 字）再加 TTS 约 3.5 s |
+| 连续 20 轮（同一会话、同一问题） | 20/20 成功、无报错；但 LLM 首字从第 1 轮 1.8 s 逐轮涨到约 11 s，第 9 轮后稳定（历史达到 8 轮上限），首句语音约 14.5 s |
+| 首字变慢的原因 | 每轮都把完整历史重新 prefill，而 prefill 只有约 30 token/s：经 `/api/llm` 实测 17 / 113 / 209 / 401 个 prompt token 分别用时 1.47 / 3.75 / 7.25 / 12.81 s；外部 `rkllm-server` 同模型 397 token 用时 12.2 s，可见是 runtime 1.3.0 + Qwen3.5-0.8B 在该板上的特性，与 nvr 实现无关 |
+| 打断 | 长回复第一句语音到达时（5.0 s）发新问题：旧 turn 立即不再有 `reply_delta` / `reply_audio`，新 turn 约 3 s 后出第一句语音 |
+| 资源（9 分钟，1 Hz 采样） | nvr RSS 1.64 GB → 2.34–2.38 GB（ASR + TTS 约 0.7 GB）；系统 MemAvailable 最低 472 MB；nvr CPU 平均约 3.6 核（启动前约 1.9 核）；NPU core0 峰值 86%；最高温度 66 °C |
+| 采集 | 测试前后两路 HDMI 均为 60 帧、`capture_dropped=0`，rkmpp 编码 60 包/s；4 路网络流 25 帧正常 |
+
+待处理：
+
+- 首句延迟受 prefill 制约：要达到 < 3 s，需复用 KV cache（`keep_history=1` 只 prefill 新一轮）或把历史上限压到约 100 token；在此之前，8 轮 / 2000 字的上限会让后几轮等 10 s 以上。（已改为复用 KV cache，见第 4.1 节模板一条和第 6.1 节历史一条，复验见下文）
+- 内存余量只有约 0.5 GB：正式使用前应停掉外部 `rkllm-server`（约 1.35 GB）。
+- 被打断的 turn 不发 `reply_done`，客户端不要等它。（已改为也发，带 `interrupted: true`）
+
+#### 复验：复用 KV cache 之后（2026-10-19，20 主机）
+
+改动：`nvr-rkllm` 用 `keep_history=1` 并续用 KV cache；`/chat` 历史超限时只留最近一轮；被打断的 turn 发 `reply_done`（`interrupted: true`）。启动参数同上，外部 `rkllm-server` 仍在运行。
+
+| 项 | 结果 |
+| --- | --- |
+| 续写的 prefill | 每轮只 prefill 新问题的 19 个 token（约 1.5 s），之前要重读全部历史（50–400 token） |
+| 连续 20 轮（同一 WAV） | 第 4 轮起 LLM 首字稳定在 1.5–1.6 s，首句语音 2.8–3.2 s（之前第 9 轮后约 11 s / 14.5 s）；第 12、20 轮在裁剪历史后整段重读，首字 3.6–3.8 s |
+| 12 个不同问题（同一会话） | 全部完成，无 Markdown，每轮都有语音；首字 1.5–1.9 s（裁剪那轮 3.4 s）；首句语音 2.0–6.5 s，取决于第一句的长度（生成约 4 token/s） |
+| 续写是否正确 | `/api/llm` 用 top_k=1 对比：续写和整段 prefill 的回答都连贯、遵守 system prompt，内容略有不同（续写时 KV 里的历史回复多了空 think 段，整段渲染没有） |
+| 打断 | 旧 turn 在打断时立即收到 `reply_done`（`interrupted: true`），新 turn 正常结束（`interrupted: false`） |
+| 资源 | nvr RSS 最高 2.37 GB，MemAvailable 最低 527 MB，最高温度 67 °C |
+
+仍存在的现象：
+
+- 20 轮测试中，第 1 轮回复在句子中间就以 EOS 结束；第 2 轮续写后模型不再遵守 system prompt，输出了约 480 token 的 Markdown 列表，超过了客户端 120 s 超时。贪心解码的对照测试没有复现，倾向于是 0.8B 模型采样的偶发问题，待继续观察。
+- Qwen3.5 的 `<|im_end|>` 是 248046，不在默认停止 token（Qwen2/3 的 151643 / 151645）里；目前靠模型自己的 EOS 结束，行为正确。
+- 历史裁剪到只剩一轮后，模型记不起更早的内容（例如问「刚才聊了哪些城市」答不上来）。
+- 第一句较长时，首句语音仍超过 3 s。

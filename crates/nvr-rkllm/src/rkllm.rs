@@ -175,7 +175,8 @@ impl Backend for RkllmBackend {
             lora_params: std::ptr::null_mut(),
             prompt_cache_params: std::ptr::null_mut(),
             sampling_params: &mut sampling,
-            keep_history: 0,
+            // The engine decides when to clear (see `clear_history`).
+            keep_history: 1,
             max_new_tokens: run.max_new_tokens,
         };
         let mut ctx = RunCtx {
@@ -203,6 +204,22 @@ impl Backend for RkllmBackend {
             anyhow::bail!("rkllm_run failed ({ret})");
         }
         Ok(ctx.prompt_tokens)
+    }
+
+    fn clear_history(&mut self) -> Result<()> {
+        // SAFETY: valid handle; null ranges clear the whole cache.
+        let ret = unsafe {
+            self.lib.rkllm_clear_kv_cache(
+                self.handle,
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        if ret != 0 {
+            anyhow::bail!("rkllm_clear_kv_cache failed ({ret})");
+        }
+        Ok(())
     }
 }
 

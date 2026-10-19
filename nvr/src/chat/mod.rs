@@ -7,7 +7,8 @@
 //! Server → client: `asr_partial` / `asr_final`, `reply_delta`, `reply_audio`
 //! (binary s16le with `turn`, `seq`, `sample_rate`), `reply_done`, `error`.
 //! Every reply event carries its `turn`; a new question cancels the old turn,
-//! so clients drop audio from older turns.
+//! so clients drop audio from older turns. Each turn ends with one
+//! `reply_done`, with `interrupted: true` when it was cancelled.
 
 mod asr_worker;
 mod pcm;

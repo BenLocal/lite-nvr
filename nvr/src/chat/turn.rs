@@ -26,7 +26,8 @@ struct ReplyAudio {
 }
 
 /// Runs until the reply has been generated and spoken, or `cancel` fires.
-/// Cancelling drops the generation, which stops the LLM.
+/// Cancelling drops the generation, which stops the LLM. Either way the turn
+/// ends with `reply_done`, flagged `interrupted` when it was cancelled.
 pub(super) async fn run(
     socket: SocketRef,
     turn: u64,
@@ -36,7 +37,10 @@ pub(super) async fn run(
     events: UnboundedSender<Event>,
 ) {
     let result = tokio::select! {
-        _ = cancel.cancelled() => return,
+        _ = cancel.cancelled() => {
+            let _ = socket.emit("reply_done", &json!({ "turn": turn, "interrupted": true }));
+            return;
+        }
         result = reply(&socket, turn, messages) => result,
     };
     match result {
@@ -51,7 +55,7 @@ pub(super) async fn run(
             let _ = socket.emit("error", &json!({ "turn": turn, "message": message }));
         }
     }
-    let _ = socket.emit("reply_done", &json!({ "turn": turn }));
+    let _ = socket.emit("reply_done", &json!({ "turn": turn, "interrupted": false }));
 }
 
 async fn reply(socket: &SocketRef, turn: u64, messages: Vec<Message>) -> Result<String, String> {

@@ -82,6 +82,21 @@ impl Template {
             }
         }
     }
+
+    /// Continue a conversation whose earlier messages, ending with the
+    /// model's own reply, are already in the runtime's KV cache: close that
+    /// reply (generation stopped before its end token) and render only `new`.
+    pub fn render_continuation(self, new: &[Message], enable_thinking: bool) -> Prompt {
+        let end = match self {
+            Self::Qwen => "<|im_end|>\n",
+            Self::DeepseekR1 => "<｜end▁of▁sentence｜>",
+        };
+        let rest = self.render(new, enable_thinking);
+        Prompt {
+            text: format!("{end}{}", rest.text),
+            starts_in_reasoning: rest.starts_in_reasoning,
+        }
+    }
 }
 
 #[cfg(test)]

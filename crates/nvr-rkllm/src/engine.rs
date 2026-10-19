@@ -11,8 +11,8 @@ use futures::Stream;
 use tokio::sync::{mpsc, watch};
 
 use crate::reasoning::ThinkSplitter;
-use crate::template::Template;
-use crate::{ChatRequest, Delta, FinishReason, LlmConfig, Sampling, Usage};
+use crate::template::{Prompt, Template};
+use crate::{ChatRequest, Delta, FinishReason, LlmConfig, Message, Sampling, Usage};
 
 /// What the backend's token callback tells it to do next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,10 +29,13 @@ pub(crate) struct Run<'a> {
 
 /// One loaded model. `run` blocks until generation ends; `on_token` sees every
 /// generated token (with empty text while a UTF-8 character is incomplete).
-/// Returns the prompt token count. Built and used only on the inference
-/// thread, so it need not be `Send`.
+/// The prompt and the generated tokens stay in the KV cache, so the next run
+/// continues the conversation until `clear_history`. Returns the number of
+/// tokens prefilled. Built and used only on the inference thread, so it need
+/// not be `Send`.
 pub(crate) trait Backend {
     fn run(&mut self, run: Run<'_>, on_token: &mut dyn FnMut(i32, &str) -> Step) -> Result<u32>;
+    fn clear_history(&mut self) -> Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,8 +67,8 @@ impl std::fmt::Display for GenerateError {
 impl std::error::Error for GenerateError {}
 
 struct Job {
-    prompt: String,
-    starts_in_reasoning: bool,
+    messages: Vec<Message>,
+    enable_thinking: bool,
     max_new_tokens: i32,
     sampling: Sampling,
     deltas: mpsc::UnboundedSender<Delta>,
@@ -75,6 +78,7 @@ struct Job {
 #[derive(Clone)]
 struct Settings {
     template: Template,
+    max_context_len: i32,
     max_new_tokens: i32,
     stop_token_ids: Vec<i32>,
     queue_depth: usize,
@@ -103,6 +107,7 @@ impl Engine {
     pub fn spawn(cfg: LlmConfig) -> Engine {
         let settings = Settings {
             template: cfg.template,
+            max_context_len: cfg.max_context_len,
             max_new_tokens: cfg.max_new_tokens,
             stop_token_ids: cfg.stop_token_ids.clone(),
             queue_depth: cfg.queue_depth,
@@ -117,7 +122,7 @@ impl Engine {
     {
         let (jobs, queue) = sync_channel::<Job>(settings.queue_depth);
         let (state_tx, state) = watch::channel(EngineState::Loading);
-        let stop_ids = settings.stop_token_ids.clone();
+        let thread_settings = settings.clone();
         let shared = Arc::new(Shared {
             closing: AtomicBool::new(false),
             busy: watch::channel(false).0,
@@ -135,9 +140,16 @@ impl Engine {
                     }
                 };
                 let _ = state_tx.send(EngineState::Ready);
+                let mut cached = None;
                 while let Ok(job) = queue.recv() {
                     thread_shared.busy.send_replace(true);
-                    serve(&mut backend, job, &stop_ids, &thread_shared.closing);
+                    serve(
+                        &mut backend,
+                        job,
+                        &thread_settings,
+                        &mut cached,
+                        &thread_shared.closing,
+                    );
                     thread_shared.busy.send_replace(false);
                 }
             });
@@ -209,10 +221,6 @@ impl Engine {
                 "shutting down".into(),
             )));
         }
-        let prompt = self
-            .settings
-            .template
-            .render(&req.messages, req.enable_thinking);
         let max_new_tokens = req
             .max_tokens
             .map_or(self.settings.max_new_tokens, |n| {
@@ -224,8 +232,8 @@ impl Engine {
         let (deltas, rx) = mpsc::unbounded_channel();
         let cancelled = Arc::new(AtomicBool::new(false));
         let job = Job {
-            prompt: prompt.text,
-            starts_in_reasoning: prompt.starts_in_reasoning,
+            messages: req.messages,
+            enable_thinking: req.enable_thinking,
             max_new_tokens,
             sampling: req.sampling,
             deltas,
@@ -241,16 +249,75 @@ impl Engine {
     }
 }
 
-fn serve<B: Backend>(backend: &mut B, job: Job, stop_ids: &[i32], closing: &AtomicBool) {
+/// The conversation whose tokens are in the KV cache: the request's messages
+/// plus the reply generated for them.
+struct Cached {
+    messages: Vec<Message>,
+    tokens: u32,
+}
+
+/// The new messages of a request that extends the cached conversation.
+fn continuation<'a>(cached: &Cached, messages: &'a [Message]) -> Option<&'a [Message]> {
+    let n = cached.messages.len();
+    (messages.len() > n && messages[..n] == cached.messages[..]).then(|| &messages[n..])
+}
+
+/// Prefill is the slow part on the NPU (about 30 tokens/s for a 0.8B model on
+/// RK3588), so a request that extends the cached conversation only prefills
+/// its new messages. Anything else clears the cache and prefills everything.
+/// Returns the prompt and the number of tokens it continues from.
+fn prepare<B: Backend>(
+    backend: &mut B,
+    job: &Job,
+    settings: &Settings,
+    cached: Option<Cached>,
+) -> Result<(Prompt, u32)> {
+    if let Some(c) = &cached
+        && let Some(new) = continuation(c, &job.messages)
+    {
+        let prompt = settings
+            .template
+            .render_continuation(new, job.enable_thinking);
+        // Characters over-count tokens, which errs towards a fresh prefill.
+        let needed = u64::from(c.tokens)
+            + prompt.text.chars().count() as u64
+            + u64::try_from(job.max_new_tokens).unwrap_or(0);
+        if needed <= u64::try_from(settings.max_context_len).unwrap_or(0) {
+            return Ok((prompt, c.tokens));
+        }
+    }
+    backend.clear_history()?;
+    let prompt = settings.template.render(&job.messages, job.enable_thinking);
+    Ok((prompt, 0))
+}
+
+fn serve<B: Backend>(
+    backend: &mut B,
+    job: Job,
+    settings: &Settings,
+    cached: &mut Option<Cached>,
+    closing: &AtomicBool,
+) {
     if job.cancelled.load(Ordering::Relaxed) || closing.load(Ordering::Relaxed) {
         return;
     }
-    let mut splitter = ThinkSplitter::new(job.starts_in_reasoning);
+    // Whatever happens below, the cache only describes this run's outcome.
+    let (prompt, cached_tokens) = match prepare(backend, &job, settings, cached.take()) {
+        Ok(prepared) => prepared,
+        Err(err) => {
+            log::warn!("rkllm: clearing the KV cache failed: {err:#}");
+            let _ = job.deltas.send(Delta::Error(format!("{err:#}")));
+            return;
+        }
+    };
+    let mut splitter = ThinkSplitter::new(prompt.starts_in_reasoning);
     let mut completion_tokens = 0u32;
     let mut stopped = false;
+    let mut cancelled = false;
+    let mut reply = String::new();
     let result = backend.run(
         Run {
-            prompt: &job.prompt,
+            prompt: &prompt.text,
             max_new_tokens: job.max_new_tokens,
             sampling: &job.sampling,
         },
@@ -259,30 +326,51 @@ fn serve<B: Backend>(backend: &mut B, job: Job, stop_ids: &[i32], closing: &Atom
                 || closing.load(Ordering::Relaxed)
                 || job.deltas.is_closed()
             {
+                cancelled = true;
                 return Step::Stop;
             }
-            if stop_ids.contains(&id) {
+            if settings.stop_token_ids.contains(&id) {
                 stopped = true;
                 return Step::Stop;
             }
             completion_tokens += 1;
             for delta in splitter.push(text) {
+                if let Delta::Content(text) = &delta {
+                    reply.push_str(text);
+                }
                 let _ = job.deltas.send(delta);
             }
             Step::Continue
         },
     );
     let last = match result {
-        Ok(prompt_tokens) => {
+        Ok(prefilled) => {
             for delta in splitter.finish() {
+                if let Delta::Content(text) = &delta {
+                    reply.push_str(text);
+                }
                 let _ = job.deltas.send(delta);
             }
+            let prompt_tokens = cached_tokens + prefilled;
+            log::debug!("rkllm: prefilled {prefilled} tokens after {cached_tokens} cached");
             let limit = u32::try_from(job.max_new_tokens).unwrap_or(0);
             let finish_reason = if !stopped && completion_tokens >= limit {
                 FinishReason::Length
             } else {
                 FinishReason::Stop
             };
+            // A reply that ended on a stop token or the model's own end of
+            // sequence is in the cache as generated, without that end token.
+            // Cancelled or truncated runs leave the cache for the next request
+            // to clear.
+            if !cancelled && finish_reason == FinishReason::Stop {
+                let mut messages = job.messages;
+                messages.push(Message::assistant(reply));
+                *cached = Some(Cached {
+                    messages,
+                    tokens: prompt_tokens + completion_tokens,
+                });
+            }
             Delta::Done {
                 usage: Usage {
                     prompt_tokens,
