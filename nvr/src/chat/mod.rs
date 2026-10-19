@@ -6,6 +6,8 @@
 //! mono s16le), `text` (typed question), `cancel`, `reset`.
 //! Server → client: `asr_partial` / `asr_final`, `reply_delta`, `reply_audio`
 //! (binary s16le with `turn`, `seq`, `sample_rate`), `reply_done`, `error`.
+//! The `text` ack and `asr_final` report the `turn` that answers the question
+//! (null when none starts), before any of that turn's events.
 //! Every reply event carries its `turn`; a new question cancels the old turn,
 //! so clients drop audio from older turns. Each turn ends with one
 //! `reply_done`, with `interrupted: true` when it was cancelled.

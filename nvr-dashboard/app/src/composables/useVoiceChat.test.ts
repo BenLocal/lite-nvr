@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useVoiceChat } from './useVoiceChat'
 
 const fake = vi.hoisted(() => ({
+  turn: 0,
   handlers: new Map<string, (data?: unknown) => void>(),
   emit: vi.fn(),
   connect: vi.fn(),
@@ -42,12 +43,21 @@ function receive(name: string, data?: unknown): void {
   fake.handlers.get(name)?.(data)
 }
 
+type Ack = (data: { turn: number | null }) => void
+
+/** Acks `text` like the server: each question starts the next turn. */
+function serverEmit(event: string, _data?: unknown, ack?: Ack): void {
+  if (event === 'text') ack?.({ turn: ++fake.turn })
+}
+
 let chat: ReturnType<typeof useVoiceChat>
 let unmount: () => void
 
 beforeEach(() => {
   vi.clearAllMocks()
   fake.emit.mockReset()
+  fake.emit.mockImplementation(serverEmit)
+  fake.turn = 0
   fake.handlers.clear()
   fake.unlock.mockResolvedValue(undefined)
   fake.startRecording.mockResolvedValue(true)
@@ -65,7 +75,10 @@ afterEach(() => unmount())
 describe('voice chat session', () => {
   it('does not cancel the first typed question when server callbacks run out of order', async () => {
     const queued: string[] = []
-    fake.emit.mockImplementation((event: string) => { queued.push(event) })
+    fake.emit.mockImplementation((event: string, data?: unknown, ack?: Ack) => {
+      queued.push(event)
+      serverEmit(event, data, ack)
+    })
     await chat.sendText('你好')
     // Old async Socket.IO handlers can enqueue `text` before the preceding
     // `cancel`. Reproduce that order at the real composable's event boundary.
@@ -89,7 +102,7 @@ describe('voice chat session', () => {
     await chat.sendText('第一轮')
     fake.emit.mockClear()
     await chat.sendText('第二轮')
-    expect(fake.emit.mock.calls).toEqual([['text', '第二轮']])
+    expect(fake.emit.mock.calls).toEqual([['text', '第二轮', expect.any(Function)]])
     expect(chat.messages.value[1]?.state).toBe('interrupted')
     receive('reply_delta', { turn: 2, text: '第二轮的回答' })
     expect(chat.messages.value[3]?.text).toBe('第二轮的回答')
@@ -134,15 +147,17 @@ describe('voice chat session', () => {
     expect(chat.transcript.value).toBe('北京')
     await chat.stopRecording()
     expect(fake.emit.mock.calls.slice(-2)).toEqual([['audio', new ArrayBuffer(6)], ['stop']])
-    receive('asr_final', { text: '北京有哪些景点？' })
+    receive('asr_final', { text: '北京有哪些景点？', turn: 1 })
     expect(chat.messages.value[0]?.text).toBe('北京有哪些景点？')
     expect(chat.phase.value).toBe('replying')
+    receive('reply_delta', { turn: 1, text: '故宫' })
+    expect(chat.messages.value[1]?.text).toBe('故宫')
   })
 
   it('does not start a turn when recognition is empty', async () => {
     await chat.startRecording()
     await chat.stopRecording()
-    receive('asr_final', { text: '' })
+    receive('asr_final', { text: '', turn: null })
     expect(chat.messages.value).toEqual([])
     expect(chat.phase.value).toBe('idle')
     expect(chat.error.value).toContain('没有听清')
@@ -170,6 +185,33 @@ describe('voice chat session', () => {
     expect(chat.messages.value[1]?.text).toBe('新的回答')
   })
 
+  it('follows the server turn id after a recognized question the client ignored', async () => {
+    // The server started turn 1 from speech while the client was not recognizing.
+    receive('asr_final', { text: '没等到的问题', turn: ++fake.turn })
+    expect(chat.messages.value).toEqual([])
+    await chat.sendText('下一个问题')
+    receive('reply_delta', { turn: 1, text: '旧回复' })
+    receive('reply_delta', { turn: 2, text: '新回复' })
+    expect(chat.messages.value[1]?.text).toBe('新回复')
+  })
+
+  it('ignores the ack of a question superseded before the server answered it', async () => {
+    const acks: Ack[] = []
+    fake.emit.mockImplementation((event: string, _data?: unknown, ack?: Ack) => {
+      if (event === 'text' && ack) acks.push(ack)
+    })
+    await chat.sendText('第一轮')
+    await chat.sendText('第二轮')
+    acks[0]?.({ turn: 1 })
+    receive('reply_delta', { turn: 1, text: '旧回复' })
+    receive('reply_done', { turn: 1, interrupted: true })
+    expect(chat.messages.value[3]?.state).toBe('pending')
+    acks[1]?.({ turn: 2 })
+    receive('reply_delta', { turn: 2, text: '新回复' })
+    expect(chat.messages.value[3]?.text).toBe('新回复')
+    expect(chat.messages.value[1]?.text).toBe('')
+  })
+
   it('stops microphone and playback on disconnect and starts a fresh session after reconnect', async () => {
     await chat.sendText('你好')
     receive('disconnect')
@@ -178,6 +220,7 @@ describe('voice chat session', () => {
     expect(fake.stopPlayback).toHaveBeenCalled()
     expect(fake.stopRecording).toHaveBeenCalledWith(false)
     chat.connect()
+    fake.turn = 0
     receive('connect')
     expect(chat.messages.value).toEqual([])
     await chat.sendText('重连后的第一轮')

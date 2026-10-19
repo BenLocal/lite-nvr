@@ -112,15 +112,15 @@ pub fn split_sentences(buf: &mut String) -> Vec<String>;      // 从流式文本
 - 客户端到服务端：
   - `audio`：二进制，16 kHz 单声道 s16le，每片约 100 ms；
   - `start` / `stop`：按住说话的开始和结束；
-  - `text`：可选，直接打字提问；
+  - `text`：可选，直接打字提问；ack 回 `{turn}`，即回答这个问题的那一轮（问题为空时为 null）；
   - `reset`：清空历史；`cancel`：打断当前回答。
 - 服务端到客户端：
-  - `asr_partial` / `asr_final`：识别的中间结果和最终结果（`{text}`）；`asr_final` 文本为空表示没听到话，不会开始回答；
+  - `asr_partial` / `asr_final`：识别的中间结果和最终结果（`{text}`）；`asr_final` 另带 `turn`，即回答这句话的那一轮；文本为空表示没听到话，不会开始回答，`turn` 为 null；
   - `reply_delta`：回复文字增量（`{turn, text}`）；
   - `reply_audio`：一句语音（`{turn, seq, sample_rate, pcm}`，`pcm` 为二进制单声道 s16le，`seq` 从 0 起）；
   - `reply_done`（`{turn, interrupted}`）：每一轮都会发，出错时也发；被打断的一轮也发，`interrupted` 为 true；
   - `error`（`{message}`，属于某一轮时带 `turn`）：例如模型未就绪、忙、ASR 不可用。
-  - 回答相关事件都带 `turn`；新问题会取消旧的一轮，客户端丢弃旧 `turn` 的语音。
+  - 回答相关事件都带 `turn`；新问题会取消旧的一轮，客户端丢弃旧 `turn` 的语音。turn 编号只由服务端分配，并在这一轮的任何事件之前通过 `text` 的 ack 或 `asr_final` 告诉客户端；客户端不要自己计数。
 - 采用**按住说话**，不做全双工：松开时对 ASR 执行 `flush` 得到整句，再发给 LLM。这样避免 TTS 播放的声音被麦克风收进去形成回声，也不需要回声消除。新问题会打断上一轮回答：停止生成，并丢掉还没下发的语音。
 - ASR 模型复用现有 ASR 字幕加载的那份，每个会话只新建 VAD，识别跑在会话自己的线程上。TTS 全局只加载一份（`TTS_MODELS_DIR`，默认 `third_party/tts-models`；先试 NPU 的 `MeloTTS-RKNN2`，`librknnrt.so` 路径由 `NVR_TTS_RKNN_LIB` 指定，失败再用 CPU 的 `vits-melo-tts-zh_en`），合成串行执行；连接时就在后台预加载 ASR 和 TTS 模型。加载失败的结果会保留，改好模型后要重启 nvr。
 - 关停时先停止新的合成并等待正在进行的那句（最多 2 s），再关 LLM。

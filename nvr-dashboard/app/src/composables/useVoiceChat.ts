@@ -1,4 +1,4 @@
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, type ComputedRef, type Ref } from 'vue'
 import { createChatSocket } from '../api/chat'
 import { ChatAudio } from '../utils/chatAudio'
 
@@ -9,7 +9,26 @@ export interface ChatMessage {
   state: 'pending' | 'done' | 'interrupted'
 }
 
-export function useVoiceChat() {
+export interface VoiceChat {
+  connection: Ref<'connecting' | 'connected' | 'disconnected'>
+  connected: ComputedRef<boolean>
+  phase: Ref<'idle' | 'preparing' | 'listening' | 'recognizing' | 'replying'>
+  messages: Ref<ChatMessage[]>
+  transcript: Ref<string>
+  error: Ref<string>
+  recording: ComputedRef<boolean>
+  canSend: ComputedRef<boolean>
+  busy: ComputedRef<boolean>
+  status: ComputedRef<string>
+  sendText: (question: string) => Promise<boolean>
+  startRecording: () => Promise<void>
+  stopRecording: () => Promise<void>
+  stopReply: () => void
+  reset: () => void
+  connect: () => void
+}
+
+export function useVoiceChat(): VoiceChat {
   const socket = createChatSocket()
   const connection = ref<'connecting' | 'connected' | 'disconnected'>('connecting')
   const phase = ref<'idle' | 'preparing' | 'listening' | 'recognizing' | 'replying'>('idle')
@@ -18,8 +37,10 @@ export function useVoiceChat() {
   const error = ref('')
   const speaking = ref(false)
   const audio = new ChatAudio(value => { speaking.value = value })
-  let nextTurn = 0
+  let nextMessage = 0
+  // Turn ids come from the server; replies stay hidden until it names the turn.
   let activeTurn: number | undefined
+  let activeReply: string | undefined
   let lastAudioSeq = -1
   let disposed = false
 
@@ -38,37 +59,50 @@ export function useVoiceChat() {
   })
 
   function report(cause: unknown): void {
+    console.error('voice chat:', cause)
     if (disposed) return
     error.value = cause instanceof Error ? cause.message : String(cause)
   }
 
   function currentReply(): ChatMessage | undefined {
-    return messages.value.find(message => message.id === `assistant-${activeTurn}`)
+    return messages.value.find(message => message.id === activeReply)
   }
 
   function clearReply(): void {
     const reply = currentReply()
     if (reply?.state === 'pending') reply.state = 'interrupted'
     activeTurn = undefined
+    activeReply = undefined
     audio.stopPlayback()
     if (phase.value === 'replying') phase.value = 'idle'
   }
 
   function stopReply(): void {
-    if (socket.connected && activeTurn !== undefined && phase.value === 'replying') {
+    if (socket.connected && activeReply !== undefined && phase.value === 'replying') {
       socket.emit('cancel')
     }
     clearReply()
   }
 
-  function addTurn(question: string): void {
-    activeTurn = ++nextTurn
+  /** Returns the id of the pending reply. */
+  function addTurn(question: string): string {
+    const id = ++nextMessage
+    activeTurn = undefined
+    activeReply = `assistant-${id}`
     lastAudioSeq = -1
     messages.value.push(
-      { id: `user-${activeTurn}`, role: 'user', text: question, state: 'done' },
-      { id: `assistant-${activeTurn}`, role: 'assistant', text: '', state: 'pending' },
+      { id: `user-${id}`, role: 'user', text: question, state: 'done' },
+      { id: activeReply, role: 'assistant', text: '', state: 'pending' },
     )
     phase.value = 'replying'
+    return activeReply
+  }
+
+  /** Binds the pending reply `id` to the server's `turn`, unless it was superseded. */
+  function startTurn(id: string, turn: unknown): void {
+    if (id !== activeReply) return
+    if (typeof turn === 'number') activeTurn = turn
+    else clearReply()
   }
 
   async function sendText(question: string): Promise<boolean> {
@@ -80,8 +114,8 @@ export function useVoiceChat() {
       if (!canSend.value || disposed) return false
       // `text` cancels the previous turn on the server itself.
       clearReply()
-      addTurn(text)
-      socket.emit('text', text)
+      const id = addTurn(text)
+      socket.emit('text', text, data => startTurn(id, data?.turn))
       return true
     } catch (cause) {
       report(cause)
@@ -138,7 +172,6 @@ export function useVoiceChat() {
     messages.value = []
     transcript.value = ''
     error.value = ''
-    // `reset` clears history, but server-side turn ids keep increasing.
   }
 
   function connect(): void {
@@ -150,8 +183,8 @@ export function useVoiceChat() {
   socket.on('connect', () => {
     connection.value = 'connected'
     phase.value = 'idle'
-    nextTurn = 0
     activeTurn = undefined
+    activeReply = undefined
     messages.value = []
     transcript.value = ''
     error.value = ''
@@ -178,7 +211,7 @@ export function useVoiceChat() {
   socket.on('asr_final', data => {
     if (phase.value !== 'recognizing' || typeof data?.text !== 'string') return
     transcript.value = ''
-    if (data.text.trim()) addTurn(data.text)
+    if (data.text.trim() && typeof data.turn === 'number') startTurn(addTurn(data.text), data.turn)
     else {
       phase.value = 'idle'
       error.value = '没有听清，请按住按钮重新说一次'
@@ -215,7 +248,7 @@ export function useVoiceChat() {
     disposed = true
     socket.removeAllListeners()
     socket.disconnect()
-    void audio.dispose().catch(() => { /* Resources are already detached on exit. */ })
+    void audio.dispose().catch(report)
   })
 
   return {

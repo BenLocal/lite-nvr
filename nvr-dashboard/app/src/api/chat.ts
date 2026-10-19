@@ -3,7 +3,8 @@ import { getAuthToken } from '../auth/token'
 
 export interface ChatServerEvents {
   asr_partial: (data: { text: string }) => void
-  asr_final: (data: { text: string }) => void
+  /** `turn` answers the recognized question; null when nothing was heard. */
+  asr_final: (data: { text: string; turn: number | null }) => void
   reply_delta: (data: { turn: number; text: string }) => void
   reply_audio: (data: { turn: number; seq: number; sample_rate: number; pcm: ArrayBuffer }) => void
   reply_done: (data: { turn: number; interrupted: boolean }) => void
@@ -14,7 +15,8 @@ interface ChatClientEvents {
   start: () => void
   stop: () => void
   audio: (pcm: ArrayBuffer) => void
-  text: (question: string) => void
+  /** The ack carries the turn that answers the question. */
+  text: (question: string, ack: (data: { turn: number | null }) => void) => void
   cancel: () => void
   reset: () => void
 }

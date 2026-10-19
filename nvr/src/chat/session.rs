@@ -7,7 +7,7 @@ use bytes::Bytes;
 use nvr_asr::Transcript;
 use nvr_rkllm::Message;
 use serde_json::json;
-use socketioxide::extract::{Data, SocketRef};
+use socketioxide::extract::{AckSender, Data, SocketRef};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 
@@ -32,7 +32,8 @@ pub(super) enum Event {
     Start,
     Audio(Vec<f32>),
     Stop,
-    Text(String),
+    /// A typed question; the ack tells the client which turn answers it.
+    Text(String, AckSender),
     Cancel,
     Reset,
     /// A recognizer result for push-to-talk round `epoch`.
@@ -73,8 +74,8 @@ pub(super) async fn on_connect(socket: SocketRef) {
         std::future::ready(())
     });
     let text = tx.clone();
-    socket.on("text", move |Data::<String>(question)| {
-        let _ = text.send(Event::Text(question));
+    socket.on("text", move |Data::<String>(question), ack: AckSender| {
+        let _ = text.send(Event::Text(question, ack));
         std::future::ready(())
     });
     let closed = CancellationToken::new();
@@ -152,7 +153,11 @@ impl Session {
                     asr.flush();
                 }
             }
-            Event::Text(question) => self.start_turn(question),
+            Event::Text(question, ack) => {
+                self.start_turn(question, |turn| {
+                    let _ = ack.send(&json!({ "turn": turn }));
+                });
+            }
             Event::Cancel => self.cancel_turn(),
             Event::Reset => {
                 self.cancel_turn();
@@ -167,9 +172,12 @@ impl Session {
             },
             Event::Flushed { epoch } if epoch == self.epoch => {
                 let question = std::mem::take(&mut self.heard).concat();
-                // An empty `asr_final` tells the client no turn follows.
-                self.emit("asr_final", json!({ "text": question }));
-                self.start_turn(question);
+                let socket = self.socket.clone();
+                let text = question.clone();
+                // `turn` is null when nothing was heard and no turn follows.
+                self.start_turn(question, move |turn| {
+                    let _ = socket.emit("asr_final", &json!({ "text": text, "turn": turn }));
+                });
             }
             Event::Asr { .. } | Event::Flushed { .. } => {}
             Event::TurnDone {
@@ -217,14 +225,19 @@ impl Session {
         AsrWorker::spawn(models, self.events.clone())
     }
 
-    fn start_turn(&mut self, question: String) {
+    /// `announce` gets the new turn's id, or `None` for an empty question. It
+    /// runs before the turn starts, so the client learns the id before any of
+    /// the turn's events arrive.
+    fn start_turn(&mut self, question: String, announce: impl FnOnce(Option<u64>)) {
         self.cancel_turn();
         let question = question.trim().to_string();
         if question.is_empty() {
+            announce(None);
             return;
         }
         self.next_turn += 1;
         let turn = self.next_turn;
+        announce(Some(turn));
         let cancel = CancellationToken::new();
         let mut messages = Vec::with_capacity(self.history.len() + 2);
         messages.push(Message::system(SYSTEM_PROMPT.as_str()));

@@ -50,12 +50,14 @@ async function mockChat(page: Page) {
       } else if (message.startsWith('451-/chat,')) {
         awaitingPcm = true
       } else if (message.startsWith('42/chat,')) {
-        const [name, text] = JSON.parse(message.slice('42/chat,'.length))
+        const [, ackId, payload] = /^(\d*)(.*)$/.exec(message.slice('42/chat,'.length)) ?? []
+        const [name, text] = JSON.parse(payload ?? '')
+        if (name === 'text') ws.send(`43/chat,${ackId}${JSON.stringify([{ turn: turn + 1 }])}`)
         if (name === 'text') reply(text === '长回复' ? '这是一段正在播放的长回复。' : '你好！有什么可以帮你？', text !== '长回复')
         if (name === 'cancel' && turn) event('reply_done', { turn, interrupted: true })
         if (name === 'stop') {
           state.stopped = true
-          event('asr_final', { text: '北京有哪些景点？' })
+          event('asr_final', { text: '北京有哪些景点？', turn: turn + 1 })
           reply('你可以去故宫和颐和园。')
         }
       }
