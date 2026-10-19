@@ -12,6 +12,8 @@ use crate::transport::smb::SmbBackend;
 
 /// A remote storage destination recorded segments can be copied to. Backends run
 /// their (blocking) client work on the blocking pool, so the methods are async.
+// async_trait adds #[must_use] to futures, which are already must-use.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait StorageBackend: Send + Sync {
     /// Copy the local file to `remote_key`, creating parent directories as needed.

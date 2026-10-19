@@ -11,6 +11,8 @@ use gb28181::Transport;
 use crate::zlm::cmd::{ZlmControl, mode_for};
 
 /// A live receiver ZLM opened for one stream. Dropping it releases the port.
+// async_trait adds #[must_use] to futures, which are already must-use.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait ReceiverHandle: Send {
     /// Port the device must send its PS/RTP to (UDP) or connect to (TCP passive).
@@ -21,6 +23,8 @@ pub trait ReceiverHandle: Send {
 }
 
 /// Opens a media receiver for a stream id.
+// async_trait adds #[must_use] to futures, which are already must-use.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait MediaReceiver: Send + Sync {
     async fn open(

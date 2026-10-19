@@ -540,9 +540,11 @@ impl AvInput {
     }
 
     fn read_source(&mut self) -> ReadOutcome {
+        #[cfg(not(feature = "rockchip"))]
+        let Source::Ffmpeg(input) = &mut self.inner;
+        #[cfg(feature = "rockchip")]
         let input = match &mut self.inner {
             Source::Ffmpeg(input) => input,
-            #[cfg(feature = "rockchip")]
             Source::Dmabuf(capture) => return capture.read(),
         };
         let mut packet = ffmpeg_next::Packet::empty();

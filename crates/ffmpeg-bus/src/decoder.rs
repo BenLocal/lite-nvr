@@ -104,7 +104,7 @@ pub(crate) fn intra_only(codec: ffmpeg_next::codec::Id) -> bool {
         }
         (*descriptor).props
     };
-    props & ffmpeg_next::ffi::AV_CODEC_PROP_INTRA_ONLY as i32 != 0
+    props & ffmpeg_next::ffi::AV_CODEC_PROP_INTRA_ONLY != 0
 }
 
 /// Relay → decode loop message.
