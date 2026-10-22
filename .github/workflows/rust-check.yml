@@ -39,10 +39,11 @@ jobs:
           cache: npm
           cache-dependency-path: nvr-dashboard/app/package-lock.json
 
-      - name: Install download dependencies
+      # libasound2-dev: crates/nvr-hdmiout links ALSA through alsa-sys.
+      - name: Install download and build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl tar xz-utils
+          sudo apt-get install -y curl tar xz-utils libasound2-dev
 
       - name: Cache FFmpeg
         id: cache-ffmpeg
