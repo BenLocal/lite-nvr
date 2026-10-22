@@ -52,7 +52,3 @@ rustflags = []
 # Windows aarch64 MSVC
 [target.aarch64-pc-windows-msvc]
 rustflags = []
-
-[patch.crates-io]
-ffmpeg-next = { path = ".cache/rockchip-rust/d232270540a36944ae7659f1f9e24058757fa96448536413ccfc7c9337cd0488/ffmpeg-next" }
-ffmpeg-sys-next = { path = ".cache/rockchip-rust/d232270540a36944ae7659f1f9e24058757fa96448536413ccfc7c9337cd0488/ffmpeg-sys-next" }
