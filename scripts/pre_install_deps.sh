@@ -7,7 +7,7 @@ set -euo pipefail
 
 FFMPEG_VERSION="8.1"
 FFMPEG_BASE_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
-ZLM_VERSION="autobuild-2026-06-24"
+ZLM_VERSION="autobuild-2026-10-21"
 ZLM_BASE_URL="https://github.com/BenLocal/ZLMediaKit-Build/releases/download"
 
 # Detect OS and Architecture
@@ -59,15 +59,17 @@ get_ffmpeg_url() {
     esac
 }
 
+# Linux uses the `_noffmpeg` packages: the others link the build distro's libav*
+# (libavutil.so.56), which cannot load next to the bundled FFmpeg 8.
 get_zlm_url() {
     local platform="$1"
 
     case "${platform}" in
         linux-x64)
-            echo "${ZLM_BASE_URL}/${ZLM_VERSION}/zlmediakit_master_linux_amd64_latest.tar.gz"
+            echo "${ZLM_BASE_URL}/${ZLM_VERSION}/zlmediakit_master_linux_amd64_noffmpeg_latest.tar.gz"
             ;;
         linux-arm64)
-            echo "${ZLM_BASE_URL}/${ZLM_VERSION}/zlmediakit_master_linux_arm64_latest.tar.gz"
+            echo "${ZLM_BASE_URL}/${ZLM_VERSION}/zlmediakit_master_linux_arm64_noffmpeg_latest.tar.gz"
             ;;
         macos-x64)
             echo "${ZLM_BASE_URL}/${ZLM_VERSION}/zlmediakit_master_macos_amd64_latest.tar.gz"
@@ -184,9 +186,14 @@ install_zlm() {
     echo "=== ZLMediaKit Installation ==="
     echo "ZLM directory: ${zlm_dir}"
 
+    # `.release` records the installed ZLM_VERSION so a version bump replaces stale libraries.
     if [[ -d "${zlm_dir}" ]]; then
-        echo "ZLM directory already exists, skipping installation."
-        return 0
+        if [[ "$(cat "${zlm_dir}/.release" 2>/dev/null)" == "${ZLM_VERSION}" ]]; then
+            echo "ZLM ${ZLM_VERSION} already installed, skipping installation."
+            return 0
+        fi
+        echo "Replacing ZLM in ${zlm_dir} with ${ZLM_VERSION}..."
+        rm -rf "${zlm_dir}"
     fi
 
     zlm_url="$(get_zlm_url "${platform}")"
@@ -207,6 +214,7 @@ install_zlm() {
     extract_archive "${archive_path}" "${zlm_dir}"
 
     rm -f "${archive_path}"
+    echo "${ZLM_VERSION}" > "${zlm_dir}/.release"
 
     echo "=== ZLMediaKit installation complete ==="
     echo "Installed to: ${zlm_dir}"

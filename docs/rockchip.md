@@ -11,7 +11,7 @@
   - 包内 RK FFmpeg、ZLM、ONNX Runtime 的要求都不高于 glibc 2.28。
 - 检查板端 glibc：`getconf GNU_LIBC_VERSION`；BusyBox 系统没有 `getconf`，可执行 `/lib/libc.so.6` 查看版本。检查包实际需要的版本：`strings bin/nvr | grep -o 'GLIBC_2\.[0-9]*' | sort -V | tail -1`。不能按 SoC 型号判断是否兼容，单独替换 FFmpeg 也不能解决 NVR 本身的 glibc 版本要求。
 - 使用 **FFmpeg 8.1 shared RK** 包，名称匹配 `linuxarm64-gpl-shared-8.1-rk.tar.xz`。工程使用 `ffmpeg-next = 8`，不要替换成 release 中的 6.1 / 7.1；不带 `shared` 的包不能替代 NVR 链接的共享库。
-- ZLMediaKit 使用 [BenLocal/ZLMediaKit-Build release](https://github.com/BenLocal/ZLMediaKit-Build/releases/tag/autobuild-2026-06-24) 的 Linux arm64 预编译库，无需在板子上编译 ZLM。
+- ZLMediaKit 使用 [BenLocal/ZLMediaKit-Build release](https://github.com/BenLocal/ZLMediaKit-Build/releases/tag/autobuild-2026-10-21) 的 Linux arm64 预编译库，无需在板子上编译 ZLM。
 
 ## 生成并上传 arm64 Rockchip 包
 

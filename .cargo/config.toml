@@ -1,6 +1,9 @@
 [env]
 FFMPEG_DIR = { value = "ffmpeg", relative = true }
-ZLM_RELEASE_URL = "https://github.com/BenLocal/ZLMediaKit-Build/releases/download/autobuild-2026-06-24"
+# Full archive URL because rszlm-sys cannot name the `_noffmpeg` asset (the other packages
+# link libavutil.so.56 and fail to load next to our FFmpeg). It is the linux/amd64 package,
+# so other hosts must set ZLM_DIR (`make install-deps` provides ./zlm).
+ZLM_RELEASE_URL = "https://github.com/BenLocal/ZLMediaKit-Build/releases/download/autobuild-2026-10-21/zlmediakit_master_linux_amd64_noffmpeg_latest.tar.gz"
 
 # Linux x86_64
 [target.x86_64-unknown-linux-gnu]

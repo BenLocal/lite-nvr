@@ -72,9 +72,13 @@ for arch in "${architectures[@]}"; do
         curl -fL --retry 3 -o "$deps/ffmpeg.archive" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux${ffmpeg_arch}-gpl-shared-8.1.tar.xz"
         tar -xJf "$deps/ffmpeg.archive" -C "$deps/ffmpeg" --strip-components=1
     fi
-    if [[ ! -f "$deps/zlm/lib/libmk_api.so" ]]; then
-        curl -fL --retry 3 -o "$deps/zlm.archive" "https://github.com/BenLocal/ZLMediaKit-Build/releases/download/autobuild-2026-06-24/zlmediakit_master_linux_${dependency_arch}_latest.tar.gz"
+    # Keep in sync with ZLM_VERSION in scripts/pre_install_deps.sh; `.release` invalidates older caches.
+    zlm_release=autobuild-2026-10-21
+    if [[ ! -f "$deps/zlm/lib/libmk_api.so" || "$(cat "$deps/zlm/.release" 2>/dev/null)" != "$zlm_release" ]]; then
+        rm -rf "$deps/zlm" && mkdir -p "$deps/zlm"
+        curl -fL --retry 3 -o "$deps/zlm.archive" "https://github.com/BenLocal/ZLMediaKit-Build/releases/download/$zlm_release/zlmediakit_master_linux_${dependency_arch}_noffmpeg_latest.tar.gz"
         tar -xzf "$deps/zlm.archive" -C "$deps/zlm" --strip-components=1
+        echo "$zlm_release" > "$deps/zlm/.release"
     fi
     if [[ ! -f "$deps/onnxruntime/lib/libonnxruntime.so" ]]; then
         ort_arch=$([[ "$arch" == amd64 ]] && echo x64 || echo aarch64)
