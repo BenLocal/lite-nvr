@@ -1,4 +1,9 @@
+use std::time::Duration;
+
 use turso::{Builder, Connection, Database};
+
+/// How long a connection waits for another writer's lock before giving up.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct DatabaseConfig<'a> {
     url: &'a str,
@@ -25,20 +30,17 @@ impl NvrDatabase {
         Ok(Self { db })
     }
 
+    /// WAL still allows one writer at a time, and turso's connections default to
+    /// no busy handler, so a writer that meets another's lock fails at once with
+    /// `database is locked`. Wait for the lock instead; turso backs off without
+    /// blocking the async runtime.
     pub fn connect(&self) -> anyhow::Result<Connection> {
-        self.db.connect().map_err(anyhow::Error::from)
+        let conn = self.db.connect().map_err(anyhow::Error::from)?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        Ok(conn)
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_connect() {
-        let config = DatabaseConfig { url: ":memory:" };
-        let db = NvrDatabase::new(&config).await.unwrap();
-        let conn = db.connect();
-        assert!(conn.is_ok());
-    }
-}
+#[path = "db_test.rs"]
+mod db_test;
