@@ -313,10 +313,11 @@ fn needs_stream_probe(format: Option<&str>) -> bool {
     format != Some("alsa")
 }
 
-/// Ends a V4L2 capture that stops delivering frames. rk_hdmirx keeps
-/// streaming but never delivers again after the HDMI signal drops and
-/// relocks; it only resumes once streaming is restarted, so the stream is
-/// ended for the owner to reopen the device.
+/// Ends a capture that stops delivering. rk_hdmirx keeps streaming but never
+/// delivers again after the HDMI signal drops and relocks, and an HDMI-in
+/// ALSA PCM started before any audio arrives stays empty once audio starts;
+/// both only resume when reopened, so the stream is ended for the owner to
+/// reopen the device.
 struct Stall {
     limit: Duration,
     last: Option<Instant>,
@@ -326,6 +327,10 @@ impl Stall {
     /// A live capture delivers well within this; a fresh rk_hdmirx stream
     /// starts in about 0.6s.
     const CAPTURE_LIMIT: Duration = Duration::from_secs(5);
+    /// An HDMI-in with no audio stays silent indefinitely, and each reopen
+    /// costs a few log lines; audio that starts later is picked up within
+    /// this (plus the owner's reopen delay).
+    const AUDIO_LIMIT: Duration = Duration::from_secs(30);
 
     fn new(limit: Duration) -> Self {
         Self { limit, last: None }
@@ -352,6 +357,18 @@ impl Stall {
 
 fn is_v4l2(format: Option<&str>) -> bool {
     matches!(format, Some("v4l2" | "video4linux2"))
+}
+
+/// How long an input may go without delivering before [`Stall`] ends it;
+/// `None` for inputs that are not watched.
+fn stall_limit(format: Option<&str>) -> Option<Duration> {
+    if is_v4l2(format) {
+        Some(Stall::CAPTURE_LIMIT)
+    } else if format == Some("alsa") {
+        Some(Stall::AUDIO_LIMIT)
+    } else {
+        None
+    }
 }
 
 /// Where packets come from: an FFmpeg demuxer, or (Rockchip) a V4L2 capture
@@ -479,7 +496,7 @@ impl AvInput {
             inner: Source::Ffmpeg(input),
             streams,
             interrupt,
-            stall: is_v4l2(format).then(|| Stall::new(Stall::CAPTURE_LIMIT)),
+            stall: stall_limit(format).map(Stall::new),
         })
     }
 

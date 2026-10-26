@@ -207,11 +207,19 @@ fn stalled_capture_ends_after_the_limit() {
     ));
 }
 
+/// An HDMI-in PCM opened before any audio arrives never delivers once audio
+/// starts, so ALSA captures are watched too, with a longer limit: a silent
+/// card would otherwise be reopened (and logged) every few seconds.
 #[test]
-fn only_v4l2_inputs_watch_for_stalls() {
-    assert!(super::is_v4l2(Some("v4l2")));
-    assert!(super::is_v4l2(Some("video4linux2")));
-    assert!(!super::is_v4l2(Some("alsa")));
-    assert!(!super::is_v4l2(Some("x11grab")));
-    assert!(!super::is_v4l2(None));
+fn capture_inputs_watch_for_stalls() {
+    use super::{Stall, stall_limit};
+    assert_eq!(stall_limit(Some("v4l2")), Some(Stall::CAPTURE_LIMIT));
+    assert_eq!(
+        stall_limit(Some("video4linux2")),
+        Some(Stall::CAPTURE_LIMIT)
+    );
+    assert_eq!(stall_limit(Some("alsa")), Some(Stall::AUDIO_LIMIT));
+    assert!(Stall::AUDIO_LIMIT > Stall::CAPTURE_LIMIT);
+    assert_eq!(stall_limit(Some("x11grab")), None);
+    assert_eq!(stall_limit(None), None);
 }
