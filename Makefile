@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install-deps download-asr-libs download-asr-models asr-demo xvfb install-watch build run watch dummy check test test-nvr test-nvr-asr test-ffmpeg-bus \
+.PHONY: help install-deps download-asr-libs download-asr-models asr-demo xvfb install-watch zlm-sync build run watch dummy check test test-nvr test-nvr-asr test-ffmpeg-bus \
         fmt fmt-check frontend-install frontend-build frontend-dev frontend-lint \
         frontend-typecheck package clean clean-frontend
 
@@ -22,6 +22,13 @@ LD_LIBRARY_PATH := $(LD_LIBRARY_PATH):$(ZLM_DIR)/lib
 endif
 
 export LD_LIBRARY_PATH
+
+# rszlm-sys never notices a replaced ZLM: with ZLM_DIR it reruns only when the
+# variable's value changes, and it skips the download once OUT_DIR has a copy.
+# Cargo would keep loading the old libmk_api.so from target/*/deps, so
+# `zlm-sync` cleans rszlm-sys whenever the library or ZLM_RELEASE_URL changes.
+_ZLM_TARGET_DIR := $(or $(CARGO_TARGET_DIR),$(PROJECT_ROOT)/target)
+_ZLM_STAMP := $(_ZLM_TARGET_DIR)/.zlm-source
 
 # Mirror uppercase proxy vars (from .env) to lowercase so curl/wget honor them
 # for both http and https (curl ignores uppercase HTTP_PROXY for http URLs).
@@ -137,7 +144,18 @@ install-watch:
 BUILD_MODE ?= build
 BUILD_ARGS ?=
 
-build:
+zlm-sync:
+	@if [ -n "$(ZLM_DIR)" ]; then \
+		want="dir:$$(sha256sum "$(ZLM_DIR)/lib/libmk_api.so" 2>/dev/null | cut -d' ' -f1)"; \
+	else \
+		want="url:$(ZLM_RELEASE_URL)$$(grep -E '^ZLM_RELEASE_URL' "$(PROJECT_ROOT)/.cargo/config.toml")"; \
+	fi; \
+	if [ "$$want" != "dir:" ] && [ "$$(cat "$(_ZLM_STAMP)" 2>/dev/null)" != "$$want" ]; then \
+		echo "ZLMediaKit changed, cleaning rszlm-sys"; \
+		cargo clean -p rszlm-sys && mkdir -p "$(_ZLM_TARGET_DIR)" && echo "$$want" > "$(_ZLM_STAMP)"; \
+	fi
+
+build: zlm-sync
 	CARGO_BUILD_JOBS=$(BUILD_JOBS) CMAKE_BUILD_PARALLEL_LEVEL=$(BUILD_JOBS) \
 		nice -n $(BUILD_NICE) bash scripts/build.sh $(BUILD_MODE) $(BUILD_ARGS)
 
@@ -147,7 +165,7 @@ package:
 		CROSS_CONTAINER_OPTS="$(PACKAGE_CONTAINER_OPTS)" \
 		nice -n $(BUILD_NICE) bash scripts/package-linux.sh $(PACKAGE_ARCHS)
 
-run:
+run: zlm-sync
 	cargo run --package nvr
 
 # GB28181 dummy-camera (emulated IPC). Defaults target the local NVR's GB SIP
@@ -169,7 +187,7 @@ dummy:
 		$(if $(strip $(DUMMY_PASSWORD)),--password $(DUMMY_PASSWORD)) \
 		$(DUMMY_ARGS)
 
-watch:
+watch: zlm-sync
 	@command -v cargo-watch >/dev/null 2>&1 || { \
 		echo "cargo-watch not found. Run: make install-watch"; exit 1; }
 	cargo watch -w nvr -w crates/ffmpeg-bus -w nvr-db -x 'run --package nvr'
@@ -207,10 +225,10 @@ asr-demo:
 check:
 	cargo check --workspace
 
-test:
+test: zlm-sync
 	cargo test --workspace --lib --tests --no-fail-fast
 
-test-nvr:
+test-nvr: zlm-sync
 	cargo test -p nvr
 
 test-nvr-asr:
