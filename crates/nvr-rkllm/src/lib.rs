@@ -1,15 +1,18 @@
 //! On-board LLM inference through the Rockchip RKLLM runtime.
 //!
-//! [`Engine::spawn`] loads a `.rkllm` model on a dedicated inference thread
+//! [`Engine::spawn`] loads a `.rkllm` model in an isolated worker process
 //! and serves [`ChatRequest`]s one at a time (the NPU runs one generation at
 //! a time); each request streams [`Delta`]s through a [`Generation`].
 //! `librkllmrt.so` is dlopened at run time, so the crate builds and its tests
 //! run on any host.
 //!
-//! Runtime 1.3.0 caveats this crate works around (the model runs inside the
-//! nvr process):
-//! - a failed `rkllm_init` may double free, so the model and library are
-//!   checked before init and a failed load is never retried in-process;
+//! The host binary must call [`run_worker_if_requested`] before initializing
+//! its services. Workers use the same executable and a private socket, so
+//! runtime logs on stdout/stderr cannot corrupt the protocol.
+//!
+//! Runtime 1.3.0 caveats this crate works around:
+//! - a failed `rkllm_init` may double free; only the worker dies, and a failed
+//!   load is never automatically retried;
 //! - `rkllm_destroy` sometimes hangs in an NPU ioctl, so the handle is never
 //!   destroyed; the kernel reclaims NPU memory when the process exits.
 
@@ -17,17 +20,19 @@ use std::path::PathBuf;
 
 mod engine;
 mod ffi;
+mod process;
 mod reasoning;
 mod rkllm;
 mod template;
 
 pub use engine::{Engine, EngineState, GenerateError, Generation};
+pub use process::run_worker_if_requested;
 pub use template::{Prompt, Template};
 
 /// Qwen's `<|endoftext|>` and `<|im_end|>`.
 pub const DEFAULT_STOP_TOKEN_IDS: [i32; 2] = [151643, 151645];
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LlmConfig {
     /// `.rkllm` model (RK3588 needs a w8a8-family quantization).
     pub model: PathBuf,
@@ -95,7 +100,7 @@ impl Message {
 }
 
 /// Per-request sampling overrides; `None` keeps the engine default.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Sampling {
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,

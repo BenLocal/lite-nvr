@@ -50,7 +50,7 @@ async fn rockchip_model_answers() {
     if let Ok(lib) = std::env::var("NVR_RKLLM_TEST_LIB") {
         cfg.lib = lib;
     }
-    let engine = crate::Engine::spawn(cfg);
+    let engine = crate::process::process_test::spawn_config(cfg, "real");
     engine.wait_ready().await.unwrap();
     let req = crate::ChatRequest {
         messages: vec![crate::Message::user("用一句话介绍你自己")],

@@ -31,8 +31,13 @@ struct Args {
     think: bool,
 }
 
+fn main() -> Result<()> {
+    nvr_rkllm::run_worker_if_requested();
+    run()
+}
+
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
+async fn run() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args = Args::parse();
     let mut cfg = LlmConfig::new(&args.model, args.template);

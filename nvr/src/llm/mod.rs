@@ -1,4 +1,4 @@
-//! On-board LLM for Rockchip builds: loads an RKLLM model inside nvr when
+//! On-board LLM for Rockchip builds: loads an RKLLM model in a worker when
 //! `NVR_LLM_MODEL` is set and serves an OpenAI-compatible API under
 //! `/api/llm`. See `docs/voice-chat-spec.md`.
 
@@ -26,8 +26,8 @@ pub(crate) enum Llm {
 
 static LLM: OnceLock<Llm> = OnceLock::new();
 
-/// Read the config and, when enabled, start loading the model on its own
-/// thread. Returns at once; the API reports `loading` until it is ready.
+/// Read the config and start the isolated model worker when enabled.
+/// Returns at once; the API reports `loading` until it is ready.
 pub fn init() {
     let llm = match config::from_lookup(|name| std::env::var(name).ok()) {
         Ok(None) => {
@@ -67,8 +67,7 @@ fn model_name(path: &Path) -> String {
         .unwrap_or_else(|| "rkllm".into())
 }
 
-/// End any running generation so the runtime is idle when the process exits.
-/// The model itself is never unloaded (see `nvr-rkllm`).
+/// Terminate and reap the isolated model worker before the host exits.
 pub async fn shutdown() {
     if let Llm::Enabled { engine, .. } = get() {
         engine.shutdown(Duration::from_secs(2)).await;

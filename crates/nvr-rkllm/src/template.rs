@@ -4,7 +4,7 @@
 use crate::{Message, Role};
 
 /// Conversation format; must match the model family.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Template {
     /// ChatML, used by Qwen2 / 2.5 / 3 / 3.5.
     Qwen,

@@ -3,7 +3,7 @@ name = "nvr-rkllm"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "On-board LLM inference via the Rockchip RKLLM runtime: dlopens librkllmrt.so, renders chat templates and streams tokens from a single inference thread."
+description = "On-board LLM inference via an isolated Rockchip RKLLM worker: renders chat templates and streams tokens through a serial request queue."
 
 [dependencies]
 # librkllmrt.so is loaded at run time, so host builds and tests never need the
@@ -13,8 +13,13 @@ futures = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 env_logger = { workspace = true }
 clap = { version = "4", features = ["derive"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true, features = ["process", "runtime"] }
 
 # src/main.rs is the demo binary; src/lib.rs is the reusable engine.
 [[bin]]

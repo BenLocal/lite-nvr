@@ -97,5 +97,5 @@ cd nvr-dashboard/app && npm run lint && npm run type-check && npm test   # 前�
 - [目标检测踩坑](docs/memory/detection.md) — 检测模型加载、models.json、tap 生命周期与 lease、auto-start 相关的非显然问题；设计见 `docs/agents-dot-md/design-detect.md`。
 - [设备协议踩坑（GB28181 / ONVIF）](docs/memory/device-protocols.md) — GB28181 拉流、注册、PTZ 与 ONVIF 鉴权、profile 相关的非显然问题；设计见 `design-gb28181.md`、`design-onvif.md`。
 - [媒体管线与录像踩坑](docs/memory/media-and-recording.md) — media-pipe / ZLM sink、ffmpeg-bus 输出、nvr-recorder 重连，以及默认账号相关的非显然问题；设计见 `design-media-pipe.md`、`design-recorder.md`、`design-auth.md`。
-- [板端大模型与语音对话踩坑](docs/memory/voice-chat.md) — RKLLM 进程内推理、`/chat` 语音对话（ASR → LLM → TTS）在 Rockchip 板上的非显然问题；设计与验收见 `docs/voice-chat-spec.md`。
+- [板端大模型与语音对话踩坑](docs/memory/voice-chat.md) — RKLLM 推理、`/chat` 语音对话（ASR → LLM → TTS）在 Rockchip 板上的非显然问题；设计与验收见 `docs/voice-chat-spec.md`。
 <!-- MEMORY:END -->

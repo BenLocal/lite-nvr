@@ -1,13 +1,13 @@
 # 板端大模型与语音对话机器人 spec
 
-> Rockchip 构建下，nvr 进程内加载 RKLLM 模型提供对话服务（OpenAI 兼容接口），并在后台加一个语音对话机器人：网页麦克风说话 → ASR 识别 → 大模型回复 → TTS 合成语音，文字和语音同时回给网页。
+> Rockchip 构建下，nvr 通过独立 RKLLM worker 提供对话服务（OpenAI 兼容接口），并在后台加一个语音对话机器人：网页麦克风说话 → ASR 识别 → 大模型回复 → TTS 合成语音，文字和语音同时回给网页。
 
 状态：已确认（2026-10-16），按第 8 节分阶段实现；第 1、2 阶段已完成并在 20 主机验收（结果见第 10 节）。默认模型 Qwen3.5-0.8B 纯文本；麦克风采用第 6.3 节的做法 1（nvr 可选 HTTPS 端口）。
 
 ## 1. 目标和已经明确的约定
 
 - **新 crate `crates/nvr-rkllm`**：在 lite-nvr 里重新实现 RKLLM 推理，不复制公司仓库 `NVR-APP/3rdparty/rkllm-server` 的代码。它只作为设计参考：dlopen 运行库、渲染全量历史、拆分思考段。
-- **进程内运行**：模型作为库加载在 nvr 进程里，不另起服务进程。runtime 的已知缺陷由第 4.3 节的约束兜住。
+- **进程隔离**（2026-10-26，#3381）：模型在同一 nvr 二进制的内部 `--nvr-rkllm-worker` 模式中加载。主进程管理 worker，不额外部署服务。替代原来的进程内加载，避免 runtime 崩溃中断视频、混音等主服务。
 - **只在 `rockchip` feature 下启用**：非 Rockchip 构建不编译 LLM 和对话入口，行为不变。`nvr-rkllm` 本身用 dlopen 加载，不链接厂商库，所以主机也能编译和跑单测。
 - **新 crate `crates/nvr-tts`**：基于 sherpa-onnx 的离线 TTS，和 `nvr-asr` 用同一个 `sherpa-onnx` 依赖与原生库。它不依赖 Rockchip，所有构建都能用。
 - **语音输入**：后台网页麦克风。**回复输出**：文字流式显示，同时按句合成语音，在网页里播放。
@@ -46,9 +46,9 @@ flowchart LR
 
 ```rust
 pub struct LlmConfig { model, lib, template, max_context_len, max_new_tokens, stop_token_ids, ignore_eos, queue_depth }
-pub struct Engine;                       // Clone，内部是到推理线程的通道
+pub struct Engine;                       // Clone，内部是到 worker 管理线程的通道
 impl Engine {
-    pub fn spawn(cfg: LlmConfig) -> Engine;           // 起推理线程并在其上加载模型，立即返回（Loading）
+    pub fn spawn(cfg: LlmConfig) -> Engine;           // 启动独立 worker 加载模型，立即返回（Loading）
     pub async fn wait_ready(&self) -> Result<()>;     // 等加载完成；失败时返回原因
     pub fn generate(&self, req: ChatRequest) -> Result<Generation, Busy>;
     pub fn state(&self) -> EngineState;  // Loading / Ready / Failed(原因)
@@ -62,19 +62,22 @@ pub enum Delta { Reasoning(String), Content(String), Done { usage, finish_reason
 - 把 `<think>…</think>` 拆成 `Reasoning`。语音对话默认 `enable_thinking = false`，思考段不进 TTS。
 - 命中停止 token 时主动 `rkllm_abort`，`finish_reason = stop`；到 `max_tokens` 时为 `length`。
 
-### 4.2 绑定与线程
+### 4.2 绑定、线程与进程
 
 - runtime 1.3.0 的 `rkllm.h` 放在 `crates/nvr-rkllm/include/`，`build.rs` 用 bindgen 生成绑定（`--dynamic-loading`，经 `libloading` dlopen `librkllmrt.so`，路径由配置给出）。头文件按 freestanding C 解析（`include/shim/cstdint` 垫片），主机和交叉编译都不需要目标 sysroot；bindgen 生成的编译期断言固定每个结构体的大小和字段偏移。升级 runtime 时替换头文件即可。
-- 只有一个专用推理线程。它持有 handle，串行处理请求，所以 NPU 同一时刻只跑一个生成任务。`rkllm_run` 的回调通过有界通道把 token 交出去。
+- 主进程保留模板、KV cache 的会话元数据和排队逻辑。worker 独占 runtime、模型 handle 和实际 KV cache，串行执行加载、清缓存和推理。管理线程通过继承到 worker 标准输入的私有 Unix socket 发送请求，每个 token 经确认后继续；stdout / stderr 留给厂商日志，避免污染协议。IPC 使用带长度前缀的 JSON，单帧上限 16 MiB。
+- nvr 和 demo 的同步入口都先调用 `run_worker_if_requested()`，worker 不初始化 Tokio、数据库或媒体服务。Linux worker 设置父进程退出信号，主进程异常退出也会终止 worker。
+- 包内 `start.sh` 只把主进程算作服务实例，排除同路径的 `--nvr-rkllm-worker`。停止时由主进程和父进程退出信号回收 worker，避免把 worker 误认成主服务或重复发信号。
 - 排队上限 `queue_depth`，默认 2，超出时返回 `Busy`。HTTP 接口把它映射为 429，对话机器人映射为提示“正在回答别人”。
-- 调用方 drop 掉 `Generation` 后，推理线程在下一个回调返回非 0，或调用 `rkllm_abort` 中止，不会继续占用 NPU。
+- 调用方 drop 掉 `Generation` 后，下一个 token 回调触发 `rkllm_abort`。无回调的 prefill / 清缓存给 30 秒取消宽限；超时终止 worker 并设为 `Failed`。发出停止 token 的 abort 后最多等 1 秒。关停直接终止并回收 worker，无需等待下一个 token。
 
-### 4.3 进程内运行的约束（runtime 1.3.0 已知问题）
+### 4.3 worker 生命周期（runtime 1.3.0 已知问题）
 
 | 问题 | 约束 |
 | --- | --- |
-| `rkllm_init` 失败路径可能 double free，导致整个 nvr 崩溃 | init 前先检查：模型文件存在、可读、大小大于 0，扩展名为 `.rkllm`；运行库能 dlopen，所需符号齐全。只在启动时 init 一次；失败就记录为 `Failed`，**本进程内不重试**，要重启 nvr 才会再试 |
-| `rkllm_destroy` 偶发卡在 NPU ioctl | 关停时只 abort 当前生成，**不调用 destroy**；推理线程分离，进程退出后由内核回收 NPU 内存。退出时会打印几条 `E RKNN: can not find memory for freeing`，属于预期 |
+| `rkllm_init` 失败路径可能 double free | 文件预检仍保留；dlopen 和 init 仅在 worker 内执行。worker 崩溃 / IPC 断开后状态为 `Failed`，当前及排队请求结束并报错，视频等主服务继续工作。失败后不自动重启，要重启 nvr 才会再次加载 |
+| `rkllm_destroy` 偶发卡在 NPU ioctl | 不调用 destroy；主进程终止并 wait 回收 worker，由内核释放模型资源。Linux worker 的错误退出跳过 native 静态析构 |
+| 加载或取消卡住 | 模型加载上限 120 秒；取消宽限见上节。关停通过已有 `Engine::shutdown` 等待 worker 回收，沿用 nvr 的 2 秒等待与外层关停超时 |
 | 常驻内存约 1.3–2 GB | 默认关闭：没设 `NVR_LLM_MODEL` 时不加载。部署时先停掉板上的外部 rkllm-server，避免同时加载两份模型 |
 | runtime 固定使用 A76 大核 4–7 | 与 RKMPP、采集不冲突；推理时会和 ASR、TTS 争 CPU，见第 7 节的测量项 |
 

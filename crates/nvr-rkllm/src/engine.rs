@@ -3,8 +3,9 @@
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
+use std::sync::mpsc::{RecvTimeoutError, SyncSender, TrySendError, sync_channel};
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use anyhow::Result;
 use futures::Stream;
@@ -25,6 +26,8 @@ pub(crate) struct Run<'a> {
     pub prompt: &'a str,
     pub max_new_tokens: i32,
     pub sampling: &'a Sampling,
+    pub cancelled: &'a AtomicBool,
+    pub closing: &'a AtomicBool,
 }
 
 /// One loaded model. `run` blocks until generation ends; `on_token` sees every
@@ -35,7 +38,11 @@ pub(crate) struct Run<'a> {
 /// not be `Send`.
 pub(crate) trait Backend {
     fn run(&mut self, run: Run<'_>, on_token: &mut dyn FnMut(i32, &str) -> Step) -> Result<u32>;
-    fn clear_history(&mut self) -> Result<()>;
+    fn clear_history(&mut self, cancelled: &AtomicBool, closing: &AtomicBool) -> Result<()>;
+    /// A transport failure makes all subsequent requests unavailable.
+    fn check_health(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,7 +83,7 @@ struct Job {
 }
 
 #[derive(Clone)]
-struct Settings {
+pub(crate) struct Settings {
     template: Template,
     max_context_len: i32,
     max_new_tokens: i32,
@@ -84,11 +91,39 @@ struct Settings {
     queue_depth: usize,
 }
 
+impl From<&LlmConfig> for Settings {
+    fn from(cfg: &LlmConfig) -> Self {
+        Self {
+            template: cfg.template,
+            max_context_len: cfg.max_context_len,
+            max_new_tokens: cfg.max_new_tokens,
+            stop_token_ids: cfg.stop_token_ids.clone(),
+            queue_depth: cfg.queue_depth,
+        }
+    }
+}
+
 /// State shared with the inference thread for shutdown.
 struct Shared {
     closing: AtomicBool,
-    /// True while the backend is running a request.
-    busy: watch::Sender<bool>,
+    /// Set only after the backend has been dropped (and its worker reaped).
+    stopped: watch::Sender<bool>,
+}
+
+struct Stopped {
+    shared: Arc<Shared>,
+    state: watch::Sender<EngineState>,
+}
+
+impl Drop for Stopped {
+    fn drop(&mut self) {
+        let failed = matches!(*self.state.borrow(), EngineState::Failed(_));
+        if !failed {
+            self.state
+                .send_replace(EngineState::Failed("inference supervisor stopped".into()));
+        }
+        self.shared.stopped.send_replace(true);
+    }
 }
 
 /// Handle to the inference thread. Cheap to clone; the thread exits once every
@@ -102,36 +137,37 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Start the inference thread and load `cfg.model` on it. Returns at once
+    /// Start the worker process and load `cfg.model` in it. Returns at once
     /// in [`EngineState::Loading`]; see [`Engine::wait_ready`].
     pub fn spawn(cfg: LlmConfig) -> Engine {
-        let settings = Settings {
-            template: cfg.template,
-            max_context_len: cfg.max_context_len,
-            max_new_tokens: cfg.max_new_tokens,
-            stop_token_ids: cfg.stop_token_ids.clone(),
-            queue_depth: cfg.queue_depth,
-        };
-        Self::spawn_with(settings, move || crate::rkllm::RkllmBackend::load(&cfg))
+        Self::spawn_with(Settings::from(&cfg), move |closing| {
+            crate::process::ProcessBackend::load(&cfg, closing)
+        })
     }
 
-    fn spawn_with<B, F>(settings: Settings, load: F) -> Engine
+    pub(crate) fn spawn_with<B, F>(settings: Settings, load: F) -> Engine
     where
         B: Backend,
-        F: FnOnce() -> Result<B> + Send + 'static,
+        F: FnOnce(&AtomicBool) -> Result<B> + Send + 'static,
     {
         let (jobs, queue) = sync_channel::<Job>(settings.queue_depth);
         let (state_tx, state) = watch::channel(EngineState::Loading);
         let thread_settings = settings.clone();
         let shared = Arc::new(Shared {
             closing: AtomicBool::new(false),
-            busy: watch::channel(false).0,
+            stopped: watch::channel(false).0,
         });
         let thread_shared = Arc::clone(&shared);
         let spawned = std::thread::Builder::new()
             .name("rkllm".into())
             .spawn(move || {
-                let mut backend = match load() {
+                // Declared before the backend, so it signals only after Drop
+                // has killed and waited for the worker, including on unwind.
+                let _stopped = Stopped {
+                    shared: Arc::clone(&thread_shared),
+                    state: state_tx.clone(),
+                };
+                let mut backend = match load(&thread_shared.closing) {
                     Ok(backend) => backend,
                     Err(err) => {
                         log::error!("rkllm: model load failed: {err:#}");
@@ -141,8 +177,18 @@ impl Engine {
                 };
                 let _ = state_tx.send(EngineState::Ready);
                 let mut cached = None;
-                while let Ok(job) = queue.recv() {
-                    thread_shared.busy.send_replace(true);
+                let failure = loop {
+                    if thread_shared.closing.load(Ordering::Relaxed) {
+                        break "shutting down".to_string();
+                    }
+                    if let Err(err) = backend.check_health() {
+                        break format!("{err:#}");
+                    }
+                    let job = match queue.recv_timeout(Duration::from_millis(50)) {
+                        Ok(job) => job,
+                        Err(RecvTimeoutError::Timeout) => continue,
+                        Err(RecvTimeoutError::Disconnected) => break "engine dropped".to_string(),
+                    };
                     serve(
                         &mut backend,
                         job,
@@ -150,10 +196,14 @@ impl Engine {
                         &mut cached,
                         &thread_shared.closing,
                     );
-                    thread_shared.busy.send_replace(false);
+                };
+                state_tx.send_replace(EngineState::Failed(failure.clone()));
+                for job in queue.try_iter() {
+                    let _ = job.deltas.send(Delta::Error(failure.clone()));
                 }
             });
         if let Err(err) = spawned {
+            shared.stopped.send_replace(true);
             let (failed_tx, failed) = watch::channel(EngineState::Failed(format!(
                 "cannot start inference thread: {err}"
             )));
@@ -173,18 +223,22 @@ impl Engine {
         }
     }
 
-    /// Stop accepting requests, end the running one at its next token and
-    /// wait up to `timeout` for the runtime to go idle, so the process can
-    /// exit without the runtime mid-inference. Queued requests are dropped.
+    /// Stop accepting requests and wait up to `timeout` for the worker to be
+    /// terminated and reaped. Queued requests receive an error.
     pub async fn shutdown(&self, timeout: std::time::Duration) {
         self.shared.closing.store(true, Ordering::Relaxed);
-        let mut busy = self.shared.busy.subscribe();
-        if tokio::time::timeout(timeout, busy.wait_for(|b| !*b))
+        let mut stopped = self.shared.stopped.subscribe();
+        if tokio::time::timeout(timeout, stopped.wait_for(|s| *s))
             .await
             .is_err()
         {
-            log::warn!("rkllm: still generating after {timeout:?}; exiting anyway");
+            log::warn!("rkllm: worker still stopping after {timeout:?}");
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_stopped(&self) -> bool {
+        *self.shared.stopped.borrow()
     }
 
     pub fn state(&self) -> EngineState {
@@ -240,7 +294,11 @@ impl Engine {
             cancelled: Arc::clone(&cancelled),
         };
         match self.jobs.try_send(job) {
-            Ok(()) => Ok(Generation { rx, cancelled }),
+            Ok(()) => Ok(Generation {
+                rx,
+                cancelled,
+                ended: false,
+            }),
             Err(TrySendError::Full(_)) => Err(GenerateError::Busy),
             Err(TrySendError::Disconnected(_)) => Err(GenerateError::NotReady(
                 EngineState::Failed("inference thread stopped".into()),
@@ -271,6 +329,7 @@ fn prepare<B: Backend>(
     job: &Job,
     settings: &Settings,
     cached: Option<Cached>,
+    closing: &AtomicBool,
 ) -> Result<(Prompt, u32)> {
     if let Some(c) = &cached
         && let Some(new) = continuation(c, &job.messages)
@@ -286,7 +345,7 @@ fn prepare<B: Backend>(
             return Ok((prompt, c.tokens));
         }
     }
-    backend.clear_history()?;
+    backend.clear_history(&job.cancelled, closing)?;
     let prompt = settings.template.render(&job.messages, job.enable_thinking);
     Ok((prompt, 0))
 }
@@ -302,7 +361,7 @@ fn serve<B: Backend>(
         return;
     }
     // Whatever happens below, the cache only describes this run's outcome.
-    let (prompt, cached_tokens) = match prepare(backend, &job, settings, cached.take()) {
+    let (prompt, cached_tokens) = match prepare(backend, &job, settings, cached.take(), closing) {
         Ok(prepared) => prepared,
         Err(err) => {
             log::warn!("rkllm: clearing the KV cache failed: {err:#}");
@@ -320,6 +379,8 @@ fn serve<B: Backend>(
             prompt: &prompt.text,
             max_new_tokens: job.max_new_tokens,
             sampling: &job.sampling,
+            cancelled: &job.cancelled,
+            closing,
         },
         &mut |id, text| {
             if job.cancelled.load(Ordering::Relaxed)
@@ -392,13 +453,23 @@ fn serve<B: Backend>(
 pub struct Generation {
     rx: mpsc::UnboundedReceiver<Delta>,
     cancelled: Arc<AtomicBool>,
+    ended: bool,
 }
 
 impl Stream for Generation {
     type Item = Delta;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Delta>> {
-        self.rx.poll_recv(cx)
+        let next = self.rx.poll_recv(cx);
+        match &next {
+            Poll::Ready(Some(Delta::Done { .. } | Delta::Error(_))) => self.ended = true,
+            Poll::Ready(None) if !self.ended => {
+                self.ended = true;
+                return Poll::Ready(Some(Delta::Error("inference worker stopped".into())));
+            }
+            _ => {}
+        }
+        next
     }
 }
 

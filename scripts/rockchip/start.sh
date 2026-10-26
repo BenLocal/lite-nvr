@@ -22,12 +22,16 @@ export PATH="$root/ffmpeg/bin:$PATH"
 export ORT_DYLIB_PATH="${ORT_DYLIB_PATH:-$root/lib/libonnxruntime.so}"
 export RUST_LOG="${RUST_LOG:-info}"
 
-# PIDs of nvr processes running this package's binary. Matched by executable
-# path, so other services on the board are never touched.
+# PIDs of nvr hosts running this package's binary. The host owns the internal
+# RKLLM worker, which uses the same executable and must not count as a host.
 nvr_pids() {
     for p in /proc/[0-9]*; do
         case "$(readlink "$p/exe" 2>/dev/null)" in
-            "$bin" | "$bin (deleted)") echo "${p#/proc/}" ;;
+            "$bin" | "$bin (deleted)")
+                first_arg=$(tr '\000' '\n' 2>/dev/null < "$p/cmdline" | sed -n '2p')
+                [ "$first_arg" = "--nvr-rkllm-worker" ] && continue
+                echo "${p#/proc/}"
+                ;;
         esac
     done
 }

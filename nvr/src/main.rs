@@ -45,8 +45,14 @@ fn init_logging() {
         .init();
 }
 
+fn main() -> ! {
+    #[cfg(feature = "rockchip")]
+    nvr_rkllm::run_worker_if_requested();
+    run()
+}
+
 #[tokio::main]
-async fn main() -> ! {
+async fn run() -> ! {
     init_logging();
     ffmpeg_bus::init().expect("ffmpeg_bus init");
 

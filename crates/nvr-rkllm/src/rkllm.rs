@@ -206,7 +206,11 @@ impl Backend for RkllmBackend {
         Ok(ctx.prompt_tokens)
     }
 
-    fn clear_history(&mut self) -> Result<()> {
+    fn clear_history(
+        &mut self,
+        _: &std::sync::atomic::AtomicBool,
+        _: &std::sync::atomic::AtomicBool,
+    ) -> Result<()> {
         // SAFETY: valid handle; null ranges clear the whole cache.
         let ret = unsafe {
             self.lib.rkllm_clear_kv_cache(

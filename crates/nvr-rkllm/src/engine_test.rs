@@ -38,7 +38,11 @@ impl Backend for Script {
         Ok(7)
     }
 
-    fn clear_history(&mut self) -> Result<()> {
+    fn clear_history(
+        &mut self,
+        _: &std::sync::atomic::AtomicBool,
+        _: &std::sync::atomic::AtomicBool,
+    ) -> Result<()> {
         self.prompts.lock().unwrap().push(CLEAR.into());
         Ok(())
     }
@@ -82,7 +86,7 @@ async fn collect(g: Generation) -> Vec<Delta> {
 #[tokio::test]
 async fn streams_content_and_stops_on_a_stop_token() {
     let (s, _, prompts) = script(vec![(1, "你"), (2, "好"), (99, ""), (3, "不该出现")]);
-    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move || Ok(s));
+    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move |_| Ok(s));
     engine.wait_ready().await.unwrap();
     let deltas = collect(engine.generate(ask("hi")).unwrap()).await;
     assert_eq!(
@@ -105,7 +109,7 @@ async fn streams_content_and_stops_on_a_stop_token() {
 #[tokio::test]
 async fn hitting_max_tokens_reports_length() {
     let (s, _, _) = script(vec![(1, "a"), (2, "b"), (3, "c")]);
-    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move || Ok(s));
+    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move |_| Ok(s));
     engine.wait_ready().await.unwrap();
     let mut req = ask("hi");
     req.max_tokens = Some(2);
@@ -125,7 +129,7 @@ async fn hitting_max_tokens_reports_length() {
 #[tokio::test]
 async fn reasoning_is_split_from_the_answer() {
     let (s, _, _) = script(vec![(1, "想"), (2, "</think>"), (3, "\n\n答")]);
-    let engine = Engine::spawn_with(settings(Template::DeepseekR1, 2), move || Ok(s));
+    let engine = Engine::spawn_with(settings(Template::DeepseekR1, 2), move |_| Ok(s));
     engine.wait_ready().await.unwrap();
     let mut req = ask("hi");
     req.enable_thinking = true;
@@ -136,8 +140,9 @@ async fn reasoning_is_split_from_the_answer() {
 
 #[tokio::test]
 async fn failed_load_is_reported_and_never_retried() {
-    let engine =
-        Engine::spawn_with::<Script, _>(settings(Template::Qwen, 2), || anyhow::bail!("bad model"));
+    let engine = Engine::spawn_with::<Script, _>(settings(Template::Qwen, 2), |_| {
+        anyhow::bail!("bad model")
+    });
     let err = engine.wait_ready().await.unwrap_err();
     assert!(err.to_string().contains("bad model"));
     assert_eq!(engine.state(), EngineState::Failed("bad model".into()));
@@ -152,7 +157,7 @@ async fn requests_beyond_the_queue_are_busy() {
     let (mut s, _, _) = script(vec![(1, "a")]);
     let (release, gate) = channel();
     s.gate = Some(Mutex::new(gate));
-    let engine = Engine::spawn_with(settings(Template::Qwen, 1), move || Ok(s));
+    let engine = Engine::spawn_with(settings(Template::Qwen, 1), move |_| Ok(s));
     engine.wait_ready().await.unwrap();
     let running = engine.generate(ask("1")).unwrap();
     // Wait until the first job left the queue and is blocked in the backend.
@@ -179,7 +184,7 @@ async fn dropping_the_generation_stops_the_backend() {
     let (mut s, accepted, _) = script(vec![(1, "a"), (2, "b"), (3, "c"), (4, "d")]);
     let (release, gate) = channel();
     s.gate = Some(Mutex::new(gate));
-    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move || Ok(s));
+    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move |_| Ok(s));
     engine.wait_ready().await.unwrap();
     let mut g = engine.generate(ask("hi")).unwrap();
     release.send(()).unwrap();
@@ -203,7 +208,7 @@ async fn shutdown_ends_the_running_request_and_rejects_new_ones() {
     let (mut s, accepted, _) = script(vec![(1, "a"), (2, "b"), (3, "c")]);
     let (release, gate) = channel();
     s.gate = Some(Mutex::new(gate));
-    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move || Ok(s));
+    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move |_| Ok(s));
     engine.wait_ready().await.unwrap();
     let mut g = engine.generate(ask("hi")).unwrap();
     release.send(()).unwrap();
@@ -236,7 +241,7 @@ fn follow_up(first: &str, reply: &str, next: &str) -> ChatRequest {
 #[tokio::test]
 async fn a_follow_up_only_prefills_the_new_messages() {
     let (s, _, prompts) = script(vec![(1, "你"), (2, "好"), (99, "")]);
-    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move || Ok(s));
+    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move |_| Ok(s));
     engine.wait_ready().await.unwrap();
     collect(engine.generate(ask("hi")).unwrap()).await;
     let deltas = collect(engine.generate(follow_up("hi", "你好", "again")).unwrap()).await;
@@ -264,7 +269,7 @@ async fn a_follow_up_only_prefills_the_new_messages() {
 #[tokio::test]
 async fn a_different_conversation_clears_the_cache() {
     let (s, _, prompts) = script(vec![(1, "你"), (2, "好"), (99, "")]);
-    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move || Ok(s));
+    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move |_| Ok(s));
     engine.wait_ready().await.unwrap();
     collect(engine.generate(ask("hi")).unwrap()).await;
     // The client's copy of the reply differs from what was generated.
@@ -279,7 +284,7 @@ async fn a_cancelled_reply_is_not_reused() {
     let (mut s, _, prompts) = script(vec![(1, "你"), (2, "好"), (99, "")]);
     let (release, gate) = channel();
     s.gate = Some(Mutex::new(gate));
-    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move || Ok(s));
+    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move |_| Ok(s));
     engine.wait_ready().await.unwrap();
     let mut g = engine.generate(ask("hi")).unwrap();
     release.send(()).unwrap();
@@ -300,7 +305,7 @@ async fn a_follow_up_that_would_overflow_the_context_starts_over() {
     let mut settings = settings(Template::Qwen, 2);
     // 9 cached tokens + the continuation + 64 new tokens do not fit.
     settings.max_context_len = 100;
-    let engine = Engine::spawn_with(settings, move || Ok(s));
+    let engine = Engine::spawn_with(settings, move |_| Ok(s));
     engine.wait_ready().await.unwrap();
     collect(engine.generate(ask("hi")).unwrap()).await;
     collect(engine.generate(follow_up("hi", "你好", "again")).unwrap()).await;
@@ -311,7 +316,7 @@ async fn a_follow_up_that_would_overflow_the_context_starts_over() {
 async fn a_reply_ended_by_the_model_itself_is_reused() {
     // No stop token: the runtime ends on the model's own EOS.
     let (s, _, prompts) = script(vec![(1, "你"), (2, "好")]);
-    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move || Ok(s));
+    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move |_| Ok(s));
     engine.wait_ready().await.unwrap();
     collect(engine.generate(ask("hi")).unwrap()).await;
     collect(engine.generate(follow_up("hi", "你好", "again")).unwrap()).await;
@@ -323,7 +328,7 @@ async fn a_reply_ended_by_the_model_itself_is_reused() {
 #[tokio::test]
 async fn a_truncated_reply_is_not_reused() {
     let (s, _, prompts) = script(vec![(1, "你"), (2, "好"), (3, "呀")]);
-    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move || Ok(s));
+    let engine = Engine::spawn_with(settings(Template::Qwen, 2), move |_| Ok(s));
     engine.wait_ready().await.unwrap();
     let mut req = ask("hi");
     req.max_tokens = Some(2);
