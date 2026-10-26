@@ -22,7 +22,7 @@ cd nvr-dashboard/app && npm run lint && npm run type-check && npm test   # 前�
 
 ## 工作区规则
 - 作用范围：本规则适用于当前仓库及所有子目录。
-- 交流语言：默认使用简体中文；代码注释、标识符、提交信息沿用仓库既有的英文风格（详见 `docs/agents-dot-md/translation.md`）。
+- 交流语言：给用户看的文字（含进度说明和最终汇报）一律用简体中文；代码注释、标识符、提交信息沿用仓库既有的英文风格（详见 `docs/agents-dot-md/translation.md`）。
 - 修改原则：仅做最小、精确改动，避免无关重构。
 - 安全原则：未经明确授权，不执行破坏性 git / 文件操作。
 - 验证要求：代码改动后，尽量执行对应 crate 的 `cargo check` / `cargo test -p <crate>`；动了前端跑 lint + type-check。
