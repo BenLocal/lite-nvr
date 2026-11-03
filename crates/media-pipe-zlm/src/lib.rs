@@ -3,7 +3,7 @@
 //! Implements [`DemuxedSink`] by forwarding a pipe's demuxed packet stream into
 //! a ZLMediaKit `Media` as `Track`/`Frame`s. Video + audio tracks of one
 //! `Media` are gated by a shared [`ZlmTrackCoordinator`] so `init_complete()` is
-//! only called once both sides have registered.
+//! called once both sides have registered, or the missing-track wait expires.
 
 use std::sync::{Arc, Mutex as SyncMutex};
 
@@ -18,6 +18,8 @@ use rszlm::{
     obj::{AudioCodecArgs, CodecArgs, CodecId, Track, VideoCodecArgs},
 };
 use tokio::{sync::watch, task::JoinHandle};
+
+const TRACK_INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// A [`DemuxedSink`] that forwards demuxed packets to a ZLMediaKit `Media`.
 pub struct ZlmSink {
@@ -107,7 +109,8 @@ struct CoordState {
 /// Batches `init_track` calls across multiple ZLM forwarders (e.g. video +
 /// audio) and triggers `init_complete` once all expected tracks have registered.
 /// Frame forwarders await this barrier before pushing any frame so ZLM has the
-/// full SDP ready.
+/// full SDP ready. After a bounded wait, only registered tracks are published;
+/// late tracks are skipped until the pipe is rebuilt.
 pub struct ZlmTrackCoordinator {
     media: Arc<Media>,
     state: SyncMutex<CoordState>,
@@ -139,13 +142,16 @@ impl ZlmTrackCoordinator {
     /// Register `track` synchronously and return a watcher for the
     /// `init_complete` signal. `Track` is non-`Send`, so it's consumed entirely
     /// in this sync function, never crossing an await point.
-    fn register_track(&self, track: Track) -> watch::Receiver<bool> {
+    fn register_track(&self, track: Track) -> Option<watch::Receiver<bool>> {
         let rx = self.completed_tx.subscribe();
         let mut state = self.state.lock().expect("track count mutex poisoned");
+        if state.completed {
+            return None;
+        }
         self.media.init_track(&track);
         state.registered += 1;
         self.try_finalize(&mut state);
-        rx
+        Some(rx)
     }
 
     /// Drop one track from the expected set (its output was rejected by the
@@ -156,13 +162,30 @@ impl ZlmTrackCoordinator {
         self.try_finalize(&mut state);
     }
 
-    async fn wait_complete(rx: &mut watch::Receiver<bool>) {
-        loop {
-            if *rx.borrow_and_update() {
-                return;
+    async fn wait_complete(&self, rx: &mut watch::Receiver<bool>) {
+        let wait = async {
+            loop {
+                if *rx.borrow_and_update() {
+                    return;
+                }
+                if rx.changed().await.is_err() {
+                    return;
+                }
             }
-            if rx.changed().await.is_err() {
-                return;
+        };
+        if tokio::time::timeout(TRACK_INIT_TIMEOUT, wait)
+            .await
+            .is_err()
+        {
+            let mut state = self.state.lock().expect("track count mutex poisoned");
+            if !state.completed {
+                log::warn!(
+                    "ZLM: track initialization timed out ({}/{} ready); publishing ready tracks",
+                    state.registered,
+                    state.expected
+                );
+                state.expected = state.registered;
+                self.try_finalize(&mut state);
             }
         }
     }
@@ -311,7 +334,7 @@ async fn forward_raw_packet_stream_to_zlm(
                     }
                 };
                 if let Some(ref coord) = coordinator {
-                    Some(coord.register_track(track))
+                    coord.register_track(track)
                 } else {
                     media.init_track(&track);
                     media.init_complete();
@@ -319,8 +342,14 @@ async fn forward_raw_packet_stream_to_zlm(
                 }
                 // `track` dropped here.
             };
-            if let Some(ref mut rx) = completion_rx {
-                ZlmTrackCoordinator::wait_complete(rx).await;
+            if let Some(ref coord) = coordinator {
+                let Some(ref mut rx) = completion_rx else {
+                    log::warn!("ZLM: late {:?} track skipped until pipe rebuild", av_type);
+                    // Keep consuming so a late track does not tear down the pipe.
+                    while stream.next().await.is_some() {}
+                    return;
+                };
+                coord.wait_complete(rx).await;
             }
             track_initialized = true;
 

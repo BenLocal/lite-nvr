@@ -20,7 +20,7 @@
 
 ## 三、调用方必须遵守的不变量
 
-- **coordinator 的 `expected` 必须等于实际挂到同一 `Media` 上的轨道数**。少注册会导致 `init_complete()` 永远不触发，转发任务一直卡在 `wait_complete` 上，流始终不上线。优先使用 `zlm_outputs(media, include_audio)` / `zlm_video_dest(media)`，不要手工拼。
+- **coordinator 的 `expected` 必须等于实际挂到同一 `Media` 上的轨道数**。优先使用 `zlm_outputs(media, include_audio)` / `zlm_video_dest(media)`，不要手工拼。首条轨道注册后最多等 3 秒；其余轨道一直没有首包时，只用已注册轨道完成初始化，避免视频被无包音轨卡住。超时后迟到的轨道只消费、丢弃，直到管线重建再参与注册，不修改播放中的轨道集合。
 - **输出被拒绝时必须回调 `on_rejected()`**（原稿没有，后来补上）：例如请求了音频而输入没有音轨时，Pipe 的 `add_output` 会失败，此时调用 `sink.on_rejected()`，`ZlmSink` 再执行 `expect_one_less()`，让剩下的视频轨能够完成初始化。自己实现的协调型 sink 也必须处理这个回调。
 - **coordinator 只能用一次**：`completed` 置位后不会复位。每个新的 `Media` / 每次重建管线都要新建 coordinator 和输出，不要复用旧的 `OutputConfig`。
 - **Pipe 的启动顺序**：Pipe 用 `Bus::new_deferred` 创建 bus，先 `add_output` 注册全部输出、启动各自的转发任务，最后才调用 `bus.start()` 开始读输入。这样文件这类读得很快的源也不会跑在后加的输出前面。之后通过 `subscribe_audio` / `subscribe_video` 加入的消费方（ASR、检测）属于中途加入：直播源从当前位置开始，文件源会错过开头。
