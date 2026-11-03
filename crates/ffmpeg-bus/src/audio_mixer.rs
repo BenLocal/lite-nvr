@@ -134,13 +134,33 @@ impl SlotResampler {
         }
         let mut out = Audio::new(OUT_FMT, max_out as usize, ChannelLayout::STEREO);
         swr.run(input, &mut out)?;
+        Ok(Self::samples(&out))
+    }
+
+    fn finish(&mut self) -> anyhow::Result<Vec<i16>> {
+        let Some((swr, _, _, _)) = &mut self.swr else {
+            return Ok(Vec::new());
+        };
+        let mut samples = Vec::new();
+        loop {
+            let mut tail = Audio::new(OUT_FMT, FRAME_SAMPLES, ChannelLayout::STEREO);
+            let more = swr.flush(&mut tail)?.is_some();
+            samples.extend(Self::samples(&tail));
+            if !more || tail.samples() == 0 {
+                break;
+            }
+        }
+        Ok(samples)
+    }
+
+    fn samples(out: &Audio) -> Vec<i16> {
         let count = out.samples() * CHANNELS;
         let bytes = out.data(0);
         let mut samples = Vec::with_capacity(count);
         for i in 0..count {
             samples.push(i16::from_ne_bytes([bytes[i * 2], bytes[i * 2 + 1]]));
         }
-        Ok(samples)
+        samples
     }
 }
 
@@ -347,6 +367,24 @@ struct Active {
     volume: Arc<AtomicU32>,
     muted: Arc<AtomicBool>,
     channel_map: Arc<AtomicU8>,
+    ended: bool,
+    /// Original samples lost before their corresponding program frames arrive.
+    missing: usize,
+}
+
+impl Active {
+    fn append(&mut self, mut samples: Vec<i16>) {
+        let map = self.channel_map.load(Ordering::Relaxed);
+        for pair in samples.as_chunks_mut::<2>().0 {
+            match map {
+                1 => pair.swap(0, 1),
+                2 => pair[1] = pair[0],
+                3 => pair[0] = pair[1],
+                _ => {}
+            }
+        }
+        self.buffer.extend(samples);
+    }
 }
 
 /// The mix loop: resample every input to the common format, sum the current
@@ -386,6 +424,8 @@ fn mix_loop(
                             volume,
                             muted,
                             channel_map,
+                            ended: false,
+                            missing: 0,
                         },
                     );
                 }
@@ -396,9 +436,8 @@ fn mix_loop(
         }
 
         // 2) Drain each input's available frames into its jitter buffer.
-        let mut dead: Vec<String> = Vec::new();
         for (id, active) in inputs.iter_mut() {
-            loop {
+            while !active.ended {
                 match active.receiver.try_recv() {
                     Ok(RawFrameCmd::Data(RawFrame::Audio(frame))) => {
                         if gain_factor(
@@ -410,56 +449,57 @@ fn mix_loop(
                             continue;
                         }
                         match active.resampler.convert(frame.as_audio()) {
-                            Ok(mut samples) => {
-                                let map = active.channel_map.load(Ordering::Relaxed);
-                                for pair in samples.as_chunks_mut::<2>().0 {
-                                    match map {
-                                        1 => pair.swap(0, 1),
-                                        2 => pair[1] = pair[0],
-                                        3 => pair[0] = pair[1],
-                                        _ => {}
-                                    }
-                                }
-                                active.buffer.extend(samples);
-                            }
+                            Ok(samples) => active.append(samples),
                             Err(e) => log::warn!("mixer resample '{id}': {e:#}"),
                         }
                         if active.buffer.len() > max_buffer {
                             let overflow = active.buffer.len() - max_buffer;
                             active.buffer.drain(..overflow);
+                            if program.is_some() {
+                                active.missing = active.missing.saturating_add(overflow);
+                            }
                         }
                     }
                     Ok(RawFrameCmd::Data(_)) => {}
-                    Ok(RawFrameCmd::EOF) => {
-                        dead.push(id.clone());
+                    Ok(RawFrameCmd::EOF) | Err(TryRecvError::Closed) => {
+                        active.ended = true;
+                        match active.resampler.finish() {
+                            Ok(samples) => active.append(samples),
+                            Err(e) => log::warn!("mixer flush '{id}': {e:#}"),
+                        }
                         break;
                     }
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Lagged(n)) => {
                         log::warn!("mixer input '{id}' lagged, dropped {n}");
                     }
-                    Err(TryRecvError::Closed) => {
-                        dead.push(id.clone());
-                        break;
-                    }
                 }
             }
-        }
-        for id in dead {
-            inputs.remove(&id);
         }
 
         // 3) Mix one tick: gain-scaled sum, then a single saturating clamp.
         let base = program.as_mut().and_then(|rx| {
-            let mut latest = None;
             loop {
                 match rx.try_recv() {
-                    Ok(frame) => latest = Some(frame),
-                    Err(TryRecvError::Lagged(_)) => continue,
-                    Err(_) => break,
+                    Ok(frame) => break Some(frame),
+                    Err(TryRecvError::Lagged(n)) => {
+                        log::warn!("mixer program lagged, dropped {n}");
+                        // The program queue is bounded. Skip the same duration
+                        // of original audio when program frames were overwritten.
+                        let skipped = usize::try_from(n)
+                            .unwrap_or(usize::MAX)
+                            .saturating_mul(FRAME_LEN);
+                        for active in inputs.values_mut() {
+                            let missing = skipped.min(active.missing);
+                            active.missing -= missing;
+                            active
+                                .buffer
+                                .drain(..(skipped - missing).min(active.buffer.len()));
+                        }
+                    }
+                    Err(_) => break None,
                 }
             }
-            latest
         });
         let mut acc = vec![0i32; FRAME_LEN];
         if let Some(base) = base {
@@ -476,11 +516,14 @@ fn mix_loop(
                 active.volume.load(Ordering::Relaxed),
                 active.muted.load(Ordering::Relaxed),
             );
-            let frame = take_frame(&mut active.buffer);
+            let missing = active.missing.min(FRAME_LEN);
+            active.missing -= missing;
+            let frame = take_frame(&mut active.buffer, missing);
             if gain > 0.0 {
                 accumulate(&mut acc, &frame, gain);
             }
         }
+        inputs.retain(|_, active| !active.ended || active.missing > 0 || !active.buffer.is_empty());
         let mixed = clamp_to_i16(&acc);
         let _ = wide.send(ProgramPcmFrame {
             samples: acc.into(),
@@ -493,22 +536,27 @@ fn mix_loop(
         pts += FRAME_SAMPLES as i64;
         let _ = out.send(RawFrameCmd::Data(RawFrame::Audio(frame.into())));
 
-        // 5) Pace to real time.
-        next += tick;
-        let now = Instant::now();
-        if next > now {
-            std::thread::sleep(next - now);
-        } else {
-            next = now;
+        // The program producer supplies the clock for derived mixes. Consume
+        // its backlog without adding another clock's delay after a late wakeup.
+        if program.is_none() {
+            next += tick;
+            let now = Instant::now();
+            if next > now {
+                std::thread::sleep(next - now);
+            } else {
+                next = now;
+            }
         }
     }
     log::info!("audio mixer loop stopped");
 }
 
-/// Pop one tick of interleaved samples, silence-padded to exactly `FRAME_LEN`.
-fn take_frame(buffer: &mut VecDeque<i16>) -> Vec<i16> {
+/// Pop one tick, padding missing samples with leading silence and a short tail
+/// with trailing silence, to exactly `FRAME_LEN` interleaved values.
+fn take_frame(buffer: &mut VecDeque<i16>, missing: usize) -> Vec<i16> {
     let mut out = Vec::with_capacity(FRAME_LEN);
-    for _ in 0..FRAME_LEN {
+    out.resize(missing.min(FRAME_LEN), 0);
+    while out.len() < FRAME_LEN {
         out.push(buffer.pop_front().unwrap_or(0));
     }
     out

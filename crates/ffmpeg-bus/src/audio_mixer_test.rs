@@ -1,5 +1,249 @@
 use super::*;
 
+async fn next_audio(receiver: &mut RawFrameReceiver) -> Audio {
+    let frame = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let RawFrameCmd::Data(RawFrame::Audio(frame)) = frame else {
+        panic!("expected mixed PCM")
+    };
+    frame.as_audio().clone()
+}
+
+fn assert_pcm(frame: &Audio, expected: i16) {
+    assert!(
+        frame.data(0)[..frame.samples() * CHANNELS * 2]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .all(|bytes| i16::from_ne_bytes(*bytes) == expected)
+    );
+}
+
+#[tokio::test]
+async fn regression_ended_input_drains_buffered_tail() {
+    for explicit_eof in [true, false] {
+        let mixer = DynamicMixerTask::new(48_000);
+        let (input_tx, input) = tokio::sync::broadcast::channel(8);
+        mixer.add_input("clip", input, DEFAULT_VOLUME);
+        let mut output = mixer.subscribe();
+        for (index, value) in [1000, 2000, 3000].into_iter().enumerate() {
+            input_tx
+                .send(RawFrameCmd::Data(RawFrame::Audio(
+                    build_frame(
+                        &vec![value; FRAME_LEN],
+                        48_000,
+                        (index * FRAME_SAMPLES) as i64,
+                    )
+                    .into(),
+                )))
+                .ok()
+                .unwrap();
+        }
+        if explicit_eof {
+            input_tx.send(RawFrameCmd::EOF).ok().unwrap();
+        }
+        drop(input_tx);
+        mixer.start();
+        let _stop = mixer.cancel.clone().drop_guard();
+        let mut frames = Vec::new();
+        for _ in 0..4 {
+            frames.push(next_audio(&mut output).await);
+        }
+        mixer.stop_and_join().await;
+        for (frame, value) in frames.iter().zip([1000, 2000, 3000, 0]) {
+            assert_pcm(frame, value);
+        }
+    }
+}
+
+#[tokio::test]
+async fn regression_program_backlog_preserves_order_and_original_alignment() {
+    let (program_tx, program) = tokio::sync::broadcast::channel(8);
+    let mixer = DynamicMixerTask::with_program(48_000, program);
+    let (original_tx, original) = tokio::sync::broadcast::channel(8);
+    mixer.add_input("original", original, DEFAULT_VOLUME);
+    let mut output = mixer.subscribe();
+    for (index, value) in [1000, 2000, 3000].into_iter().enumerate() {
+        program_tx
+            .send(ProgramPcmFrame {
+                samples: vec![i32::from(value); FRAME_LEN].into(),
+                pts: 96_000 + (index * FRAME_SAMPLES) as i64,
+                sample_rate: 48_000,
+            })
+            .ok()
+            .unwrap();
+        original_tx
+            .send(RawFrameCmd::Data(RawFrame::Audio(
+                build_frame(
+                    &vec![value / 10; FRAME_LEN],
+                    48_000,
+                    (index * FRAME_SAMPLES) as i64,
+                )
+                .into(),
+            )))
+            .ok()
+            .unwrap();
+    }
+    mixer.start();
+    let _stop = mixer.cancel.clone().drop_guard();
+    let first = next_audio(&mut output).await;
+    // Check before receiving the rest: the old loop only emits the last frame.
+    if first.pts() != Some(96_000) {
+        mixer.stop_and_join().await;
+        panic!("program backlog skipped the first frame: {:?}", first.pts());
+    }
+    let second = next_audio(&mut output).await;
+    let third = next_audio(&mut output).await;
+    mixer.stop_and_join().await;
+    for (index, (frame, value)) in [first, second, third]
+        .iter()
+        .zip([1100, 2200, 3300])
+        .enumerate()
+    {
+        assert_eq!(frame.pts(), Some(96_000 + (index * FRAME_SAMPLES) as i64));
+        assert_pcm(frame, value);
+    }
+}
+
+#[tokio::test]
+async fn regression_ended_input_flushes_resampler_tail() {
+    let mixer = DynamicMixerTask::new(48_000);
+    let (input_tx, input) = tokio::sync::broadcast::channel(4);
+    mixer.add_input("clip", input, DEFAULT_VOLUME);
+    mixer.set_channel_map("clip", 1).unwrap();
+    let mut output = mixer.subscribe();
+    let mut frame = Audio::new(OUT_FMT, 4410, ChannelLayout::STEREO);
+    frame.set_rate(44_100);
+    for pair in frame.plane_mut::<(i16, i16)>(0) {
+        *pair = (1000, -2000);
+    }
+    assert!(
+        input_tx
+            .send(RawFrameCmd::Data(RawFrame::Audio(frame.into())))
+            .is_ok()
+    );
+    assert!(input_tx.send(RawFrameCmd::EOF).is_ok());
+    mixer.start();
+    let _stop = mixer.cancel.clone().drop_guard();
+    let mut samples = Vec::new();
+    for _ in 0..5 {
+        let frame = next_audio(&mut output).await;
+        samples.extend_from_slice(frame.plane::<(i16, i16)>(0));
+    }
+    mixer.stop_and_join().await;
+    assert_eq!(samples.len(), 5120);
+    assert!(
+        samples[..4800]
+            .iter()
+            .all(|&(l, r)| (l + 2000).abs() <= 1 && (r - 1000).abs() <= 1)
+    );
+    assert!(samples[4800..].iter().all(|&pair| pair == (0, 0)));
+}
+
+#[tokio::test]
+async fn regression_program_overrun_skips_matching_original_samples() {
+    let (program_tx, program) = tokio::sync::broadcast::channel(2);
+    let mixer = DynamicMixerTask::with_program(48_000, program);
+    let (original_tx, original) = tokio::sync::broadcast::channel(8);
+    mixer.add_input("original", original, DEFAULT_VOLUME);
+    let mut output = mixer.subscribe();
+    for index in 0..4 {
+        assert!(
+            program_tx
+                .send(ProgramPcmFrame {
+                    samples: vec![1000; FRAME_LEN].into(),
+                    pts: (index * FRAME_SAMPLES) as i64,
+                    sample_rate: 48_000,
+                })
+                .is_ok()
+        );
+        assert!(
+            original_tx
+                .send(RawFrameCmd::Data(RawFrame::Audio(
+                    build_frame(
+                        &vec![(index + 1) as i16 * 100; FRAME_LEN],
+                        48_000,
+                        (index * FRAME_SAMPLES) as i64
+                    )
+                    .into(),
+                )))
+                .is_ok()
+        );
+    }
+    mixer.start();
+    let _stop = mixer.cancel.clone().drop_guard();
+    let first = next_audio(&mut output).await;
+    if first.pts() != Some((2 * FRAME_SAMPLES) as i64) {
+        mixer.stop_and_join().await;
+        panic!(
+            "program overrun skipped a retained frame: {:?}",
+            first.pts()
+        );
+    }
+    let second = next_audio(&mut output).await;
+    mixer.stop_and_join().await;
+    assert_pcm(&first, 1300);
+    assert_pcm(&second, 1400);
+    assert_eq!(second.pts(), Some((3 * FRAME_SAMPLES) as i64));
+}
+
+#[tokio::test]
+async fn regression_original_buffer_overflow_does_not_mix_future_audio() {
+    for capacity in [64, 2] {
+        let (program_tx, program) = tokio::sync::broadcast::channel(capacity);
+        let mixer = DynamicMixerTask::with_program(48_000, program);
+        let (original_tx, original) = tokio::sync::broadcast::channel(64);
+        mixer.add_input("original", original, DEFAULT_VOLUME);
+        let mut output = mixer.subscribe();
+        const FRAMES: usize = 50;
+        for index in 0..FRAMES {
+            assert!(
+                program_tx
+                    .send(ProgramPcmFrame {
+                        samples: vec![1000; FRAME_LEN].into(),
+                        pts: (index * FRAME_SAMPLES) as i64,
+                        sample_rate: 48_000,
+                    })
+                    .is_ok()
+            );
+            assert!(
+                original_tx
+                    .send(RawFrameCmd::Data(RawFrame::Audio(
+                        build_frame(
+                            &vec![(index + 1) as i16 * 100; FRAME_LEN],
+                            48_000,
+                            (index * FRAME_SAMPLES) as i64
+                        )
+                        .into(),
+                    )))
+                    .is_ok()
+            );
+        }
+        mixer.start();
+        let _stop = mixer.cancel.clone().drop_guard();
+        let mut frames = Vec::new();
+        for _ in 0..FRAMES.min(capacity) {
+            frames.push(next_audio(&mut output).await);
+        }
+        mixer.stop_and_join().await;
+        let missing = FRAMES * FRAME_SAMPLES - 48_000;
+        for (offset, frame) in frames.iter().enumerate() {
+            let index = FRAMES - FRAMES.min(capacity) + offset;
+            assert_eq!(frame.pts(), Some((index * FRAME_SAMPLES) as i64));
+            for (sample, &(l, r)) in frame.plane::<(i16, i16)>(0).iter().enumerate() {
+                let expected = if index * FRAME_SAMPLES + sample < missing {
+                    1000
+                } else {
+                    1000 + (index + 1) as i16 * 100
+                };
+                assert_eq!((l, r), (expected, expected));
+            }
+        }
+    }
+}
+
 #[test]
 fn resamples_pcm_with_unspecified_channel_order() {
     crate::init().unwrap();
@@ -61,7 +305,7 @@ fn clamp_saturates_instead_of_wrapping() {
 #[test]
 fn take_frame_pads_short_buffer_with_silence() {
     let mut buf: VecDeque<i16> = VecDeque::from(vec![1, 2, 3]);
-    let frame = take_frame(&mut buf);
+    let frame = take_frame(&mut buf, 0);
     assert_eq!(frame.len(), FRAME_LEN);
     assert_eq!(&frame[..3], &[1, 2, 3]);
     assert!(frame[3..].iter().all(|&s| s == 0));
