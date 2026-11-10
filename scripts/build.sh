@@ -131,7 +131,7 @@ for arg in "$@"; do
 done
 
 case "$mode" in
-    check) set -x; "${cargo_runner[@]}" check "${scope[@]}" "$@" ;;
-    build) set -x; "${cargo_runner[@]}" build "${scope[@]}" "$@" ;;
-    release) set -x; "${cargo_runner[@]}" build "${scope[@]}" --release "$@" ;;
+    check) set -x; "${cargo_runner[@]}" check ${scope[@]+"${scope[@]}"} "$@" ;;
+    build) set -x; "${cargo_runner[@]}" build ${scope[@]+"${scope[@]}"} "$@" ;;
+    release) set -x; "${cargo_runner[@]}" build ${scope[@]+"${scope[@]}"} --release "$@" ;;
 esac
