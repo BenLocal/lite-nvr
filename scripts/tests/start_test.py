@@ -1,5 +1,6 @@
 """Launcher process matching with a same-executable RKLLM worker."""
 
+import os
 import pathlib
 import shutil
 import subprocess
@@ -7,13 +8,18 @@ import tempfile
 import unittest
 
 
+@unittest.skipUnless(
+    os.name == "posix" and pathlib.Path("/proc").is_dir(), "requires Linux /proc"
+)
 class LauncherTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.directory.name)
         (self.root / "bin").mkdir()
         self.launcher = self.root / "start.sh"
-        shutil.copyfile(pathlib.Path(__file__).with_name("start.sh"), self.launcher)
+        shutil.copyfile(
+            pathlib.Path(__file__).resolve().parents[1] / "start.sh", self.launcher
+        )
         source = self.root / "fixture.c"
         source.write_text("#include <unistd.h>\nint main(void) { for (;;) pause(); }\n")
         self.binary = self.root / "bin" / "nvr"

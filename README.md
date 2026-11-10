@@ -35,6 +35,7 @@ A default `admin` / `admin` user is created at startup if `admin` does not exist
 V4L2 capture requires accessible video input nodes; Rockchip builds support multi-plane capture and H.264 hardware encoding. X11 capture is offered only when an accessible display and its capture dependencies are available.
 
 For Rockchip packaging and deployment, see [`docs/rockchip.md`](docs/rockchip.md).
+For offline packages and GitHub Releases, see [`docs/releases.md`](docs/releases.md).
 
 ## Example
 

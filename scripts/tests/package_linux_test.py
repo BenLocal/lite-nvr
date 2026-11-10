@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 
 
 class PackageTest(unittest.TestCase):
@@ -17,7 +17,7 @@ class PackageTest(unittest.TestCase):
         for name in [
             "scripts/package-linux.sh",
             "scripts/package-cache.py",
-            "scripts/rockchip/start.sh",
+            "scripts/start.sh",
         ]:
             self.write(name, (ROOT / name).read_text())
             (self.root / name).chmod((ROOT / name).stat().st_mode)
@@ -31,6 +31,9 @@ class PackageTest(unittest.TestCase):
         self.write("scripts/download_sherpa_onnx_libs.sh", "exit 0\n")
         self.write("scripts/with-rockchip-patch.sh", '"$@"\n')
         for arch in ["amd64", "arm64", "rockchip"]:
+            self.write(
+                f"target/cross-deps/{arch}/zlm/.release", "autobuild-2026-10-21\n"
+            )
             for file in [
                 "ffmpeg/include/libavcodec/avcodec.h",
                 "ffmpeg/bin/ffmpeg",
@@ -58,6 +61,7 @@ if name=='cross':
     if not output.exists() or output.read_text()!=content: output.write_text(content)
 elif name=='docker' and args[:2]==['image','inspect']: print('sha256:image1')
 elif name=='docker' and args[0]=='run':
+    if '/project/scripts/bundle-linux-runtime.sh' in args: sys.exit(0)
     volume=args[args.index('-v')+1].split(':')[0]
     for lib in ['libstdc++.so.6','libgcc_s.so.1','libgomp.so.1']:
         pathlib.Path(volume,lib).write_text('runtime')
@@ -96,8 +100,12 @@ else:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
 
-    def run_package(self, archive=False):
-        env = dict(self.env, PACKAGE_ARCHIVE="1" if archive else "0")
+    def run_package(self, archive=False, offline=False):
+        env = dict(
+            self.env,
+            PACKAGE_ARCHIVE="1" if archive else "0",
+            PACKAGE_OFFLINE="1" if offline else "0",
+        )
         result = subprocess.run(
             ["bash", "scripts/package-linux.sh", "amd64", "arm64", "rockchip"],
             check=False,
@@ -173,6 +181,41 @@ else:
         self.run_package(archive=True)
         self.assertNotEqual(before, archive.stat().st_mtime_ns)
         self.assertTrue((self.root / "dist/SHA256SUMS").is_file())
+
+    def test_offline_runtime_is_archived_without_models_or_yt_dlp(self):
+        self.write("scripts/bundle-linux-runtime.sh", "exit 0\n")
+        self.write(
+            "scripts/download-package-extras.py",
+            """
+import pathlib, sys
+root = pathlib.Path('target/cross-deps/offline') / sys.argv[1]
+(root / 'lib').mkdir(parents=True, exist_ok=True)
+(root / 'licenses').mkdir(exist_ok=True)
+(root / 'lib/libruntime.so').write_text('runtime')
+(root / 'licenses/runtime.txt').write_text('license')
+(root / 'DEPENDENCIES.json').write_text('[]')
+(root / 'model.onnx').write_text('not for distribution')
+""",
+        )
+        self.run_package(offline=True)
+        staging = "dist/lite-nvr-0.1.0-linux-arm64-rockchip"
+        for name in ["model.onnx", "nvr.db", ".env", "bin/yt-dlp"]:
+            self.write(f"{staging}/{name}", "not for distribution")
+        self.run_package(archive=True, offline=True)
+        import tarfile
+
+        archive = self.root / "dist/lite-nvr-0.1.0-linux-arm64-rockchip.tar.gz"
+        with tarfile.open(archive) as package:
+            files = package.getnames()
+        self.assertTrue(any(name.endswith("/lib/libruntime.so") for name in files))
+        self.assertTrue(any(name.endswith("/licenses/runtime.txt") for name in files))
+        self.assertTrue(any(name.endswith("/DEPENDENCIES.json") for name in files))
+        self.assertFalse(
+            any(
+                "yt-dlp" in name or name.endswith((".onnx", "/nvr.db", "/.env"))
+                for name in files
+            )
+        )
 
 
 if __name__ == "__main__":

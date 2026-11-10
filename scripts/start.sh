@@ -1,5 +1,5 @@
 #!/bin/sh
-# lite-nvr launcher for the Rockchip package (POSIX sh: works with BusyBox ash).
+# lite-nvr launcher for Linux packages (POSIX sh: works with BusyBox ash).
 #
 #   ./start.sh [run]   foreground, logs to the terminal (default; used by the Docker setup)
 #   ./start.sh start   background, logs to nvr.log (the previous log becomes nvr.log.prev)
@@ -21,9 +21,12 @@ export LD_LIBRARY_PATH="$root/lib:$root/ffmpeg/lib${LD_LIBRARY_PATH:+:$LD_LIBRAR
 export PATH="$root/ffmpeg/bin:$PATH"
 export ORT_DYLIB_PATH="${ORT_DYLIB_PATH:-$root/lib/libonnxruntime.so}"
 export RUST_LOG="${RUST_LOG:-info}"
+if [ -f "$root/share/alsa/alsa.conf" ]; then
+    export ALSA_CONFIG_PATH="${ALSA_CONFIG_PATH:-$root/share/alsa/alsa.conf}"
+    export ALSA_CONFIG_DIR="${ALSA_CONFIG_DIR:-$root/share/alsa}"
+fi
 
-# PIDs of nvr hosts running this package's binary. The host owns the internal
-# RKLLM worker, which uses the same executable and must not count as a host.
+# PIDs of nvr hosts. The host manages its RKLLM worker, which uses the same binary.
 nvr_pids() {
     for p in /proc/[0-9]*; do
         case "$(readlink "$p/exe" 2>/dev/null)" in

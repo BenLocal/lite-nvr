@@ -32,8 +32,8 @@ if [[ "$(uname -s)" == Darwin ]]; then
     build_https_proxy="${build_https_proxy//127.0.0.1/host.docker.internal}"
     build_https_proxy="${build_https_proxy//localhost/host.docker.internal}"
 fi
-HTTP_PROXY="$build_http_proxy" HTTPS_PROXY="$build_https_proxy" \
-docker build --platform "$build_platform" --build-arg HTTP_PROXY --build-arg HTTPS_PROXY \
+docker build --platform "$build_platform" \
+    --build-arg "HTTP_PROXY=$build_http_proxy" --build-arg "HTTPS_PROXY=$build_https_proxy" \
     --build-arg "APT_MIRROR=${APT_MIRROR:-}" \
     -t "$native_image" -t lite-nvr-cross:host-native -f scripts/Dockerfile.cross-native scripts
 echo "Build container platform: $build_platform"
@@ -91,6 +91,9 @@ for arch in "${architectures[@]}"; do
     SHERPA_ONNX_LIB_DIR="/project/third_party/sherpa-onnx/sherpa-onnx-v${sherpa_version}-linux-$([[ "$arch" == amd64 ]] && echo x64 || echo aarch64)-static-lib/lib"
     export SHERPA_ONNX_LIB_DIR
     export PKG_CONFIG_ALLOW_CROSS=1
+    export CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc
+    export CXX_x86_64_unknown_linux_gnu=x86_64-linux-gnu-g++
+    export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc
     export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
     export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
     export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
@@ -102,8 +105,8 @@ for arch in "${architectures[@]}"; do
     export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="$flags"
     export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="$flags"
     if [[ -n "${APT_MIRROR:-}" ]]; then
-        HTTP_PROXY="$build_http_proxy" HTTPS_PROXY="$build_https_proxy" \
-        docker build --platform "$build_platform" --build-arg HTTP_PROXY --build-arg HTTPS_PROXY \
+        docker build --platform "$build_platform" \
+            --build-arg "HTTP_PROXY=$build_http_proxy" --build-arg "HTTPS_PROXY=$build_https_proxy" \
             --build-arg "CROSS_BASE_IMAGE=$base_image" \
             --build-arg "APT_MIRROR=$APT_MIRROR" \
             -t "lite-nvr-cross:$arch-$build_arch" -f scripts/Dockerfile.cross scripts
@@ -128,6 +131,10 @@ for arch in "${architectures[@]}"; do
     archive="dist/$package.tar.gz"
     stamp="target/cross-deps/$package.sha256"
     binary="$build_target_dir/$target/release/nvr"
+    extras="target/cross-deps/offline/$arch"
+    if [[ "${PACKAGE_OFFLINE:-0}" == 1 ]]; then
+        python3 scripts/download-package-extras.py "$arch"
+    fi
     # Include the image ID: its C++ runtimes are part of the shipped package.
     image_id=$(docker image inspect --format '{{.Id}}' "$base_image")
     signature=""
@@ -135,7 +142,11 @@ for arch in "${architectures[@]}"; do
         signature=$( {
             printf '%s\n' "$image_id"
             python3 scripts/package-cache.py "$binary" "$deps" LICENSE \
-                scripts/package-linux.sh scripts/package-cache.py scripts/rockchip/start.sh
+                scripts/package-linux.sh scripts/package-cache.py scripts/start.sh \
+                scripts/bundle-linux-runtime.sh scripts/download-package-extras.py
+            if [[ "${PACKAGE_OFFLINE:-0}" == 1 ]]; then
+                python3 scripts/package-cache.py "$extras"
+            fi
         } | shasum -a 256 | awk '{print $1}')
     fi
     # Keep image-provided runtimes separately; a Rust-only update need not start Docker.
@@ -157,33 +168,31 @@ for arch in "${architectures[@]}"; do
     python3 scripts/package-cache.py sync "$deps/ffmpeg" "$staging/ffmpeg"
     python3 scripts/package-cache.py sync-files "$staging/lib" \
         "$deps/zlm/lib/"*.so* "$deps/onnxruntime/lib/"*.so* "$runtime/"*.so*
+    if [[ "${PACKAGE_OFFLINE:-0}" == 1 ]]; then
+        for library in "$extras/lib/"*.so*; do
+            [[ -f "$library" ]] || continue
+            python3 scripts/package-cache.py copy "$library" "$staging/lib/${library##*/}"
+        done
+        python3 scripts/package-cache.py sync "$extras/licenses" "$staging/licenses"
+        python3 scripts/package-cache.py copy "$extras/DEPENDENCIES.json" "$staging/DEPENDENCIES.json"
+        docker run --rm --platform "$build_platform" -v "$PWD:/project" "$base_image" \
+            bash /project/scripts/bundle-linux-runtime.sh "/project/$staging" "$target"
+    fi
     python3 scripts/package-cache.py copy "$deps/onnxruntime/LICENSE" "$staging/ONNXRUNTIME-LICENSE"
     if [[ -f LICENSE ]]; then python3 scripts/package-cache.py copy LICENSE "$staging/LICENSE"; fi
-    if [[ "$arch" == rockchip ]]; then
-        # Board launcher with run/start/stop/restart/status (POSIX sh for BusyBox).
-        python3 scripts/package-cache.py copy scripts/rockchip/start.sh "$staging/start.sh"
-    else
-        cat > "$metadata/start.sh" <<'START'
-#!/usr/bin/env bash
-set -euo pipefail
-root="$(cd "$(dirname "$0")" && pwd)"
-export LD_LIBRARY_PATH="$root/lib:$root/ffmpeg/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export PATH="$root/ffmpeg/bin:$PATH"
-export ORT_DYLIB_PATH="${ORT_DYLIB_PATH:-$root/lib/libonnxruntime.so}"
-cd "$root"
-exec "$root/bin/nvr" "$@"
-START
-        chmod +x "$metadata/start.sh"
-        python3 scripts/package-cache.py copy "$metadata/start.sh" "$staging/start.sh"
-    fi
+    python3 scripts/package-cache.py copy scripts/start.sh "$staging/start.sh"
     cat > "$metadata/README.txt" <<'README'
 Run ./start.sh on GNU Linux with a glibc at least as new as the build image's
 (check what the binary needs: strings bin/nvr | grep -o 'GLIBC_2\.[0-9]*' | sort -V | tail -1).
 Dashboard: http://localhost:18080/nvr/
 FFmpeg, ZLMediaKit and ONNX Runtime CPU libraries are included.
 ASR/detection model files are configured separately and are not included.
+TTS/LLM models and yt-dlp are not included.
 SMB transport is disabled (the default Cargo feature set).
 README
+    if [[ "${PACKAGE_OFFLINE:-0}" == 1 ]]; then
+        printf '\nOffline package: unpack and run ./start.sh; no package manager or Internet access is required.\nRequires GNU Linux with glibc 2.35 or newer. The system supplies glibc, the ELF loader and kernel drivers.\n' >> "$metadata/README.txt"
+    fi
     if [[ "$arch" == rockchip ]]; then
         printf '\nRockchip feature enabled; RK FFmpeg and MPP/RGA libraries included.\nRKMPP hardware requires matching Rockchip kernel drivers and device access.\n./start.sh [run|start|stop|restart|status]: run in the foreground (default) or manage a background nvr.\n' >> "$metadata/README.txt"
     fi
@@ -192,7 +201,13 @@ README
     echo "Package directory updated: $staging"
     if [[ "${PACKAGE_ARCHIVE:-0}" == 1 ]]; then
         if [[ ! -f "$archive" || ! -f "$stamp" || "$(cat "$stamp")" != "$signature" ]]; then
-            tar -czf "$archive.tmp" -C dist "$package"
+            entries=(bin/nvr lib ffmpeg start.sh README.txt ONNXRUNTIME-LICENSE)
+            for entry in LICENSE licenses DEPENDENCIES.json share/alsa; do
+                if [[ -e "$staging/$entry" ]]; then entries+=("$entry"); fi
+            done
+            paths=()
+            for entry in "${entries[@]}"; do paths+=("$package/$entry"); done
+            COPYFILE_DISABLE=1 tar -czf "$archive.tmp" -C dist "${paths[@]}"
             mv "$archive.tmp" "$archive"
             printf '%s\n' "$signature" > "$stamp"
         else

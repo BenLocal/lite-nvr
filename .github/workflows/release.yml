@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Package ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+          - arch: rockchip
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check release version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version=$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' nvr/Cargo.toml)
+          test "$RELEASE_TAG" = "v$version"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: nvr-dashboard/app/package-lock.json
+      - name: Install cross
+        run: cargo install cross --locked --version 0.2.5
+      - name: Test packaging scripts
+        if: matrix.arch == 'amd64'
+        run: make test-scripts
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/cross-deps
+            target/package
+            third_party/sherpa-onnx
+            .cache/rockchip-rust
+          key: release-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml', 'scripts/Dockerfile.cross-native') }}-${{ github.sha }}
+          restore-keys: |
+            release-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml', 'scripts/Dockerfile.cross-native') }}-
+            release-${{ matrix.arch }}-
+      - name: Build offline archive
+        env:
+          PACKAGE_ARCHS: ${{ matrix.arch }}
+        run: |
+          make package PACKAGE_ARCHS="$PACKAGE_ARCHS" PACKAGE_ARCHIVE=1 PACKAGE_OFFLINE=1 \
+            PACKAGE_JOBS=4 BUILD_NICE=0 \
+            PACKAGE_CONTAINER_OPTS="--cpus=4 --memory=10g"
+      - name: Verify offline archive
+        run: |
+          docker run --rm --network none -v "$PWD:/project:ro" \
+            lite-nvr-cross:host-native bash /project/scripts/tests/bundle_runtime_test.sh
+          mkdir -p target/release-verification
+          tar -xzf dist/lite-nvr-*.tar.gz -C target/release-verification
+          bash scripts/tests/verify-offline-package.sh target/release-verification/lite-nvr-*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: dist/lite-nvr-*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: linux-*
+          merge-multiple: true
+          path: dist
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        working-directory: dist
+        run: |
+          sha256sum lite-nvr-*.tar.gz > SHA256SUMS
+          gh release create "$RELEASE_TAG" --verify-tag --generate-notes \
+            --title "$RELEASE_TAG" lite-nvr-*.tar.gz SHA256SUMS

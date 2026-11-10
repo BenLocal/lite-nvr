@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install-deps download-asr-libs download-asr-models asr-demo xvfb install-watch zlm-sync build run watch dummy check test test-nvr test-nvr-asr test-ffmpeg-bus \
+.PHONY: help install-deps download-asr-libs download-asr-models asr-demo xvfb install-watch zlm-sync build run watch dummy check test test-scripts test-nvr test-nvr-asr test-ffmpeg-bus \
         fmt fmt-check frontend-install frontend-build frontend-dev frontend-lint \
         frontend-typecheck package clean clean-frontend
 
@@ -70,6 +70,8 @@ BUILD_NICE ?= 10
 PACKAGE_ARCHS ?= amd64 arm64 rockchip
 PACKAGE_ARCHIVE ?= 0
 export PACKAGE_ARCHIVE
+PACKAGE_OFFLINE ?= 0
+export PACKAGE_OFFLINE
 PACKAGE_JOBS ?= 2
 PACKAGE_CONTAINER_OPTS ?= --cpus=2 --memory=4g --memory-swap=4g
 export APT_MIRROR
@@ -101,6 +103,7 @@ help:
 	@echo ""
 	@echo "Quality:"
 	@echo "  test               Run all workspace tests"
+	@echo "  test-scripts       Run packaging script tests"
 	@echo "  test-nvr           Run nvr crate tests"
 	@echo "  test-nvr-asr       Run nvr-asr crate tests"
 	@echo "  test-ffmpeg-bus    Run ffmpeg-bus crate tests"
@@ -227,6 +230,9 @@ check:
 
 test: zlm-sync
 	cargo test --workspace --lib --tests --no-fail-fast
+
+test-scripts:
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p '*_test.py'
 
 test-nvr: zlm-sync
 	cargo test -p nvr
