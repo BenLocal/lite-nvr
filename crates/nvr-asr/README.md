@@ -20,6 +20,10 @@ show — and each `Final` is punctuated in a single pass. Punctuation never
 flickers mid-utterance; digits still come from the recognizer's `use_itn`.
 
 The engine is source-agnostic: feed it 16 kHz mono `f32` PCM.
+For complete recordings, `AsrModels::transcribe_audio()` and
+`AsrModels::transcribe_file()` return finalized segments and their joined text
+without computing intermediate partials. See [ASR modes](../../docs/asr.md) for
+the API, CLI modes, input constraints and real-model verification.
 
 ```
 audio 16k/mono/f32 ──▶ AsrEngine.accept() ──▶ [Transcript::Partial ...]   (self-correcting, live)
@@ -118,7 +122,8 @@ use nvr_asr::{AsrConfig, AsrEngine, Transcript};
 
 let mut cfg = AsrConfig::new("model.int8.onnx", "tokens.txt", "silero_vad.onnx");
 cfg.language = "zh".into();
-let mut engine = AsrEngine::new(cfg)?;
+let models = nvr_asr::AsrModels::load(cfg)?;
+let mut engine = AsrEngine::new(models.clone())?;
 
 // pcm: &[f32], 16 kHz mono, arriving in arbitrarily-sized chunks
 for chunk in stream {
@@ -130,6 +135,10 @@ for chunk in stream {
     }
 }
 for ev in engine.flush() { /* trailing finals */ }
+
+// Complete 16 kHz WAV: final text and timed segments, with no partial re-decodes.
+let result = models.transcribe_file("speech-16k.wav")?;
+println!("{}", result.text);
 ```
 
 ## Tests

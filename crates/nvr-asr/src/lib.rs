@@ -1,5 +1,5 @@
-//! Real-time speech-to-text using an **offline** ASR model to simulate
-//! streaming, with correction.
+//! Speech-to-text for complete audio and simulated streaming with correction,
+//! using an **offline** ASR model.
 //!
 //! A streaming (online) recognizer emits words as they arrive but is usually
 //! less accurate. Instead, this crate pairs a [Silero VAD] with an **offline**
@@ -12,7 +12,11 @@
 //! The [`AsrEngine`] is source-agnostic: feed it 16 kHz mono `f32` PCM via
 //! [`AsrEngine::accept`] and drain [`Transcript`] events; call
 //! [`AsrEngine::flush`] at end of stream. See the `nvr-asr-demo` binary for a
-//! WAV-file driver that simulates a live stream.
+//! WAV-file driver supporting both modes.
+//!
+//! For complete recordings, use [`AsrModels::transcribe_audio`] or
+//! [`AsrModels::transcribe_file`]. These reuse the loaded models and decode
+//! only finalized VAD segments, without the repeated interim recognition.
 //!
 //! [Silero VAD]: https://github.com/snakers4/silero-vad
 //! [SenseVoice]: https://github.com/FunAudioLLM/SenseVoice
@@ -31,6 +35,49 @@ pub use wav::{WavAudio, load_wav_16k_mono};
 /// The canonical sample rate SenseVoice + Silero VAD expect.
 pub const SAMPLE_RATE: i32 = 16_000;
 
+/// A finalized speech segment in a complete-audio transcription.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TranscriptionSegment {
+    pub text: String,
+    /// Start time in seconds from the beginning of the input audio.
+    pub start: f32,
+    /// Speech duration in seconds.
+    pub duration: f32,
+}
+
+/// Complete-audio result. Segments are chronological; `text` joins them with newlines.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Transcription {
+    pub text: String,
+    pub segments: Vec<TranscriptionSegment>,
+}
+
+/// How interim [`Transcript::Partial`] text is punctuated when a punctuation
+/// model is configured. Finals are always re-punctuated by that model.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PartialPunct {
+    /// Strip punctuation so partials show only the recognizer's corrections.
+    #[default]
+    Strip,
+    /// Keep the recognizer's own punctuation (SenseVoice with `use_itn`). Costs
+    /// no extra inference, but trailing marks may change as audio arrives.
+    Recognizer,
+}
+
+impl std::str::FromStr for PartialPunct {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "strip" | "none" => Ok(Self::Strip),
+            "recognizer" => Ok(Self::Recognizer),
+            other => anyhow::bail!(
+                "unknown partial punctuation mode {other:?} (expected strip|recognizer)"
+            ),
+        }
+    }
+}
+
 /// Configuration for an [`AsrEngine`]. Construct with [`AsrConfig::new`] (the
 /// three required model paths) and adjust fields as needed; [`Default`] fills
 /// in sensible values but leaves the paths empty.
@@ -45,11 +92,15 @@ pub struct AsrConfig {
     pub silero_vad_model: PathBuf,
 
     /// Optional CT-Transformer punctuation model (`model.onnx` from a
-    /// `sherpa-onnx-punct-*` release). When set, interim [`Transcript::Partial`]s
-    /// are emitted **without** punctuation (only the recognizer's corrections
-    /// show), and each [`Transcript::Final`] is punctuated by this model in one
-    /// pass. When `None`, punctuation follows the recognizer (`use_itn`).
+    /// `sherpa-onnx-punct-*` release). When set, each [`Transcript::Final`] is
+    /// punctuated by this model in one pass, and interim
+    /// [`Transcript::Partial`]s follow [`AsrConfig::partial_punct`]. When
+    /// `None`, punctuation follows the recognizer (`use_itn`).
     pub punct_model: Option<PathBuf>,
+    /// Punctuation shown on interim [`Transcript::Partial`]s when
+    /// `punct_model` is set. Without a punctuation model partials always keep
+    /// the recognizer's text unchanged.
+    pub partial_punct: PartialPunct,
 
     // --- recognizer options ---
     /// SenseVoice language: `auto`, `zh`, `en`, `ja`, `ko`, or `yue`.
@@ -58,6 +109,11 @@ pub struct AsrConfig {
     pub use_itn: bool,
     /// Recognizer threads.
     pub num_threads: i32,
+    /// Recognizer execution provider: `cpu`, or `rknn` for the Rockchip NPU
+    /// (needs an RKNN `.rknn` SenseVoice model and the RKNN build of
+    /// sherpa-onnx, see the `sherpa-shared` feature). RKNN models take a fixed
+    /// input length, so keep `max_speech_duration` within it.
+    pub provider: String,
     /// Print sherpa-onnx internal debug logs.
     pub debug: bool,
 
@@ -79,6 +135,11 @@ pub struct AsrConfig {
     /// How often to re-decode an in-progress segment for a fresh
     /// [`Transcript::Partial`]. Smaller = snappier partials, more CPU.
     pub partial_interval: Duration,
+    /// Commit a leading sentence as a [`Transcript::Final`] while the speaker
+    /// keeps talking, once two consecutive partial decodes agree on it, and
+    /// drop its audio so later re-decodes cover only the rest. Needs the
+    /// recognizer's token timestamps (SenseVoice provides them).
+    pub early_commit: bool,
 }
 
 impl Default for AsrConfig {
@@ -88,17 +149,20 @@ impl Default for AsrConfig {
             tokens: PathBuf::new(),
             silero_vad_model: PathBuf::new(),
             punct_model: None,
+            partial_punct: PartialPunct::default(),
             language: "auto".to_string(),
             use_itn: true,
             num_threads: 2,
+            provider: "cpu".to_string(),
             debug: false,
             vad_threshold: 0.5,
             min_silence_duration: 0.25,
             min_speech_duration: 0.25,
-            max_speech_duration: 20.0,
+            max_speech_duration: 10.0,
             vad_window_size: 512,
             vad_buffer_seconds: 60.0,
             partial_interval: Duration::from_millis(300),
+            early_commit: true,
         }
     }
 }
@@ -119,6 +183,12 @@ impl AsrConfig {
         }
     }
 
+    /// Audio kept before the VAD reports speech: its `min_speech_duration`
+    /// detection delay plus 0.3 s of margin.
+    pub(crate) fn preroll_samples(&self) -> usize {
+        ((self.min_speech_duration.max(0.0) + 0.3) * SAMPLE_RATE as f32) as usize
+    }
+
     /// Number of samples between interim re-decodes, derived from
     /// `partial_interval` at [`SAMPLE_RATE`] (at least one VAD window).
     pub(crate) fn partial_interval_samples(&self) -> usize {
@@ -131,15 +201,20 @@ impl AsrConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Transcript {
     /// Interim text for the utterance currently being spoken. Each `Partial`
-    /// *replaces* the previous one for the same utterance and may change
+    /// *replaces* the previous one with the same `segment` and may change
     /// (correct itself) as more audio arrives. Not yet committed.
     Partial {
+        /// Utterance id, shared with the `Final` that later commits it.
+        segment: u64,
         /// Best-effort transcription of the audio heard so far.
         text: String,
     },
     /// A finalized utterance produced from a completed VAD segment. The text is
-    /// stable; render it on its own line and clear any pending partial.
+    /// stable and replaces every `Partial` with the same `segment`; use
+    /// [`split_sentences`] to show it as short sentences.
     Final {
+        /// Utterance id; increases by one per finalized VAD segment.
+        segment: u64,
         /// The finalized transcription.
         text: String,
         /// Segment start time in seconds, relative to the start of the stream.
@@ -153,7 +228,14 @@ impl Transcript {
     /// The transcribed text, regardless of variant.
     pub fn text(&self) -> &str {
         match self {
-            Transcript::Partial { text } | Transcript::Final { text, .. } => text,
+            Transcript::Partial { text, .. } | Transcript::Final { text, .. } => text,
+        }
+    }
+
+    /// The utterance id, regardless of variant.
+    pub fn segment(&self) -> u64 {
+        match self {
+            Transcript::Partial { segment, .. } | Transcript::Final { segment, .. } => *segment,
         }
     }
 
@@ -161,6 +243,50 @@ impl Transcript {
     pub fn is_final(&self) -> bool {
         matches!(self, Transcript::Final { .. })
     }
+}
+
+/// Split finalized text into sentences after `。！？!?…`, and after `.` when
+/// followed by whitespace or the end (so `3.5` stays whole). Each sentence
+/// gets a share of `start..start + duration` proportional to its non-space
+/// character count; text without a sentence end stays one sentence.
+pub fn split_sentences(text: &str, start: f32, duration: f32) -> Vec<TranscriptionSegment> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        cur.push(c);
+        let ends = match c {
+            '。' | '！' | '？' | '!' | '?' | '…' => true,
+            '.' => chars.peek().is_none_or(|n| n.is_whitespace()),
+            _ => false,
+        };
+        // Keep runs like "？！" or "……" together.
+        let next_ends = chars
+            .peek()
+            .is_some_and(|n| matches!(n, '。' | '！' | '？' | '!' | '?' | '…'));
+        if ends && !next_ends {
+            parts.push(std::mem::take(&mut cur));
+        }
+    }
+    parts.push(cur);
+    parts.retain(|p| !p.trim().is_empty());
+
+    let weight = |p: &str| p.chars().filter(|c| !c.is_whitespace()).count().max(1) as f32;
+    let total: f32 = parts.iter().map(|p| weight(p)).sum();
+    let mut at = start;
+    parts
+        .into_iter()
+        .map(|p| {
+            let d = duration * weight(&p) / total;
+            let seg = TranscriptionSegment {
+                text: p.trim().to_string(),
+                start: at,
+                duration: d,
+            };
+            at += d;
+            seg
+        })
+        .collect()
 }
 
 #[cfg(test)]

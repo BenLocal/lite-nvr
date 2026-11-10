@@ -19,6 +19,10 @@ log = { workspace = true }
 env_logger = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 
+[features]
+# Link the shared sherpa-onnx libraries from SHERPA_ONNX_LIB_DIR instead of the
+# static ones, e.g. the RKNN build needed for `AsrConfig::provider = "rknn"`.
+sherpa-shared = ["sherpa-onnx/shared"]
 
 # src/main.rs is the demo binary; src/lib.rs is the reusable engine.
 [[bin]]

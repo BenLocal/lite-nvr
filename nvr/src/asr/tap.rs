@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use ffmpeg_bus::frame::{RawFrame, RawFrameCmd, RawFrameReceiver};
-use nvr_asr::{AsrEngine, AsrModels, Transcript};
+use nvr_asr::{AsrEngine, AsrModels, Transcript, split_sentences};
 use serde_json::json;
 use socketioxide::SocketIo;
 use tokio::sync::broadcast::error::RecvError;
@@ -63,25 +63,46 @@ pub async fn run(
     log::info!("asr[{pipe}]: tap stopped");
 }
 
-async fn emit(io: &SocketIo, pipe: &str, t: &Transcript) {
-    let Some(ns) = io.of("/asr") else { return };
-    let _ = match t {
-        Transcript::Partial { text } => {
-            ns.to(pipe.to_string())
-                .emit("partial", &json!({ "pipe": pipe, "text": text }))
-                .await
-        }
+/// Room event for one transcript. `id` is the utterance id: a `final` replaces
+/// every `partial` with the same id, and `sentences` splits it into short lines.
+fn payload(pipe: &str, t: &Transcript) -> (&'static str, serde_json::Value) {
+    match t {
+        Transcript::Partial { segment, text } => (
+            "partial",
+            json!({ "pipe": pipe, "id": segment, "final": false, "text": text }),
+        ),
         Transcript::Final {
+            segment,
             text,
             start,
             duration,
         } => {
-            ns.to(pipe.to_string())
-                .emit(
-                    "final",
-                    &json!({ "pipe": pipe, "text": text, "start": start, "duration": duration }),
-                )
-                .await
+            let sentences: Vec<_> = split_sentences(text, *start, *duration)
+                .into_iter()
+                .map(|s| json!({ "text": s.text, "start": s.start, "duration": s.duration }))
+                .collect();
+            (
+                "final",
+                json!({
+                    "pipe": pipe,
+                    "id": segment,
+                    "final": true,
+                    "text": text,
+                    "start": start,
+                    "duration": duration,
+                    "sentences": sentences,
+                }),
+            )
         }
-    };
+    }
 }
+
+async fn emit(io: &SocketIo, pipe: &str, t: &Transcript) {
+    let Some(ns) = io.of("/asr") else { return };
+    let (event, data) = payload(pipe, t);
+    let _ = ns.to(pipe.to_string()).emit(event, &data).await;
+}
+
+#[cfg(test)]
+#[path = "tap_test.rs"]
+mod tap_test;

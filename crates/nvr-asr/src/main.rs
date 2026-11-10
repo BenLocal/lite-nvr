@@ -1,4 +1,4 @@
-//! `nvr-asr-demo`: transcribe a 16 kHz mono WAV as if it were arriving live.
+//! `nvr-asr-demo`: transcribe a complete WAV or simulate live audio input.
 //!
 //! Reads the file, feeds it to the [`AsrEngine`] in small chunks (optionally
 //! paced in real time), and renders self-correcting interim lines plus
@@ -7,15 +7,27 @@
 use std::{path::PathBuf, time::Duration};
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 
-use nvr_asr::{AsrConfig, AsrEngine, SAMPLE_RATE, Transcript, load_wav_16k_mono};
+use nvr_asr::{
+    AsrConfig, AsrEngine, AsrModels, PartialPunct, SAMPLE_RATE, Transcript, load_wav_16k_mono,
+    split_sentences,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
+enum Mode {
+    Streaming,
+    Offline,
+}
 
 #[derive(Parser)]
 #[command(
-    about = "Offline-simulated-streaming ASR: transcribe a 16 kHz mono WAV as if live (Silero VAD + SenseVoice)"
+    about = "Transcribe a 16 kHz WAV with Silero VAD + SenseVoice (streaming correction or offline)"
 )]
 struct Args {
+    /// Streaming emits revisable partials; offline returns only finalized text.
+    #[arg(long, value_enum, default_value = "streaming")]
+    mode: Mode,
     /// SenseVoice ONNX model (e.g. model.int8.onnx).
     #[arg(long)]
     model: PathBuf,
@@ -28,10 +40,17 @@ struct Args {
     /// 16 kHz mono WAV to transcribe.
     #[arg(long)]
     wav: PathBuf,
-    /// Optional CT-Transformer punctuation model (model.onnx). When set,
-    /// partials stay punctuation-free and each final is punctuated.
+    /// Optional CT-Transformer punctuation model (model.onnx). When set, each
+    /// final is punctuated; partials follow --partial-punct.
     #[arg(long)]
     punct: Option<PathBuf>,
+    /// Partial punctuation with --punct: strip (none) or recognizer (keep
+    /// SenseVoice's own marks).
+    #[arg(long, default_value = "strip")]
+    partial_punct: PartialPunct,
+    /// Disable committing stable sentences before the speaker pauses.
+    #[arg(long, default_value_t = false)]
+    no_early_commit: bool,
 
     /// SenseVoice language: auto|zh|en|ja|ko|yue.
     #[arg(long, default_value = "auto")]
@@ -39,6 +58,14 @@ struct Args {
     /// Recognizer threads.
     #[arg(long, default_value_t = 2)]
     num_threads: i32,
+    /// Recognizer provider: cpu, or rknn with an RKNN model (needs the
+    /// `sherpa-shared` feature and the RKNN sherpa-onnx libraries).
+    #[arg(long, default_value = "cpu")]
+    provider: String,
+    /// Force-split continuous speech after this many seconds (RKNN models
+    /// accept a fixed input length, e.g. 10 s).
+    #[arg(long, default_value_t = 10.0)]
+    max_speech_secs: f32,
     /// Simulated packet size fed per step, in milliseconds.
     #[arg(long, default_value_t = 100)]
     chunk_ms: u64,
@@ -58,6 +85,10 @@ fn main() -> Result<()> {
         .filter_level(log::LevelFilter::Info)
         .init();
     let args = Args::parse();
+    anyhow::ensure!(
+        args.mode != Mode::Offline || !args.realtime,
+        "--realtime is only supported with --mode streaming"
+    );
 
     let samples = load_wav_16k_mono(&args.wav)?;
     log::info!(
@@ -69,13 +100,17 @@ fn main() -> Result<()> {
 
     let mut config = AsrConfig::new(&args.model, &args.tokens, &args.vad);
     config.punct_model = args.punct;
+    config.partial_punct = args.partial_punct;
+    config.early_commit = !args.no_early_commit;
     config.language = args.language;
     config.num_threads = args.num_threads;
+    config.provider = args.provider;
+    config.max_speech_duration = args.max_speech_secs;
     config.partial_interval = Duration::from_millis(args.partial_ms);
     config.debug = args.debug;
 
     let t_load = std::time::Instant::now();
-    let mut engine = AsrEngine::from_config(config)?;
+    let models = AsrModels::load(config)?;
     log::debug!(
         "engine + models load: {:.3}s",
         t_load.elapsed().as_secs_f64()
@@ -83,6 +118,18 @@ fn main() -> Result<()> {
 
     let audio_secs = samples.len() as f64 / SAMPLE_RATE as f64;
     let t_proc = std::time::Instant::now();
+    if args.mode == Mode::Offline {
+        let result = models.transcribe_audio(&samples)?;
+        println!("{}", result.text);
+        log::info!(
+            "offline: {} segments, {:.2}s audio processed in {:.3}s",
+            result.segments.len(),
+            audio_secs,
+            t_proc.elapsed().as_secs_f64()
+        );
+        return Ok(());
+    }
+    let mut engine = AsrEngine::new(models)?;
     let chunk = ((args.chunk_ms * SAMPLE_RATE as u64) / 1000).max(1) as usize;
     let mut pending_partial = false;
     for block in samples.chunks(chunk) {
@@ -120,7 +167,7 @@ const RESET: &str = "\x1b[0m";
 fn render(ev: &Transcript, pending_partial: &mut bool) {
     use std::io::Write;
     match ev {
-        Transcript::Partial { text } => {
+        Transcript::Partial { text, .. } => {
             // \r to line start, \x1b[K clears stale trailing chars; yellow marks
             // the line as interim, reset so it doesn't bleed past the text.
             print!("\r\x1b[K{YELLOW}… {text}{RESET}");
@@ -128,11 +175,18 @@ fn render(ev: &Transcript, pending_partial: &mut bool) {
             *pending_partial = true;
         }
         Transcript::Final {
+            segment,
             text,
             start,
             duration,
         } => {
-            println!("\r\x1b[K[{start:6.2}s +{duration:4.2}s] {text}");
+            print!("\r\x1b[K");
+            for s in split_sentences(text, *start, *duration) {
+                println!(
+                    "#{segment:<3} [{:6.2}s +{:4.2}s] {}",
+                    s.start, s.duration, s.text
+                );
+            }
             *pending_partial = false;
         }
     }

@@ -18,3 +18,20 @@ fn downmix_zero_channels_treated_as_mono() {
     let s = [0.5, 0.5];
     assert_eq!(downmix_to_mono(&s, 0), vec![0.5, 0.5]);
 }
+
+#[test]
+fn complete_wav_loader_rejects_wrong_sample_rate() {
+    let path = std::env::temp_dir().join(format!("nvr-asr-rate-{}.wav", std::process::id()));
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 8_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+    writer.write_sample(0i16).unwrap();
+    writer.finalize().unwrap();
+    let result = super::load_wav_16k_mono(&path);
+    std::fs::remove_file(path).unwrap();
+    assert!(result.unwrap_err().to_string().contains("need 16000"));
+}

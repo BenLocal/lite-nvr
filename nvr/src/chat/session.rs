@@ -164,7 +164,7 @@ impl Session {
                 self.history.clear();
             }
             Event::Asr { epoch, t } if epoch == self.epoch => match t {
-                Transcript::Partial { text } => {
+                Transcript::Partial { text, .. } => {
                     let text = format!("{}{text}", self.heard.concat());
                     self.emit("asr_partial", json!({ "text": text }));
                 }

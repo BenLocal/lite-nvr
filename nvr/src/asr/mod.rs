@@ -46,6 +46,25 @@ pub fn model_config() -> AsrConfig {
     if punct.join("model.onnx").exists() {
         cfg.punct_model = Some(punct.join("model.onnx"));
     }
+    if let Ok(secs) = std::env::var("ASR_MAX_SPEECH_SECS") {
+        match secs.trim().parse::<f32>() {
+            Ok(secs) if secs > 0.0 => cfg.max_speech_duration = secs,
+            _ => log::warn!("ignoring ASR_MAX_SPEECH_SECS={secs:?}: expected positive seconds"),
+        }
+    }
+    if let Ok(v) = std::env::var("ASR_EARLY_COMMIT") {
+        match v.trim() {
+            "0" | "false" | "off" => cfg.early_commit = false,
+            "1" | "true" | "on" => cfg.early_commit = true,
+            _ => log::warn!("ignoring ASR_EARLY_COMMIT={v:?}: expected 0|1"),
+        }
+    }
+    if let Ok(mode) = std::env::var("ASR_PARTIAL_PUNCT") {
+        match mode.parse() {
+            Ok(mode) => cfg.partial_punct = mode,
+            Err(e) => log::warn!("ignoring ASR_PARTIAL_PUNCT: {e:#}"),
+        }
+    }
     cfg
 }
 

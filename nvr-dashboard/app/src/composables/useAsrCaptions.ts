@@ -12,8 +12,29 @@ async function ensureIo() {
 
 export interface CaptionEntry {
   id: number
+  /** Backend utterance id; one utterance may yield several short sentences. */
+  segment: number
   time: string // wall-clock HH:MM:SS
   text: string
+}
+
+/** Socket payload for both `partial` and `final` events. */
+export interface CaptionEvent {
+  pipe?: string
+  /** Utterance id: a final replaces every partial with the same id. */
+  id?: number
+  final?: boolean
+  text?: string
+  sentences?: { text: string; start: number; duration: number }[]
+}
+
+/** Short lines for a final event; falls back to the whole text from older backends. */
+export function finalLines(p: CaptionEvent): string[] {
+  const lines = (p.sentences ?? []).map((s) => s.text).filter((t) => t)
+  if (lines.length) {
+    return lines
+  }
+  return p.text ? [p.text] : []
 }
 
 function stamp(): string {
@@ -49,17 +70,22 @@ export function useAsrCaptions() {
       const s = io('/asr')
       socket.value = s
       s.on('partial', (payload) => {
-        const p = payload as { pipe?: string; text?: string }
+        const p = payload as CaptionEvent
         if (p?.pipe === currentPipe) {
           partial.value = p.text ?? ''
         }
       })
       s.on('final', (payload) => {
-        const p = payload as { pipe?: string; text?: string }
-        if (p?.pipe === currentPipe && p.text) {
-          entries.value.push({ id: ++seq, time: stamp(), text: p.text })
-          partial.value = ''
+        const p = payload as CaptionEvent
+        if (p?.pipe !== currentPipe) {
+          return
         }
+        const segment = p.id ?? -1
+        const time = stamp()
+        for (const text of finalLines(p)) {
+          entries.value.push({ id: ++seq, segment, time, text })
+        }
+        partial.value = ''
       })
       // Join the room first so no early transcript is missed, then start.
       s.emit('subscribe', pipeId)
