@@ -142,7 +142,7 @@ for arch in "${architectures[@]}"; do
         signature=$( {
             printf '%s\n' "$image_id"
             python3 scripts/package-cache.py "$binary" "$deps" LICENSE \
-                scripts/package-linux.sh scripts/package-cache.py scripts/start.sh \
+                scripts/package-linux.sh scripts/package-cache.py packaging \
                 scripts/bundle-linux-runtime.sh scripts/download-package-extras.py
             if [[ "${PACKAGE_OFFLINE:-0}" == 1 ]]; then
                 python3 scripts/package-cache.py "$extras"
@@ -180,7 +180,6 @@ for arch in "${architectures[@]}"; do
     fi
     python3 scripts/package-cache.py copy "$deps/onnxruntime/LICENSE" "$staging/ONNXRUNTIME-LICENSE"
     if [[ -f LICENSE ]]; then python3 scripts/package-cache.py copy LICENSE "$staging/LICENSE"; fi
-    python3 scripts/package-cache.py copy scripts/start.sh "$staging/start.sh"
     cat > "$metadata/README.txt" <<'README'
 Run ./start.sh on GNU Linux with a glibc at least as new as the build image's
 (check what the binary needs: strings bin/nvr | grep -o 'GLIBC_2\.[0-9]*' | sort -V | tail -1).
@@ -193,9 +192,23 @@ README
     if [[ "${PACKAGE_OFFLINE:-0}" == 1 ]]; then
         printf '\nOffline package: unpack and run ./start.sh; no package manager or Internet access is required.\nRequires GNU Linux with glibc 2.35 or newer. The system supplies glibc, the ELF loader and kernel drivers.\n' >> "$metadata/README.txt"
     fi
-    if [[ "$arch" == rockchip ]]; then
-        printf '\nRockchip feature enabled; RK FFmpeg and MPP/RGA libraries included.\nRKMPP hardware requires matching Rockchip kernel drivers and device access.\n./start.sh [run|start|stop|restart|status]: run in the foreground (default) or manage a background nvr.\n' >> "$metadata/README.txt"
-    fi
+    # Package files: packaging/common (incl. start.sh), then packaging/$arch (wins on the same path).
+    # README.txt is appended to the package README; other files are copied to the package root.
+    overlay_entries=()
+    for layer in packaging/common "packaging/$arch"; do
+        [[ -d "$layer" ]] || continue
+        if [[ -f "$layer/README.txt" ]]; then
+            { printf '\n'; cat "$layer/README.txt"; } >> "$metadata/README.txt"
+        fi
+        while IFS= read -r -d '' file; do
+            relative="${file#"$layer"/}"
+            [[ "$relative" == README.txt ]] && continue
+            if [[ "$layer" == packaging/common && -f "packaging/$arch/$relative" ]]; then continue; fi
+            mkdir -p "$(dirname "$staging/$relative")"
+            python3 scripts/package-cache.py copy "$file" "$staging/$relative"
+            overlay_entries+=("${relative%%/*}")
+        done < <(find "$layer" -type f ! -name .DS_Store -print0)
+    done
     python3 scripts/package-cache.py copy "$metadata/README.txt" "$staging/README.txt"
     chmod +x "$staging/start.sh"
     echo "Package directory updated: $staging"
@@ -204,6 +217,9 @@ README
             entries=(bin/nvr lib ffmpeg start.sh README.txt ONNXRUNTIME-LICENSE)
             for entry in LICENSE licenses DEPENDENCIES.json share/alsa; do
                 if [[ -e "$staging/$entry" ]]; then entries+=("$entry"); fi
+            done
+            for entry in ${overlay_entries[@]+"${overlay_entries[@]}"}; do
+                if [[ " ${entries[*]} " != *" $entry "* ]]; then entries+=("$entry"); fi
             done
             paths=()
             for entry in "${entries[@]}"; do paths+=("$package/$entry"); done

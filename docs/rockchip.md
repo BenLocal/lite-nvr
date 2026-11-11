@@ -105,7 +105,7 @@ ldd ./bin/nvr
 
 ## 在板子上启动
 
-以下命令都在安装目录（`.../lite-nvr-0.1.0-linux-arm64-rockchip`）中执行。包内的 `start.sh`（源码在仓库 `scripts/start.sh`，POSIX `sh`，BusyBox 可直接运行）会先 `cd` 到安装目录，设置 `LD_LIBRARY_PATH`（包内 `lib/`、`ffmpeg/lib/`）和 `ORT_DYLIB_PATH`，再运行 `bin/nvr`：
+以下命令都在安装目录（`.../lite-nvr-0.1.0-linux-arm64-rockchip`）中执行。包内的 `start.sh`（源码在仓库 `packaging/common/start.sh`，POSIX `sh`，BusyBox 可直接运行）会先 `cd` 到安装目录，设置 `LD_LIBRARY_PATH`（包内 `lib/`、`ffmpeg/lib/`）和 `ORT_DYLIB_PATH`，再运行 `bin/nvr`：
 
 | 命令 | 作用 |
 |---|---|

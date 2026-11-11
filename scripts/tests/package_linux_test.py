@@ -17,7 +17,7 @@ class PackageTest(unittest.TestCase):
         for name in [
             "scripts/package-linux.sh",
             "scripts/package-cache.py",
-            "scripts/start.sh",
+            "packaging/common/start.sh",
         ]:
             self.write(name, (ROOT / name).read_text())
             (self.root / name).chmod((ROOT / name).stat().st_mode)
@@ -216,6 +216,35 @@ root = pathlib.Path('target/cross-deps/offline') / sys.argv[1]
                 for name in files
             )
         )
+
+    def test_platform_overlays_are_copied_and_archived(self):
+        self.write("packaging/common/nvr.env", "RUST_LOG=info\n")
+        self.write("packaging/common/conf/shared.txt", "shared")
+        self.write("packaging/rockchip/nvr.env", "RUST_LOG=debug\n")
+        self.write("packaging/rockchip/README.txt", "Rockchip note.\n")
+        self.run_package(archive=True)
+        rockchip = self.root / "dist/lite-nvr-0.1.0-linux-arm64-rockchip"
+        amd64 = self.root / "dist/lite-nvr-0.1.0-linux-amd64-gnu"
+        self.assertEqual((rockchip / "nvr.env").read_text(), "RUST_LOG=debug\n")
+        self.assertEqual((amd64 / "nvr.env").read_text(), "RUST_LOG=info\n")
+        self.assertEqual((amd64 / "conf/shared.txt").read_text(), "shared")
+        self.assertTrue(
+            (rockchip / "README.txt").read_text().endswith("\n\nRockchip note.\n")
+        )
+        self.assertNotIn("Rockchip note.", (amd64 / "README.txt").read_text())
+        import tarfile
+
+        archive = self.root / "dist/lite-nvr-0.1.0-linux-arm64-rockchip.tar.gz"
+        with tarfile.open(archive) as package:
+            files = package.getnames()
+        package_name = "lite-nvr-0.1.0-linux-arm64-rockchip"
+        self.assertIn(f"{package_name}/nvr.env", files)
+        self.assertIn(f"{package_name}/conf/shared.txt", files)
+        self.assertEqual(len(files), len(set(files)))
+        before = archive.stat().st_mtime_ns
+        self.write("packaging/rockchip/nvr.env", "RUST_LOG=trace\n")
+        self.run_package(archive=True)
+        self.assertNotEqual(before, archive.stat().st_mtime_ns)
 
 
 if __name__ == "__main__":

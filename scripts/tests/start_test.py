@@ -18,7 +18,7 @@ class LauncherTests(unittest.TestCase):
         (self.root / "bin").mkdir()
         self.launcher = self.root / "start.sh"
         shutil.copyfile(
-            pathlib.Path(__file__).resolve().parents[1] / "start.sh", self.launcher
+            pathlib.Path(__file__).resolve().parents[2] / "packaging/common/start.sh", self.launcher
         )
         source = self.root / "fixture.c"
         source.write_text("#include <unistd.h>\nint main(void) { for (;;) pause(); }\n")
@@ -62,6 +62,39 @@ class LauncherTests(unittest.TestCase):
         # The fixture has no parent-death handler. Remaining alive proves
         # the launcher only signalled the host; the real host owns cleanup.
         self.assertIsNone(worker.poll())
+
+
+class EnvFileTests(unittest.TestCase):
+    def test_env_file_supplies_defaults_without_overriding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "bin").mkdir()
+            shutil.copyfile(
+                pathlib.Path(__file__).resolve().parents[2] / "packaging/common/start.sh",
+                root / "start.sh",
+            )
+            nvr = root / "bin" / "nvr"
+            nvr.write_text(
+                '#!/bin/sh\nprintf "%s|%s|%s\\n" "$NVR_A" "$NVR_B" "$RUST_LOG"\n'
+            )
+            nvr.chmod(0o755)
+            (root / "nvr.env").write_text(
+                "# comment\n\nNVR_A=a b=$HOME\nNVR_B=from-file\nRUST_LOG=debug\n"
+                "bad-key=x\nNOVALUE"
+            )
+            env = dict(os.environ, NVR_B="from-env")
+            env.pop("NVR_A", None)
+            env.pop("RUST_LOG", None)
+            result = subprocess.run(
+                ["sh", str(root / "start.sh"), "run"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=5,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "a b=$HOME|from-env|debug\n")
 
 
 if __name__ == "__main__":

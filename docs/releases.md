@@ -53,6 +53,20 @@ curl, tar and xz. Dependency downloads happen on the build machine.
 On Apple Silicon, the build container uses ARM64 Linux tools even when producing
 x86_64 binaries. Each target retains its own Cargo cache under `target/package/`.
 
+`packaging/` holds only files that ship in the package; build scripts stay in
+`scripts/`. `scripts/package-linux.sh` copies `packaging/common/` (including
+`start.sh`) and then `packaging/<arch>/` (`amd64`, `arm64` or `rockchip`) into the
+package root, where a platform file replaces the common file with the same path:
+
+- `README.txt` is appended to the package `README.txt` rather than copied.
+- Other files are copied to the same relative path and included in the archive.
+  Do not put models, credentials or `.env` files there.
+- `nvr.env` is read by `start.sh`: one `KEY=VALUE` per line, `#` comments, values
+  taken literally (no quotes or expansion). Variables already set in the
+  environment take precedence.
+- Removing a file from `packaging/` does not delete it from an existing `dist/`
+  directory; rebuild into a clean directory when that matters.
+
 Verify a package on a machine or Docker engine supporting its architecture:
 
 ```bash

@@ -8,7 +8,8 @@
 #   ./start.sh status  process, listening ports and admin page; exit 3 when not running
 #
 # Environment (e.g. RUST_LOG, NVR_RECORD_DIR, FFMPEG_BUS_ENCODER_QUEUE_FRAMES) is
-# passed through to nvr. Data (nvr.db, data/records) lives in this directory.
+# passed through to nvr; an optional nvr.env next to this script supplies defaults
+# for variables that are not already set. Data (nvr.db, data/records) lives in this directory.
 set -eu
 
 root=$(cd "$(dirname "$0")" && pwd)
@@ -17,6 +18,18 @@ log="$root/nvr.log"
 ports="18080 8553 ${NVR_ZLM_RTSP_PORT:-8554} 8555"
 
 cd "$root"
+# Platform defaults shipped as nvr.env (KEY=VALUE lines, values taken literally).
+# Variables already set in the environment win.
+if [ -f "$root/nvr.env" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in '' | '#'*) continue ;; esac
+        key=${line%%=*}
+        case "$key" in '' | [0-9]* | *[!A-Za-z0-9_]*) continue ;; esac
+        [ "$key" = "$line" ] && continue
+        eval "[ -n \"\${$key+x}\" ]" && continue
+        export "$key=${line#*=}"
+    done < "$root/nvr.env"
+fi
 export LD_LIBRARY_PATH="$root/lib:$root/ffmpeg/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export PATH="$root/ffmpeg/bin:$PATH"
 export ORT_DYLIB_PATH="${ORT_DYLIB_PATH:-$root/lib/libonnxruntime.so}"
