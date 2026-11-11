@@ -1,4 +1,4 @@
-use super::{Commit, partial_text, stable_prefix, strip_punct};
+use super::{Commit, Decoded, drop_context, forced_cut, partial_text, stable_prefix, strip_punct};
 use crate::PartialPunct;
 
 #[test]
@@ -287,4 +287,60 @@ fn stable_prefix_commits_at_clause_comma_but_not_list_separator() {
     assert_eq!(c.text, "点，");
     let t = toks(&["甲", "、", "乙", "。"]);
     assert_eq!(stable_prefix(&t, &[0.1, 0.2, 0.3, 0.4]), None);
+}
+
+#[test]
+fn forced_cut_prefers_the_last_mark_in_the_second_half() {
+    let t = toks(&["一", "，", "二", "三", "，", "四", "五", "。"]);
+    let ts = [0.0, 0.2, 0.5, 1.0, 1.2, 2.5, 3.0, 3.2];
+    let c = forced_cut(&t, &ts, 1.5).unwrap();
+    assert_eq!(c.text, "一，二三，");
+    assert!((c.cut_secs - 2.38).abs() < 1e-4);
+    // A mark before `min_secs` does not count; the widest late gap wins.
+    let c = forced_cut(&t, &ts, 2.8).unwrap();
+    assert_eq!(c.text, "一，二三，四");
+}
+
+#[test]
+fn forced_cut_takes_the_widest_pause_without_marks() {
+    let t = toks(&["一", "二", "三", "四", "五", "六"]);
+    let ts = [0.0, 0.3, 0.6, 0.9, 1.8, 2.1];
+    let c = forced_cut(&t, &ts, 0.5).unwrap();
+    assert_eq!(c.text, "一二三四");
+    assert!((c.cut_secs - 1.68).abs() < 1e-4);
+}
+
+#[test]
+fn forced_cut_never_starts_the_rest_with_a_mark_and_falls_back() {
+    // The only late boundary would put "。" first; fall back to before the last token.
+    let t = toks(&["一", "二", "。"]);
+    let c = forced_cut(&t, &[0.0, 0.5, 2.0], 1.0).unwrap();
+    assert_eq!(c.text, "一");
+    assert_eq!(forced_cut(&toks(&["一"]), &[0.0], 0.0), None);
+    assert_eq!(forced_cut(&toks(&["一", "二"]), &[], 0.0), None);
+}
+
+fn decoded(tokens: &[&str], timestamps: &[f32]) -> Decoded {
+    let tokens = toks(tokens);
+    Decoded {
+        text: tokens.concat(),
+        tokens,
+        timestamps: timestamps.to_vec(),
+    }
+}
+
+#[test]
+fn drop_context_keeps_tokens_after_the_cut() {
+    let d = drop_context(
+        decoded(&["一", "二", "三", "四"], &[0.1, 0.5, 0.56, 0.9]),
+        0.5,
+    )
+    .unwrap();
+    // "二" at the cut belongs to the committed text; "三" one step later does not.
+    assert_eq!(d.text, "三四");
+    assert_eq!(d.timestamps, vec![0.56, 0.9]);
+    assert!(drop_context(decoded(&["一", "。"], &[0.1, 0.3]), 0.2).is_none());
+    assert!(drop_context(decoded(&["一"], &[0.1]), 0.5).is_none());
+    // Without timestamps the context cannot be told apart.
+    assert_eq!(drop_context(decoded(&["一"], &[]), 0.5).unwrap().text, "一");
 }

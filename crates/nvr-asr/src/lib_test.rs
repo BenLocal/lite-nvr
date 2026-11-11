@@ -50,6 +50,8 @@ fn config_new_sets_paths_and_defaults() {
     assert_eq!(c.vad_window_size, 512);
     assert_eq!(c.partial_punct, PartialPunct::Strip);
     assert_eq!(c.provider, "cpu");
+    assert_eq!(c.max_decode_secs, None);
+    assert_eq!(c.commit_overlap, 0.5);
 }
 
 #[test]
@@ -101,4 +103,21 @@ fn preroll_covers_vad_detection_delay() {
     c.min_speech_duration = 0.25;
     // (0.25 + 0.3) s at 16 kHz.
     assert_eq!(c.preroll_samples(), 8800);
+}
+
+#[test]
+fn decode_limit_and_overlap_in_samples() {
+    let mut c = AsrConfig::new("m", "t", "v");
+    assert_eq!(c.max_decode_samples(), None);
+    assert_eq!(c.overlap_samples(), 8000);
+    c.max_decode_secs = Some(5.0);
+    assert_eq!(c.max_decode_samples(), Some(80_000));
+    assert_eq!(c.overlap_samples(), 8000);
+    // The overlap never takes more than a quarter of a decode.
+    c.max_decode_secs = Some(1.0);
+    assert_eq!(c.overlap_samples(), 4000);
+    c.max_decode_secs = Some(0.0);
+    assert_eq!(c.max_decode_samples(), None);
+    c.commit_overlap = -1.0;
+    assert_eq!(c.overlap_samples(), 0);
 }

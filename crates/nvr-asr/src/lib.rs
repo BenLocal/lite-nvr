@@ -112,8 +112,18 @@ pub struct AsrConfig {
     /// Recognizer execution provider: `cpu`, or `rknn` for the Rockchip NPU
     /// (needs an RKNN `.rknn` SenseVoice model and the RKNN build of
     /// sherpa-onnx, see the `sherpa-shared` feature). RKNN models take a fixed
-    /// input length, so keep `max_speech_duration` within it.
+    /// input length; set [`AsrConfig::max_decode_secs`] to it.
     pub provider: String,
+    /// Longest audio, in seconds, passed to one recognizer decode; `None` for
+    /// no limit. RKNN models are converted for a fixed length (5 s, 10 s, ...)
+    /// and drop audio beyond it, and the VAD's `max_speech_duration` is only a
+    /// hint, so with a limit the engine commits text early at a pause and
+    /// splits long segments to stay within it.
+    pub max_decode_secs: Option<f32>,
+    /// Seconds of already-committed audio decoded again in front of the
+    /// remaining audio after a commit, so the words right after the cut are
+    /// recognized with left context. Tokens starting inside it are dropped.
+    pub commit_overlap: f32,
     /// Print sherpa-onnx internal debug logs.
     pub debug: bool,
 
@@ -154,6 +164,8 @@ impl Default for AsrConfig {
             use_itn: true,
             num_threads: 2,
             provider: "cpu".to_string(),
+            max_decode_secs: None,
+            commit_overlap: 0.5,
             debug: false,
             vad_threshold: 0.5,
             min_silence_duration: 0.25,
@@ -187,6 +199,23 @@ impl AsrConfig {
     /// detection delay plus 0.3 s of margin.
     pub(crate) fn preroll_samples(&self) -> usize {
         ((self.min_speech_duration.max(0.0) + 0.3) * SAMPLE_RATE as f32) as usize
+    }
+
+    /// `max_decode_secs` in samples; `None` when unlimited or not positive.
+    pub(crate) fn max_decode_samples(&self) -> Option<usize> {
+        self.max_decode_secs
+            .filter(|s| *s > 0.0)
+            .map(|s| (s * SAMPLE_RATE as f32) as usize)
+    }
+
+    /// `commit_overlap` in samples (negative counts as zero), at most a quarter
+    /// of `max_decode_secs` so a decode always has room for new audio.
+    pub(crate) fn overlap_samples(&self) -> usize {
+        let overlap = (self.commit_overlap.max(0.0) * SAMPLE_RATE as f32) as usize;
+        match self.max_decode_samples() {
+            Some(max) => overlap.min(max / 4),
+            None => overlap,
+        }
     }
 
     /// Number of samples between interim re-decodes, derived from

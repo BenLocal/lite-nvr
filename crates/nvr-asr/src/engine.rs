@@ -146,6 +146,20 @@ struct Decoded {
 /// the cut does not clip its onset (SenseVoice timestamps step in ~60 ms).
 const CUT_MARGIN_SECS: f32 = 0.12;
 
+/// A token starting within this of the context end still belongs to the
+/// committed text (half of SenseVoice's ~60 ms timestamp step).
+const CONTEXT_TOL_SECS: f32 = 0.02;
+
+/// Room kept below `max_decode_secs` when deciding to force a commit.
+const FORCE_SAFETY_SECS: f32 = 0.25;
+
+/// Text decoded from part of a segment and its sample range in the decoded audio.
+struct Piece {
+    text: String,
+    start: usize,
+    end: usize,
+}
+
 /// A stable sentence prefix to commit: its text and the cut point (seconds
 /// into the decoded audio) where the remaining audio starts.
 #[derive(Debug, PartialEq)]
@@ -208,13 +222,10 @@ impl AsrEngine {
             // periodically so the caller sees a self-correcting live transcript.
             if partials && self.vad.detected() {
                 if self.speech_buf.is_empty() {
-                    // Never re-include audio an early commit already finalized.
-                    let skip = self
-                        .committed_until
-                        .saturating_sub(window_start - self.preroll.len() as u64)
-                        .min(self.preroll.len() as u64) as usize;
-                    self.buf_start = window_start - (self.preroll.len() - skip) as u64;
-                    self.speech_buf.extend_from_slice(&self.preroll[skip..]);
+                    // Committed audio inside the preroll stays as left context;
+                    // decodes drop the tokens it produces.
+                    self.buf_start = window_start - self.preroll.len() as u64;
+                    self.speech_buf.extend_from_slice(&self.preroll);
                 }
                 self.speech_buf.extend_from_slice(&window);
                 self.since_partial += window.len();
@@ -237,17 +248,19 @@ impl AsrEngine {
     }
 
     /// Re-decode the open utterance, commit a stable leading sentence early when
-    /// enabled, and emit the rest as a `Partial`.
+    /// enabled, force a commit when the buffer nears `max_decode_secs`, and
+    /// emit the rest as a `Partial`.
     fn partial(&mut self, out: &mut Vec<Transcript>) {
-        let t_dec = std::time::Instant::now();
-        let decoded = self.decode_full(&self.speech_buf);
-        log::debug!(
-            "partial decode took {:?} for {:.2}s audio",
-            t_dec.elapsed(),
-            self.speech_buf.len() as f32 / SAMPLE_RATE as f32
-        );
-        let Some(mut decoded) = decoded else { return };
+        // Reset even when nothing decodes, so silence-like audio is not
+        // re-decoded on every VAD window.
         self.since_partial = 0;
+        let Some(mut decoded) = self.decode_buf() else {
+            if self.near_limit() {
+                // No text to commit; drop the audio to stay within the limit.
+                self.cut_buffer(self.speech_buf.len());
+            }
+            return;
+        };
 
         if self.models.config().early_commit {
             let candidate = stable_prefix(&decoded.tokens, &decoded.timestamps);
@@ -256,12 +269,40 @@ impl AsrEngine {
                 Some(commit) if agreed => {
                     self.commit(commit, out);
                     // Show only what is left after the committed sentence.
-                    match self.decode_full(&self.speech_buf) {
+                    match self.decode_buf() {
                         Some(rest) => decoded = rest,
                         None => return,
                     }
                 }
                 other => self.last_candidate = other.map(|c| c.text),
+            }
+        }
+
+        // Each forced cut keeps at most half of the new audio, so a couple of
+        // rounds always suffice; the bound only guards against a stuck cut.
+        for _ in 0..4 {
+            if !self.near_limit() {
+                break;
+            }
+            let sr = SAMPLE_RATE as f32;
+            let context = self.context_samples() as f32 / sr;
+            let len = self.speech_buf.len() as f32 / sr;
+            let min_cut = context + (len - context) / 2.0;
+            let commit = forced_cut(&decoded.tokens, &decoded.timestamps, min_cut).unwrap_or(
+                // A single token (or no timestamps): commit it all.
+                Commit {
+                    text: decoded.text.clone(),
+                    cut_secs: len,
+                },
+            );
+            log::debug!(
+                "forced commit: {len:.2}s buffer, cut at {:.2}s",
+                commit.cut_secs
+            );
+            self.commit(commit, out);
+            match self.decode_buf() {
+                Some(rest) => decoded = rest,
+                None => return,
             }
         }
 
@@ -277,15 +318,14 @@ impl AsrEngine {
         self.partial_sent = true;
     }
 
-    /// Emit `commit` as a `Final`, drop its audio from the interim buffer, and
-    /// open a new utterance id for what follows.
+    /// Emit `commit` as a `Final`, drop its audio from the interim buffer
+    /// (keeping `commit_overlap` as context), and open a new utterance id for
+    /// what follows.
     fn commit(&mut self, commit: Commit, out: &mut Vec<Transcript>) {
         let sr = SAMPLE_RATE as f32;
         let cut = ((commit.cut_secs * sr) as usize).min(self.speech_buf.len());
         let start = self.buf_start.max(self.committed_until);
-        self.speech_buf.drain(..cut);
-        self.buf_start += cut as u64;
-        self.committed_until = self.buf_start;
+        self.cut_buffer(cut);
         out.push(Transcript::Final {
             segment: self.segment,
             text: self.finalize_text(commit.text),
@@ -296,6 +336,42 @@ impl AsrEngine {
         self.segment += 1;
         self.last_candidate = None;
         self.partial_sent = false;
+    }
+
+    /// Mark the first `cut` samples of the interim buffer as committed and drop
+    /// them, except the last `commit_overlap` kept as left context.
+    fn cut_buffer(&mut self, cut: usize) {
+        self.committed_until = self.committed_until.max(self.buf_start + cut as u64);
+        let drop = cut.saturating_sub(self.models.config().overlap_samples());
+        self.speech_buf.drain(..drop);
+        self.buf_start += drop as u64;
+    }
+
+    /// Samples at the head of the interim buffer that are already committed.
+    fn context_samples(&self) -> usize {
+        (self.committed_until.saturating_sub(self.buf_start) as usize).min(self.speech_buf.len())
+    }
+
+    /// Whether the next partial decode could exceed `max_decode_secs`.
+    fn near_limit(&self) -> bool {
+        let config = self.models.config();
+        let Some(max) = config.max_decode_samples() else {
+            return false;
+        };
+        let safety = (FORCE_SAFETY_SECS * SAMPLE_RATE as f32) as usize;
+        self.speech_buf.len() + config.partial_interval_samples() + safety > max
+    }
+
+    /// Decode the interim buffer, dropping tokens from its committed context.
+    fn decode_buf(&self) -> Option<Decoded> {
+        let t_dec = std::time::Instant::now();
+        let decoded = self.decode_after(&self.speech_buf, self.context_samples());
+        log::debug!(
+            "partial decode took {:?} for {:.2}s audio",
+            t_dec.elapsed(),
+            self.speech_buf.len() as f32 / SAMPLE_RATE as f32
+        );
+        decoded
     }
 
     /// Signal end of stream: flush the VAD's trailing speech and emit any
@@ -318,43 +394,53 @@ impl AsrEngine {
         out
     }
 
-    /// Move every completed VAD segment into `out` as a `Final`, decoding the
+    /// Move every completed VAD segment into `out` as `Final`s, decoding the
     /// authoritative (silence-trimmed) segment samples.
     fn drain_segments(&mut self, out: &mut Vec<Transcript>) {
         while !self.vad.is_empty() {
             if let Some(segment) = self.vad.front() {
-                // Skip audio an early commit already finalized.
                 let seg_start = segment.start().max(0) as u64;
                 let samples = segment.samples();
+                let seg_end = seg_start + samples.len() as u64;
+                // Skip audio an early commit already finalized, re-decoding up
+                // to `commit_overlap` of it as left context.
                 let skip =
                     (self.committed_until.saturating_sub(seg_start) as usize).min(samples.len());
-                let samples = &samples[skip..];
+                let from = skip.saturating_sub(self.models.config().overlap_samples());
                 let t_dec = std::time::Instant::now();
-                let decoded = self.decode(samples);
+                let pieces = self.decode_bounded(&samples[from..], skip - from);
                 log::debug!(
                     "final decode took {:?} for {:.2}s audio",
                     t_dec.elapsed(),
-                    samples.len() as f32 / SAMPLE_RATE as f32
+                    (samples.len() - from) as f32 / SAMPLE_RATE as f32
                 );
                 let sr = SAMPLE_RATE as f32;
-                let start = (seg_start + skip as u64) as f32 / sr;
-                let duration = samples.len() as f32 / sr;
-                match decoded {
-                    Some(text) => out.push(Transcript::Final {
+                let at = |offset: usize| (seg_start + (from + offset) as u64) as f32 / sr;
+                let emitted = !pieces.is_empty();
+                for (i, piece) in pieces.into_iter().enumerate() {
+                    // The first piece closes the open utterance; each further
+                    // one gets its own id (the last is advanced below).
+                    if i > 0 {
+                        self.segment += 1;
+                    }
+                    out.push(Transcript::Final {
                         segment: self.segment,
-                        text: self.finalize_text(text),
-                        start,
-                        duration,
-                    }),
-                    // Close a shown partial even when the tail decodes empty.
-                    None if self.partial_sent => out.push(Transcript::Final {
+                        text: self.finalize_text(piece.text),
+                        start: at(piece.start),
+                        duration: at(piece.end) - at(piece.start),
+                    });
+                }
+                // Close a shown partial even when the tail decodes empty.
+                if !emitted && self.partial_sent {
+                    out.push(Transcript::Final {
                         segment: self.segment,
                         text: String::new(),
-                        start,
-                        duration,
-                    }),
-                    None => {}
+                        start: at(skip - from),
+                        duration: at(samples.len() - from) - at(skip - from),
+                    });
                 }
+                // Later speech must not re-decode this segment's audio.
+                self.committed_until = self.committed_until.max(seg_end);
             }
             self.vad.pop();
             // The utterance ended; the next one gets a new id.
@@ -386,13 +472,65 @@ impl AsrEngine {
         }
     }
 
-    /// Run the offline recognizer over `samples`, returning the trimmed text if
-    /// it is non-empty.
-    fn decode(&self, samples: &[f32]) -> Option<String> {
-        self.decode_full(samples).map(|d| d.text)
+    /// Decode `samples`, whose first `context` samples are committed audio,
+    /// within `max_decode_secs`: longer audio is cut at a pause into several
+    /// decodes, each re-reading `commit_overlap` before the previous cut.
+    fn decode_bounded(&self, samples: &[f32], mut context: usize) -> Vec<Piece> {
+        let config = self.models.config();
+        let max = config.max_decode_samples().unwrap_or(usize::MAX);
+        let overlap = config.overlap_samples();
+        let sr = SAMPLE_RATE as f32;
+        let mut pieces = Vec::new();
+        let mut pos = 0;
+        loop {
+            let rest = &samples[pos..];
+            if rest.len() <= max {
+                if let Some(d) = self.decode_after(rest, context) {
+                    pieces.push(Piece {
+                        text: d.text,
+                        start: pos + context,
+                        end: samples.len(),
+                    });
+                }
+                return pieces;
+            }
+            let window = &rest[..max];
+            let decoded = self.decode_after(window, context);
+            let context_secs = context as f32 / sr;
+            let min_cut = context_secs + (max as f32 / sr - context_secs) / 2.0;
+            let commit = decoded
+                .as_ref()
+                .and_then(|d| forced_cut(&d.tokens, &d.timestamps, min_cut));
+            let (text, cut) = match (commit, decoded) {
+                (Some(c), _) => (Some(c.text), (c.cut_secs * sr) as usize),
+                (None, d) => (d.map(|d| d.text), window.len()),
+            };
+            // Always move past the context so the loop advances.
+            let cut = cut.max(context + 1).min(window.len());
+            if let Some(text) = text {
+                pieces.push(Piece {
+                    text,
+                    start: pos + context,
+                    end: pos + cut,
+                });
+            }
+            context = overlap.min(cut);
+            pos += cut - context;
+        }
     }
 
-    /// Like [`Self::decode`], keeping tokens and their start times.
+    /// Decode `samples` whose first `context` samples were already committed,
+    /// keeping only the tokens that start after them.
+    fn decode_after(&self, samples: &[f32], context: usize) -> Option<Decoded> {
+        let decoded = self.decode_full(samples)?;
+        if context == 0 {
+            return Some(decoded);
+        }
+        drop_context(decoded, context as f32 / SAMPLE_RATE as f32)
+    }
+
+    /// Run the offline recognizer over `samples`, returning the trimmed text
+    /// with its tokens and their start times, if the text is non-empty.
     fn decode_full(&self, samples: &[f32]) -> Option<Decoded> {
         if samples.is_empty() {
             return None;
@@ -488,6 +626,73 @@ fn stable_prefix(tokens: &[String], timestamps: &[f32]) -> Option<Commit> {
     let next = timestamps[end + 1];
     let cut_secs = (next - CUT_MARGIN_SECS).max(timestamps[end]).max(0.0);
     Some(Commit { text, cut_secs })
+}
+
+/// Where to cut audio that is too long for one decode, given its decode
+/// (timestamps in seconds into that audio). Only boundaries whose next token
+/// starts at or after `min_secs` count, so what remains stays short. Prefers
+/// the last sentence mark, then the widest gap between token starts (a
+/// pause), then the latest boundary at any position; never puts a mark at the
+/// start of the remainder. `None` without two tokens, timestamps or such a
+/// boundary.
+fn forced_cut(tokens: &[String], timestamps: &[f32], min_secs: f32) -> Option<Commit> {
+    if tokens.len() < 2 || timestamps.len() != tokens.len() {
+        return None;
+    }
+    let is_mark = |t: &str| t.trim().chars().all(is_punct);
+    let boundaries: Vec<usize> = (0..tokens.len() - 1)
+        .filter(|&i| timestamps[i + 1] >= min_secs && !is_mark(&tokens[i + 1]))
+        .collect();
+    let gap = |i: usize| timestamps[i + 1] - timestamps[i];
+    let end = boundaries
+        .iter()
+        .rev()
+        .copied()
+        .find(|&i| is_sentence_end(&tokens[i]))
+        // `max_by` keeps the last of equal gaps: cut as late as possible.
+        .or_else(|| {
+            boundaries
+                .iter()
+                .copied()
+                .max_by(|&a, &b| gap(a).total_cmp(&gap(b)))
+        })
+        .or_else(|| {
+            (0..tokens.len() - 1)
+                .rev()
+                .find(|&i| !is_mark(&tokens[i + 1]))
+        })?;
+    let text = join_tokens(&tokens[..=end]);
+    if text.chars().all(|c| is_punct(c) || c.is_whitespace()) {
+        return None;
+    }
+    let cut_secs = (timestamps[end + 1] - CUT_MARGIN_SECS)
+        .max(timestamps[end])
+        .max(0.0);
+    Some(Commit { text, cut_secs })
+}
+
+/// Keep only the tokens of `decoded` that start after `context_secs` (the
+/// committed audio in front), rebuilding the text from them. `None` if
+/// nothing but punctuation is left. Without timestamps it cannot tell the
+/// context apart and returns `decoded` unchanged.
+fn drop_context(decoded: Decoded, context_secs: f32) -> Option<Decoded> {
+    if decoded.timestamps.len() != decoded.tokens.len() {
+        return Some(decoded);
+    }
+    let first = decoded
+        .timestamps
+        .iter()
+        .position(|&t| t > context_secs + CONTEXT_TOL_SECS)?;
+    let tokens = decoded.tokens[first..].to_vec();
+    let text = join_tokens(&tokens);
+    if text.chars().all(|c| is_punct(c) || c.is_whitespace()) {
+        return None;
+    }
+    Some(Decoded {
+        text,
+        tokens,
+        timestamps: decoded.timestamps[first..].to_vec(),
+    })
 }
 
 /// Interim text for a `Partial`. Punctuation is stripped only when a

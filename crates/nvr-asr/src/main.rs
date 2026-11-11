@@ -66,6 +66,13 @@ struct Args {
     /// accept a fixed input length, e.g. 10 s).
     #[arg(long, default_value_t = 10.0)]
     max_speech_secs: f32,
+    /// Longest audio per recognizer decode, in seconds (the RKNN model's
+    /// fixed length, e.g. 5 or 10); unlimited when omitted.
+    #[arg(long)]
+    max_decode_secs: Option<f32>,
+    /// Committed audio re-decoded as left context after a commit, in seconds.
+    #[arg(long, default_value_t = 0.5)]
+    commit_overlap: f32,
     /// Simulated packet size fed per step, in milliseconds.
     #[arg(long, default_value_t = 100)]
     chunk_ms: u64,
@@ -106,6 +113,8 @@ fn main() -> Result<()> {
     config.num_threads = args.num_threads;
     config.provider = args.provider;
     config.max_speech_duration = args.max_speech_secs;
+    config.max_decode_secs = args.max_decode_secs;
+    config.commit_overlap = args.commit_overlap;
     config.partial_interval = Duration::from_millis(args.partial_ms);
     config.debug = args.debug;
 
