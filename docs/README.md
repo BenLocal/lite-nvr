@@ -4,6 +4,7 @@ Project docs live here; some stay at fixed paths because tooling expects them (C
 
 ## In this folder
 
+- [environment-variables.md](environment-variables.md) — runtime environment variables, recording paths, model configuration, build parameters and test settings
 - [agents-dot-md/](agents-dot-md/00-index.md) — architecture rules, tech stack, code checklist, per-subsystem design notes (GB28181, ONVIF, detection, recorder, auth, media pipe)
 - [memory/](memory/00-index.md) — troubleshooting conclusions and known pitfalls
 - [dashboard-rules.md](dashboard-rules.md) — frontend coding rules

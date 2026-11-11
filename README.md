@@ -37,6 +37,7 @@ V4L2 capture requires accessible video input nodes; Rockchip builds support mult
 For Rockchip packaging and deployment, see [`docs/rockchip.md`](docs/rockchip.md).
 For offline packages and GitHub Releases, see [`docs/releases.md`](docs/releases.md).
 For streaming and complete-audio transcription, see [`docs/asr.md`](docs/asr.md).
+For environment variables and configuration examples, see [`docs/environment-variables.md`](docs/environment-variables.md).
 
 ## Example
 
