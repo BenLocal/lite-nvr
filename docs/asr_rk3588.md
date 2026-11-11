@@ -11,7 +11,26 @@
 - **多核只能快约 6%。** sherpa-onnx 的 `num_threads` 在 RKNN 下是核掩码：`1` 自动、`0`/`-1`/`-2` 单核、`-3` 核 0+1、`-4` 三核，其它值无效。用 `-4` 时只有 FFN 层被拆到三个核（110ms 降到 63ms），注意力层和 CPU 上的转置不变，5 遍总耗时从 2.30s 降到 2.17s。
 - **5 秒档模型快一倍，引擎加硬上限后可用。** 单次约 230ms，按 500ms 刷新时识别耗时占音频 49%，CPU 只用 0.24 核。VAD 段会超过 5 秒，所以要设 `max_decode_secs = 5`：引擎在停顿处强制定稿，不再截断丢字，代价是长于约 4.5 秒的句子会被切成两段（见《5 秒档 RKNN 模型》）。
 - **识别结果一致。** 同一音频两种后端输出相同文字，提前定稿在相同位置触发。
+- **按场景的推荐配置见下一节。**
 - **提前定稿在板上有效。** 18.4 秒连续语音，CPU 后端 partial 最长耗时从 770ms 降到 369ms，VAD 关段时的最终识别从 777ms（11.6 秒音频）降到最长 284ms，第一句提前约 7 秒定稿。
+
+## 推荐配置
+
+依据下文 `continuous4.wav` 的实测数据，RK3588 上按场景选择：
+
+| 场景 | 后端与模型 | `partial_interval` | `max_decode_secs` | `max_speech_duration` | 预期（`continuous4.wav` 实测） |
+|---|---|---|---|---|---|
+| 实时字幕，要求刷新快（默认推荐） | NPU 5 秒档，`num_threads = 1` | 300ms | 5 | 5 | partial 约 231ms，识别耗时占音频 75%，0.36 核；长于约 4.5 秒的句子会被切成两行 |
+| 实时字幕，CPU 紧张或多路并发 | NPU 5 秒档，`num_threads = 1` | 500ms | 5 | 5 | partial 约 232ms，耗时占比 49%，0.24 核；按每次 NPU 计算约 134ms 推算，单路约占一个 NPU 核四分之一的时间（待验证）；多路能否分到不同核未测 |
+| 要求一句一行、不切句 | CPU int8，`num_threads = 2` | 500ms | 不设 | 10 | partial 平均 230ms、最长 416ms，耗时占比 44%，0.91 核，不强制切句 |
+| 与语音对话（RKLLM + TTS）同机运行 | CPU int8，`num_threads = 2` | 500ms | 不设 | 10 | 同上；NPU 让给大模型和 TTS。ASR 与它们同时用 NPU 的情况未测 |
+| 离线转写整段文件 | CPU int8 | — | 不设 | 沿用默认 | 每个 VAD 段完整识别一次，不切句；NPU 需设 `max_decode_secs`，长段会被分段识别 |
+
+不推荐 NPU 10 秒档：不切句的好处 CPU 后端也有，而它每次 partial 约 450ms，按 600ms 刷新耗时占比已到 75–80%，余量太小。
+
+所有场景都保持 `early_commit = true`、`commit_overlap = 0.5`（默认值）。
+
+服务端目前只能用环境变量设 `ASR_MAX_SPEECH_SECS`、`ASR_EARLY_COMMIT`、`ASR_PARTIAL_PUNCT`，固定用 CPU 后端、300ms 刷新；后端、模型、刷新间隔和 `max_decode_secs` 还没接入，上表中的 NPU 配置目前只能通过库接口或 `nvr-asr-demo` 使用。`max_speech_duration` 在 5 秒档下改为 10 可能减少 VAD 切段造成的多余句号（待验证）。
 
 ## 测试环境
 
@@ -216,7 +235,7 @@ NPU 核数（`--num-threads`，`zh.wav` 识别 5 遍的总耗时；2026-11-11 �
 
 - 去掉 CPU 上约 170ms 的输出转置。不能靠在模型里加 ArgMax：RK3588 的 NPU 算子表里没有 ArgMax 和 ReduceMax，ArgMax 只在 CPU 算子清单里，加上后照样要先把整个 logits 转成 NCHW。可行的做法是用 `RKNN_QUERY_NATIVE_OUTPUT_ATTR` 直接取 NPU 原生布局（NC1HWC2，FP16）的输出，在 CPU 上直接对这种布局做 argmax，跳过转置和 FP32 转换；同时导出时让 `ctc_lo` 输出保持 `(1, 25055, 171)`，不在图里做转置。这需要改 sherpa-onnx 的 RKNN 推理代码，或自己调用 RKNN。推算单次可降到约 280ms（待验证）。
 - 这个转置被放到 CPU 的原因：Rockchip《RKNN2 Supported Operators and Constraints Reference V2.5.0》中 RK3588 的 Transpose 约束，交换 c、w 轴（`perm=[0,3,2,1]`）要求 `h1 % 16 = 0`，这里 h1 = 1；改走 `perm=[0,2,3,1]` 则要求 `c1 < 8192`，而词表大小是 25055。两条路径都不满足约束（文档原文为据，未在板上单独验证）。
-- 5 秒档在真实连续语音（新闻、会议录音）里强制定稿的频率，以及切点附近的错字率。本次测试音频只有一句话的重复，句长正好卡在阈值附近。
+- 5 秒档在真实连续语音（多人对话、会议录音等）里强制定稿的频率，以及切点附近的错字率。本次测试音频只有一句话的重复，句长正好卡在阈值附近。
 - 「短音频用 CPU、接近 10 秒用 NPU」的混合方案。
 - 与语音对话（RKLLM + TTS）同时运行时的延迟、NPU 占用和 NPU 内存。
 
