@@ -33,6 +33,10 @@ class Runner:
         self.rtmp_port = self.port('RK_RTMP_PORT', 8555)
         if self.rtsp_port == self.rtmp_port:
             raise ValueError('RTSP and RTMP ports must differ')
+        # Boards without /userdata (e.g. a data disk under /mnt) choose the parent of work dirs.
+        self.remote_base = os.environ.get('RK_REMOTE_BASE', '/userdata')
+        if not re.fullmatch(r'/[A-Za-z0-9._/-]+', self.remote_base) or '..' in self.remote_base:
+            raise ValueError('RK_REMOTE_BASE must be an absolute path of [A-Za-z0-9._/-]')
         self.run_id = (
             datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
             + '-'
@@ -77,6 +81,14 @@ class Runner:
             'StrictHostKeyChecking=accept-new',
             '-o',
             f'UserKnownHostsFile={self.cache / "rockchip-e2e-known_hosts"}',
+            # Authenticate once per run: sshpass occasionally fails a password login, and a
+            # suite opens dozens of connections. /tmp keeps the socket path under 104 bytes.
+            '-o',
+            'ControlMaster=auto',
+            '-o',
+            f'ControlPath=/tmp/lnvr-e2e-{self.run_id}',
+            '-o',
+            'ControlPersist=60',
         ]
         self.ssh = prefix + ['ssh', *options, self.target]
         self.scp = prefix + ['scp', '-O', *options]
@@ -180,7 +192,8 @@ class Runner:
         )
         print(f'# Rockchip e2e commit={self.commit} artifacts={self.artifacts}', flush=True)
         self.board(
-            'cat /proc/sys/kernel/random/boot_id; cat /proc/uptime; df -h /userdata',
+            'cat /proc/sys/kernel/random/boot_id; cat /proc/uptime; df -h '
+            + shlex.quote(self.remote_base),
             log=self.artifacts / 'preflight.txt',
         )
 
@@ -241,7 +254,7 @@ class Runner:
                 self.rtmp_port,
             ):
                 raise RuntimeError('Refusing deployment: occupied port ' + fields[3])
-        self.remote = '/userdata/lite-nvr-rk-e2e-' + self.run_id
+        self.remote = self.remote_base + '/lite-nvr-rk-e2e-' + self.run_id
         self.board('mkdir ' + shlex.quote(self.remote))
         self.copy(self.package, self.remote + '/package.tar.gz')
         self.board(
@@ -365,6 +378,13 @@ class Runner:
                     self.tunnel.kill()
                     self.tunnel.wait()
                 self.tunnel = None
+            if getattr(self, 'ssh', None):
+                subprocess.run(
+                    self.ssh[:-1] + ['-O', 'exit', self.target],
+                    capture_output=True,
+                    timeout=10,
+                    check=False,
+                )
 
     def backup_source(self, path):
         self.mutation_file = pathlib.Path(path)

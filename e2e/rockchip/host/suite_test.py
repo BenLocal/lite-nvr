@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import pathlib
+import shlex
 import tempfile
 import threading
 import unittest
@@ -28,6 +29,7 @@ class HarnessTests(unittest.TestCase):
         suite.artifacts = pathlib.Path(directory)
         suite.root = '/userdata/test'
         suite.remote = '/userdata'
+        suite.container = ''
         suite.board = lambda *_: 'log token=' + suite.token
         suite.check_boot = lambda: None
         return suite
@@ -93,6 +95,49 @@ class HarnessTests(unittest.TestCase):
                     suite.api('POST', '/api/device/add', {}, expected=500)
             finally:
                 worker.join(timeout=5)
+
+
+class ContainerTests(unittest.TestCase):
+    def suite(self, container):
+        suite = object.__new__(Suite)
+        suite.container = container
+        suite.root = '/opt/package'
+        suite.remote = '/tmp/live'
+        suite.commands = []
+        suite.board = lambda command, *_: suite.commands.append(command) or ''
+        return suite
+
+    def test_scripts_run_inside_the_container(self):
+        suite = self.suite('lite-nvr')
+        suite.script('source', '/tmp/live/results', 8556, 'start')
+        command = shlex.split(suite.commands[0])
+        self.assertEqual(command[:5], ['docker', 'exec', 'lite-nvr', 'sh', '-c'])
+        self.assertEqual(
+            shlex.split(command[5]),
+            [
+                'timeout',
+                '55',
+                'sh',
+                '/tmp/live/board/source.sh',
+                '/opt/package',
+                '/tmp/live/results',
+                '8556',
+                'start',
+                '2>&1',
+            ],
+        )
+
+    def test_log_tail_reads_container_logs(self):
+        suite = self.suite('lite-nvr')
+        suite.log_tail(20)
+        self.assertEqual(suite.commands, ['docker logs --tail 20 lite-nvr 2>&1'])
+
+    def test_board_mode_is_unchanged(self):
+        suite = self.suite('')
+        suite.script('health', 'libc')
+        suite.log_tail(20)
+        self.assertTrue(suite.commands[0].startswith('timeout 55 sh /tmp/live/board/health.sh'))
+        self.assertEqual(suite.commands[1], 'tail -n 20 /opt/package/nvr.log')
 
 
 if __name__ == '__main__':

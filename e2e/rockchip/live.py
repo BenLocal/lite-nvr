@@ -31,7 +31,11 @@ def configuration(devices):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--install-dir', required=True, help='Existing board installation')
-    parser.add_argument('--group', choices=['api', 'media', 'all'], default='api')
+    parser.add_argument('--group', choices=['api', 'media', 'coverage', 'all'], default='api')
+    parser.add_argument(
+        '--container',
+        help='Docker container running NVR; --install-dir is then the path inside it',
+    )
     args = parser.parse_args()
     runner = Runner(HERE)
     suite = None
@@ -43,10 +47,25 @@ def main():
         original = identity(runner)
         if not original:
             raise RuntimeError('No running NVR found at the supplied installation')
-        runner.remote = '/userdata/lite-nvr-live-e2e-' + runner.run_id
-        remote = shlex.quote(runner.remote)
-        runner.board(f'mkdir {remote} && mkdir {remote}/board {remote}/results')
-        runner.copy(HERE / 'board/source.sh', runner.remote + '/board/')
+        name = 'lite-nvr-live-e2e-' + runner.run_id
+        if args.container:
+            # Board scripts need the container's libc; keep their work dir inside it.
+            os.environ['RK_CONTAINER'] = args.container
+            container = shlex.quote(args.container)
+            runner.remote = '/tmp/' + name
+            remote = shlex.quote(runner.remote)
+            staged = shlex.quote(f'/tmp/{name}.source.sh')
+            runner.board(f'docker exec {container} mkdir {remote} {remote}/board {remote}/results')
+            runner.copy(HERE / 'board/source.sh', f'/tmp/{name}.source.sh')
+            runner.board(
+                f'docker cp {staged} {container}:{remote}/board/source.sh; '
+                f'status=$?; rm -f {staged}; exit $status'
+            )
+        else:
+            runner.remote = runner.remote_base + '/' + name
+            remote = shlex.quote(runner.remote)
+            runner.board(f'mkdir {remote} && mkdir {remote}/board {remote}/results')
+            runner.copy(HERE / 'board/source.sh', runner.remote + '/board/')
         runner.connect()
         # These nodes/outputs may already belong to the running instance.
         os.environ['RK_HDMI_LOOPBACK'] = '0'
@@ -54,7 +73,12 @@ def main():
         os.environ.pop('RK_NO_SIGNAL_DEVICE', None)
         (runner.artifacts / 'runtime.json').write_text(
             json.dumps(
-                dict(identity=original, suite_commit=runner.commit, mode='existing-instance'),
+                dict(
+                    identity=original,
+                    suite_commit=runner.commit,
+                    mode='existing-instance',
+                    container=args.container,
+                ),
                 indent=2,
             )
         )
@@ -66,6 +90,9 @@ def main():
             suite.api_cases()
         if args.group in ('media', 'all'):
             suite.media_cases()
+        if args.group in ('coverage', 'all'):
+            suite.coverage_cases()
+            suite.asr_cases()
         runner.check_suite_unchanged()
         status = 0
     finally:

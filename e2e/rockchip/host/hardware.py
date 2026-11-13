@@ -145,7 +145,7 @@ def hardware_cases(s):
                 assert s.get(p['id'])['state'] == 'running', 'resource test lost a stream'
                 s.probe(s.rtsp(p['id']), seconds=2)
                 s.remove(p['id'])
-            log = s.board('tail -n 200 ' + shlex.quote(s.root + '/nvr.log'))
+            log = s.log_tail(200)
             assert 'Cannot allocate memory' not in log and 'out of memory' not in log.lower(), (
                 'OOM in NVR log'
             )

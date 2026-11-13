@@ -9,7 +9,7 @@ import live
 
 class ExistingServiceTests(unittest.TestCase):
     def run_failed(self, stage):
-        runner = Mock(install=None, run_id='test')
+        runner = Mock(install=None, run_id='test', remote_base='/userdata')
         getattr(runner, stage).side_effect = RuntimeError(stage + ' failed')
 
         def stop():

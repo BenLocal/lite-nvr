@@ -25,7 +25,7 @@ case "$5" in
             set --
         fi
         if ! "$root/ffmpeg/bin/ffmpeg" -nostdin -hide_banner -f v4l2 "$@" -framerate "$fps" \
-            -i "$node" -vf 'crop=iw:ih/2:0:0,format=rgb24,scale=8:1' -frames:v 1 -vsync 0 \
+            -i "$node" -vf 'crop=iw:ih/2:0:0,format=rgb24,scale=8:1' -frames:v 1 -fps_mode passthrough \
             -pix_fmt rgb24 -f rawvideo -y "$out/signal.rgb" > "$out/capture-signal.log" 2>&1; then
             cat "$out/capture-signal.log"
             exit 1

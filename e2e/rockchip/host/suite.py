@@ -47,6 +47,8 @@ class Suite:
         self.ssh = json.loads(os.environ['E2E_SSH_JSON'])
         self.root = os.environ['INSTALL_DIR']
         self.remote = os.environ['REMOTE_ROOT']
+        # Set by live.py --container: board scripts run inside the instance's container.
+        self.container = os.environ.get('RK_CONTAINER', '')
         self.artifacts = pathlib.Path(os.environ['ARTIFACTS'])
         self.token = ''
         self.last = ''
@@ -54,6 +56,8 @@ class Suite:
         self.results = []
         self.devices = []
         self.compositors = []
+        self.programs = []
+        self.users = []
         self.unavailable = False
         self.restarts = 0
         self.uptime_start = None
@@ -63,6 +67,7 @@ class Suite:
         self.prefix = 'e2e-' + os.environ['RUN_ID']
         self.pattern = None
         self.source_started = False
+        self.speech_started = False
 
     def execute(self, args, timeout=30):
         env = dict(os.environ)
@@ -103,7 +108,20 @@ class Suite:
             self.root,
             *map(str, args),
         ]
-        return self.board(shlex.join(command) + ' 2>&1', timeout)
+        return self.board(self.inside(shlex.join(command) + ' 2>&1'), timeout)
+
+    def inside(self, command):
+        """Run a board command where NVR runs: the board itself or its container."""
+        if not self.container:
+            return command
+        return shlex.join(['docker', 'exec', self.container, 'sh', '-c', command])
+
+    def log_tail(self, lines):
+        if self.container:
+            return self.board(
+                shlex.join(['docker', 'logs', '--tail', str(lines), self.container]) + ' 2>&1'
+            )
+        return self.board(f'tail -n {lines} {shlex.quote(self.root + "/nvr.log")}')
 
     def redact(self, text):
         if self.token:
@@ -272,7 +290,7 @@ class Suite:
         if status == 'FAIL':
             response = self.redact(self.last)[:500]
             try:
-                tail = self.redact(self.board(f'tail -n 20 {shlex.quote(self.root + "/nvr.log")}'))
+                tail = self.redact(self.log_tail(20))
             except Exception as error:
                 tail = 'log unavailable: ' + str(error)
             result.update(response=response, log_tail=tail)
@@ -390,7 +408,9 @@ class Suite:
         if data['available']:
             raise Skip('X11 is available; unavailable-X11 fixture does not apply')
         assert data['reason'] and data['displays'] == [], data
-        candidates = self.board('printf "%s" "${DISPLAY:-}"; ls /tmp/.X11-unix 2>/dev/null || true')
+        candidates = self.board(
+            self.inside('printf "%s" "${DISPLAY:-}"; ls /tmp/.X11-unix 2>/dev/null || true')
+        )
         if not candidates.strip():
             assert elapsed < 2, f'X11 query expected <2s without candidates, actual {elapsed:.3f}s'
         else:
@@ -531,18 +551,39 @@ class Suite:
 
         hardware_cases(self)
 
+    def coverage_cases(self):
+        from coverage import coverage_cases
+
+        coverage_cases(self)
+
+    def asr_cases(self):
+        from coverage import asr_cases
+
+        asr_cases(self)
+
     def clear_fixtures(self):
         errors = []
-        if self.source_started:
+        for started, out in (
+            ('source_started', self.remote + '/results'),
+            ('speech_started', self.remote + '/results/speech'),
+        ):
+            if getattr(self, started):
+                try:
+                    self.script('source', out, os.environ['RK_RTSP_PORT'], 'stop')
+                    setattr(self, started, False)
+                except Exception as error:
+                    errors.append(str(error))
+        for kind, items in (('compositor', self.compositors), ('program', self.programs)):
+            for id_ in items[:]:
+                try:
+                    self.api('POST', f'/api/{kind}/remove/' + id_)
+                    items.remove(id_)
+                except Exception as error:
+                    errors.append(str(error))
+        for username in self.users[:]:
             try:
-                self.script('source', self.remote + '/results', os.environ['RK_RTSP_PORT'], 'stop')
-                self.source_started = False
-            except Exception as error:
-                errors.append(str(error))
-        for id_ in self.compositors[:]:
-            try:
-                self.api('POST', '/api/compositor/remove/' + id_)
-                self.compositors.remove(id_)
+                self.api('POST', '/api/user/remove/' + username)
+                self.users.remove(username)
             except Exception as error:
                 errors.append(str(error))
         for id_ in self.devices[:]:
@@ -580,6 +621,10 @@ def main(requested='all'):
                         suite.media_cases()
                     if group in ('all', 'T3'):
                         suite.hardware_cases()
+                    if group in ('all', 'T4'):
+                        suite.coverage_cases()
+                    if group in ('all', 'T5'):
+                        suite.asr_cases()
     except EnvironmentFailure as error:
         print('# ' + str(error), flush=True)
     finally:

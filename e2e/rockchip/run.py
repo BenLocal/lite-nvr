@@ -49,10 +49,12 @@ def lifecycle_failure(runner, status):
 
 def main():
     groups = (
-        ['all', 'T0', 'T1', 'T2', 'T3']
+        ['all', 'T0', 'T1', 'T2', 'T3', 'T4', 'T5']
         + [f'T1.{i}' for i in range(1, 10)]
         + [f'T2.{i}' for i in range(1, 12)]
         + [f'T3.{i}' for i in range(1, 6)]
+        + [f'T4.{i}' for i in range(1, 9)]
+        + ['T5.1']
     )
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('group', nargs='?', default='all', choices=groups)

@@ -6,7 +6,7 @@
 
 主机侧入口、HTTP 检查、部署与变异流程均为 Python 脚本。开发机需要 Python 3.9+、FFmpeg/ffprobe、readelf、OpenSSH，以及项目 `make package` 所需 Docker/Cross/npm/Rust/Bash；复用包时不执行构建。Cross/Rustup 缓存需要可写。板上需要 BusyBox sh、wget、timeout、netstat、ldd、gzip/tar；FFmpeg 来自安装包。
 
-从 git-ignored `dev-env.local.md` 获取板端地址和认证。不要把密码写进命令历史或脚本。SSH 也可使用密钥或指定配置文件；首次连接默认 `StrictHostKeyChecking=accept-new`，主机公钥保存在 `.cache/rockchip-e2e-known_hosts`。
+从 git-ignored `dev-env.local.md` 获取板端地址和认证。不要把密码写进命令历史或脚本。SSH 也可使用密钥或指定配置文件；首次连接默认 `StrictHostKeyChecking=accept-new`，主机公钥保存在 `.cache/rockchip-e2e-known_hosts`。每轮只认证一次，其余命令复用该连接（ControlMaster，socket 在 `/tmp/lnvr-e2e-<run_id>`）：sshpass 偶发把正确密码判为失败，一轮几十次登录时会被误判为板端断连。
 
 ```bash
 export RK_HOST=<board-address> RK_USER=<ssh-user>
@@ -48,11 +48,17 @@ python3 -m playwright install chromium
 
 ```bash
 python3 e2e/rockchip/live.py --install-dir <board-install-dir> --group all
+# NVR 跑在 Docker 容器里时：安装目录填容器内路径，板端脚本经 docker exec 在容器内执行
+python3 e2e/rockchip/live.py --install-dir /opt/package --container <name> --group all
 ```
 
-默认 `--group api`；`media` 包含真实解码、录像和浏览器跨段播放。测试会新建独立命名的设备、合成器和板端证据目录，结束后删除本轮设备与合成器，并校验原有设备配置、进程 PID 和二进制摘要未变。测试录像与证据目录保留。`runtime.json` 记录实际运行二进制 SHA-256；报告中的 commit 表示测试代码版本，不能用来证明现有实例由该源码构建。
+默认 `--group api`；`media` 包含真实解码、录像和浏览器跨段播放；`coverage` 是 T4 功能契约和 T5 实时字幕。测试会新建独立命名的设备、合成器和板端证据目录，结束后删除本轮设备与合成器，并校验原有设备配置、进程 PID 和二进制摘要未变。测试录像与证据目录保留。`runtime.json` 记录实际运行二进制 SHA-256；报告中的 commit 表示测试代码版本，不能用来证明现有实例由该源码构建。
+
+`--container` 用于宿主机跑不了包内 glibc 程序的板子（例如 Alpine 宿主机）：板端脚本和 X11 候选检查在容器内执行，失败时的日志尾部取 `docker logs`，本轮板端目录放在容器的 `/tmp`。
 
 此入口主动禁用 HDMI/V4L2 有信号及无信号 fixture，避免争用现有采集；普通运行也跳过需要变异构建的 T1.9。硬件全量和故障注入继续使用 `run.py` 的独立部署流程。
+
+T5.1 需要 `python-socketio[client]`（装进上面的 `.cache/rockchip-e2e-python` 并加入 `PYTHONPATH`），缺失时 SKIP。语音样例优先用安装目录的 `third_party/asr-models/.../test_wavs/zh.wav`，板上没有时从本机同路径上传到本轮板端目录；两边都没有则 SKIP。
 
 ### 语音对话
 
@@ -69,6 +75,7 @@ python3 e2e/rockchip/chat.py --url http://<board>:18080 --text "你好"
 | `RK_HOST`, `RK_USER` | 必填，不在代码中存板端地址/认证 |
 | `RK_PASSWORD_FILE` | 可选，传给 sshpass -f；应设置为 0600 |
 | `RK_SSH_CONFIG` | `/dev/null`；需要 SSH 跳板/密钥选项时传自己的配置 |
+| `RK_REMOTE_BASE` | `/userdata`；板端工作目录的父目录，须已存在（没有 `/userdata` 的板子改到数据盘，如 `/mnt/data/...`） |
 | `RK_API_USER`, `RK_API_PASSWORD` | 独立新库的默认 admin 账号；非默认时显式配置 |
 | `RK_RTSP_PORT`, `RK_RTMP_PORT` | 8554 / 8555；API 18080 和 HTTP 8553 固定，占用时部署中止 |
 | `RK_VIDEO_DEVICE` | 可选的已确认空闲且有信号的 V4L2 节点；未设置时使用显式配置的 HDMI 回环 |
@@ -99,6 +106,12 @@ HTTP 与 RTSP 分别探测；任何一路不通就为两者建立 SSH 隧道，�
 | T3.1–2 | 显式 h264_rkmpp 编码、解码（不能以软件回退冒充） | RKMPP 基线 |
 | T3.3–4 | Rust HDMI connector 枚举、present、回环视频模式和上半部彩条内容；双输出关闭隔离 | 23217e1 |
 | T3.5 | 1/2/4 路 1080p 转码，RSS/load/meminfo、进程存活、各流真解码和 OOM 错误 | 资源观察 |
+| T4.1–2 | 无 token / 无效 token 401、`?token=` 可用；用户新增、重复拒绝、登录、改密（旧密码错误拒绝、旧密码失效）、不能删自己、删除后其会话失效 | 鉴权 / 用户管理 |
+| T4.3–4 | overview 计数自洽且测试设备在线；system metrics / settings / cleanup 字段；快照是 1920×1080 可解码 JPEG，不存在设备 500 | system / 快照 |
+| T4.5 | 导播建、切换、错误源拒绝、删除；推流地址使用实例配置的 RTMP 端口，且 `switcher/<id>` 切换前后都真解码 | 导播 |
+| T4.6 | 合成器显式 region、switch、relayout、add/remove-source 后的配置回显与真解码 | 合成器 |
+| T4.7–8 | 检测 capabilities 与 models 一致；LLM health/models、错误请求 400、一次非流式补全非空（未启用 LLM 时 SKIP） | 检测 / LLM |
+| T5.1 | SenseVoice 中文样例推 RTSP，`/asr` Socket.IO 先收到 partial，60 秒内 final 含「开放时间」，句子与时长字段、segment id 递增；停止幂等，不存在的 pipe 404 | ASR 字幕 |
 
 业务错误沿用当前 HTTP 500 和 `{code,message,data}` 包装；鉴权失败是 401。`config.output=None` 在 JSON 中省略，空对象不是其回显。T1.6 覆盖保存前拒绝更新，不声称覆盖写库后的回滚分支。output 保持比例、只缩小；lavfi 属于 raw 采集，不作为编码透传基线。
 
@@ -156,7 +169,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 e2e/rockchip/lib/lifecycle_report_test.py
 
 主机上的 lavfi 图案带 `realtime` 过滤器，避免最快生成导致队列丢帧/时间戳提前跨过采样窗口；连续采样保持 10 秒至少 200 帧的门槛。预编码源同时断言没有 encoder，防止相同 H.264 编码掩盖意外重编码。
 
-音频转码用例用 FFmpeg `-copyts` 保留输入时间戳，单独映射视频并以 `setpts=PTS-STARTPTS` 从首帧计时解码 10 秒、至少 200 帧；`-vsync 0` 不补帧。音频另用 ffprobe 检查 codec、采样率和真实解码帧，保存 `audio-<codec>.json`。采样时间戳的注意事项见 [媒体踩坑记录](../../docs/memory/media-and-recording.md)。
+音频转码用例用 FFmpeg `-copyts` 保留输入时间戳，单独映射视频并以 `setpts=PTS-STARTPTS` 从首帧计时解码 10 秒、至少 200 帧；`-fps_mode passthrough` 不补帧（FFmpeg 9 已移除 `-vsync`）。音频另用 ffprobe 检查 codec、采样率和真实解码帧，保存 `audio-<codec>.json`。采样时间戳的注意事项见 [媒体踩坑记录](../../docs/memory/media-and-recording.md)。
 
 ## 真机验收记录
 
