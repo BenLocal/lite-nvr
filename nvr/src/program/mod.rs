@@ -12,9 +12,6 @@ use tokio::sync::RwLock;
 
 use nvr_switcher::{ProgramConfig, Switcher};
 
-/// ZLM RTMP publish endpoint (see `zlm::server`: `rtmp_server_start(8555)`).
-const ZLM_RTMP: &str = "rtmp://127.0.0.1:8555";
-
 #[derive(Clone)]
 pub struct SourceInfo {
     pub id: String,
@@ -41,7 +38,7 @@ pub struct CreateParams {
     pub sources: Vec<SourceInfo>,
     pub fps: u32,
     pub bitrate: Option<u64>,
-    /// Publish URL override; default `rtmp://127.0.0.1:8555/switcher/{id}`.
+    /// Publish URL override; default `rtmp://127.0.0.1:<NVR_ZLM_RTMP_PORT>/switcher/{id}`.
     pub publish_url: Option<String>,
 }
 
@@ -65,7 +62,9 @@ pub async fn create(params: CreateParams) -> Result<Arc<ProgramEntry>> {
         .publish_url
         .clone()
         .filter(|u| !u.trim().is_empty())
-        .unwrap_or_else(|| format!("{ZLM_RTMP}/switcher/{id}"));
+        .unwrap_or_else(|| {
+            switcher_publish_url(crate::zlm::server::rtmp_port().unwrap_or(8555), &id)
+        });
     let cfg = ProgramConfig {
         publish_url: publish_url.clone(),
         format: "flv".to_string(),
@@ -124,8 +123,18 @@ pub async fn shutdown() {
     drop(entries);
 }
 
+/// ZLM's RTMP ingest for a program; the port follows `NVR_ZLM_RTMP_PORT` like
+/// the compositor's, so a non-default port does not publish into the void.
+fn switcher_publish_url(rtmp_port: u16, id: &str) -> String {
+    format!("rtmp://127.0.0.1:{rtmp_port}/switcher/{id}")
+}
+
 /// Remove and stop a program. Dropping the entry stops its sources, which ends
 /// the program task and stops publishing to ZLM. Returns false if not found.
 pub async fn remove(program_id: &str) -> bool {
     PROGRAMS.write().await.remove(program_id).is_some()
 }
+
+#[cfg(test)]
+#[path = "mod_test.rs"]
+mod mod_test;
