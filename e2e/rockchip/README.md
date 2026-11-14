@@ -60,6 +60,8 @@ python3 e2e/rockchip/live.py --install-dir /opt/package --container <name> --gro
 
 T5.1 需要 `python-socketio[client]`（装进上面的 `.cache/rockchip-e2e-python` 并加入 `PYTHONPATH`），缺失时 SKIP。语音样例优先用安装目录的 `third_party/asr-models/.../test_wavs/zh.wav`，板上没有时从本机同路径上传到本轮板端目录；两边都没有则 SKIP。
 
+T4.13 在本机运行 `dummy-onvif-camera`（`cargo build -p dummy-onvif-camera`，默认找 `target/debug/dummy-onvif-camera`，也可用 `RK_ONVIF_CAMERA` 指定），板子需要能连回本机：地址默认取板上 SSH 会话的来源 IP，可用 `RK_TEST_HOST` 覆盖。找不到程序时 SKIP。
+
 ### 语音对话
 
 `chat.py` 连接已运行实例的 Socket.IO `/chat`（需 `NVR_LLM_MODEL` 和 TTS 模型），用 WAV 按住说话或直接发文字，输出识别结果、回复、松开后首句语音延迟，并把回复语音存成 WAV；有错误或某轮没有语音时非零退出。依赖 `python-socketio[client]` 和 `requests`，可装进上面的 `.cache/rockchip-e2e-python`。API 账号沿用 `RK_API_USER` / `RK_API_PASSWORD`。
@@ -114,6 +116,8 @@ HTTP 与 RTSP 分别探测；任何一路不通就为两者建立 SSH 隧道，�
 | T4.9 | 混音台：空输入、音量超 400%、不存在的音源被拒绝，操作不存在的总线报错；有 ALSA 采集输入时再建总线、调音量 / 静音并解码 `mixer/<id>` 音频（看不到声卡时 SKIP；实例已有总线时不碰） | 混音 |
 | T4.10 | 转存目标：非法 kind / 空名 / 空 host / 空设备 ID 拒绝，未编入 SMB 时启用 SMB 拒绝；新增、列表与回显均不返回密码；板上用 python3 起只应答登录的 FTP 桩，验证连通测试通过、空密码更新保留原密码、错误密码登录失败；目标始终禁用且只路由到不存在的设备（板上无 python3 时 SKIP） | 转存 |
 | T4.11 | 录像回放接口：录满两段后，设备列表计数、今日片段、整天 m3u8（带 `DISCONTINUITY` 与 `?token=`）、Range 206 / 416、单个与批量删除；结束删除设备并按设备删除已入库录像（删设备时正在写的最后一段可能留在磁盘，和其他测试录像一样保留） | 回放 |
+| T4.12 | 底层管线 `/api/pipe`：缺输出、缺 zlm/net 配置、不支持的输入类型拒绝；lavfi 编码后同时出到 ZLM 和 RTMP 推流，两路都解码为 640 宽 H.264；重复添加拒绝；`status` 由 `true` 变 `not found` | media pipe |
+| T4.13 | ONVIF：本机模拟摄像头，probe 读出设备信息与 profile、错误密码报鉴权失败；以 `onvif` 设备接入后解码 `device/<id>`；presets、PTZ 移动 / 停止 / 调预置位（模拟器日志确认收到），非法动词、缺 token、非 ONVIF 设备报错；删设备后 registry 清除；discover 返回列表 | ONVIF |
 | T5.1 | SenseVoice 中文样例推 RTSP，`/asr` Socket.IO 先收到 partial，60 秒内 final 含「早上9点」（首词识别不稳定，不作断言），句子与时长字段、segment id 递增；停止幂等，不存在的 pipe 404 | ASR 字幕 |
 
 业务错误沿用当前 HTTP 500 和 `{code,message,data}` 包装；鉴权失败是 401。`config.output=None` 在 JSON 中省略，空对象不是其回显。T1.6 覆盖保存前拒绝更新，不声称覆盖写库后的回滚分支。output 保持比例、只缩小；lavfi 属于 raw 采集，不作为编码透传基线。

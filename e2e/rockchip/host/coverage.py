@@ -8,12 +8,16 @@ import json
 import os
 import pathlib
 import shlex
+import socket
+import subprocess
 import threading
 import time
 import urllib.error
 import urllib.request
 
 from suite import Skip
+
+ROOT = pathlib.Path(__file__).resolve().parents[3]
 
 # SenseVoice's bundled sample says 开放时间早上9点至下午5点。 After AAC transport
 # the first word varies (派饭/待饭时间), so match the stable time phrase.
@@ -123,6 +127,38 @@ def start_ftp_stub(s, password):
             return int(port), pid
         time.sleep(0.5)
     raise AssertionError('FTP stub did not start on the board')
+
+
+def start_onvif_camera(s, rtsp_url):
+    """Run dummy-onvif-camera on this host, reachable from the board; return (process, host, port)."""
+    binary = os.environ.get('RK_ONVIF_CAMERA') or str(ROOT / 'target/debug/dummy-onvif-camera')
+    if not os.access(binary, os.X_OK):
+        raise Skip(
+            f'{binary} missing; run cargo build -p dummy-onvif-camera or set RK_ONVIF_CAMERA'
+        )
+    # The address the board's SSH session came from is the one it can reach us on.
+    host = os.environ.get('RK_TEST_HOST') or s.board('echo "${SSH_CONNECTION%% *}"').strip()
+    with socket.socket() as probe:
+        probe.bind(('', 0))
+        port = probe.getsockname()[1]
+    log = open(s.artifacts / 'onvif-camera.log', 'wb')
+    process = subprocess.Popen(
+        [binary, '--host', host, '--port', str(port), '--username', 'e2e', '--password']
+        + ['e2e-onvif', '--rtsp-url', rtsp_url, '--no-discovery'],
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        env=dict(os.environ, RUST_LOG='info'),
+    )
+    log.close()
+    for _ in range(50):
+        with socket.socket() as client:
+            if client.connect_ex(('127.0.0.1', port)) == 0:
+                return process, host, port
+        if process.poll() is not None:
+            break
+        time.sleep(0.1)
+    process.kill()
+    raise AssertionError('dummy-onvif-camera did not start; see onvif-camera.log')
 
 
 def coverage_cases(s):
@@ -500,8 +536,99 @@ def coverage_cases(s):
                 s.remove(p['id'])
             s.api('POST', f'/api/playback/device/{p["id"]}/segments/delete')
 
+    def pipe():
+        id_ = s.prefix + '-pipe'
+        base = dict(id=id_, input=dict(t='lavfi', i='testsrc2=size=640x360:rate=25,realtime'))
+        # lavfi yields raw frames; without `encode` they would be muxed as wrapped_avframe.
+        encode = dict(bitrate=1_000_000)
+        to_zlm = dict(t='zlm', zlm=dict(app='e2e', stream=id_), encode=encode)
+        rtmp = f'rtmp://127.0.0.1:{os.environ["RK_RTMP_PORT"]}/e2e/{id_}-net'
+        to_net = dict(t='net', net=dict(url=rtmp, format='flv'), encode=encode)
+        for bad, message in (
+            (dict(base, outputs=[]), 'outputs is required'),
+            (dict(base, outputs=[dict(t='zlm')]), 'zlm config is required'),
+            (dict(base, outputs=[dict(t='net')]), 'net config is required'),
+            (dict(base, input=dict(t='ftp', i='x'), outputs=[to_net]), 'not supported'),
+        ):
+            response = s.api('POST', '/api/pipe/add', bad, expected=500)
+            assert message in response['message'], response
+        assert s.api('GET', '/api/pipe/status/' + id_) == 'not found', s.last
+        s.pipes.append(id_)
+        assert s.api('POST', '/api/pipe/add', dict(base, outputs=[to_zlm, to_net])) == 'success'
+        response = s.api('POST', '/api/pipe/add', dict(base, outputs=[to_zlm]), expected=500)
+        assert 'already exists' in response['message'], response
+        assert id_ in s.api('GET', '/api/pipe/list'), s.last
+        deadline = time.monotonic() + 20
+        while s.api('GET', '/api/pipe/status/' + id_) != 'true':
+            assert time.monotonic() < deadline, 'pipe did not start in 20s: ' + s.last
+            time.sleep(1)
+        time.sleep(3)
+        # Both output kinds: an in-process ZLM media and an RTMP push decoded back.
+        for stream in (id_, id_ + '-net'):
+            s.probe(s.rtsp(stream, 'e2e'), seconds=3)
+            video = next(v for v in s.last_probe_streams if v['codec_type'] == 'video')
+            assert (video['codec_name'], video['width']) == ('h264', 640), video
+        assert s.api('GET', '/api/pipe/remove/' + id_) == 'success'
+        s.pipes.remove(id_)
+        assert id_ not in s.api('GET', '/api/pipe/list'), s.last
+        assert s.api('GET', '/api/pipe/status/' + id_) == 'not found', s.last
+
+    def onvif():
+        source = s.ensure_pattern()
+        camera, host, port = start_onvif_camera(s, s.rtsp(source['id'], board=True))
+        try:
+            login = dict(host=host, port=port, username='e2e', password='e2e-onvif')
+            found = s.api('POST', '/api/onvif/discover', {'timeout_ms': 500})
+            assert isinstance(found, list), found
+            probed = s.api('POST', '/api/onvif/probe', login)
+            assert probed['device_info']['manufacturer'] == 'lite-nvr', probed
+            assert [p['token'] for p in probed['profiles']] == ['Profile_1'], probed
+            response = s.api(
+                'POST', '/api/onvif/probe', dict(login, password='wrong'), expected=500
+            )
+            assert 'authentication rejected' in response['message'], response
+
+            p = s.payload(
+                'onvif', input_type='onvif', input_value=json.dumps(dict(login, profile_token=None))
+            )
+            s.add(p)
+            s.wait_running(p['id'])
+            # ONVIF only resolves the URI; the media is the board's pattern relayed into device/<id>.
+            s.probe(s.rtsp(p['id']), seconds=3)
+            presets = s.api('GET', '/api/onvif/presets/' + p['id'])
+            assert [x['token'] for x in presets] == ['Preset_1', 'Preset_2'], presets
+            ptz = dict(device_id=p['id'])
+            s.api('POST', '/api/onvif/ptz', dict(ptz, direction='left', speed=200))
+            s.api('POST', '/api/onvif/ptz', dict(ptz, direction='stop'))
+            s.api(
+                'POST',
+                '/api/onvif/ptz',
+                dict(ptz, direction='preset_call', preset_token='Preset_2'),
+            )
+            for bad in (dict(ptz, direction='spin'), dict(ptz, direction='preset_call')):
+                response = s.api('POST', '/api/onvif/ptz', bad, expected=500)
+                assert 'bad ptz direction' in response['message'], response
+            response = s.api(
+                'POST',
+                '/api/onvif/ptz',
+                dict(device_id=source['id'], direction='stop'),
+                expected=500,
+            )
+            assert 'no onvif device' in response['message'], response
+            s.remove(p['id'])
+            # Removing the device drops its registry entry, so PTZ no longer reaches the camera.
+            s.api('GET', '/api/onvif/presets/' + p['id'], expected=500)
+        finally:
+            camera.terminate()
+            camera.wait(timeout=10)
+        log = (s.artifacts / 'onvif-camera.log').read_text(errors='replace')
+        for operation in ('ContinuousMove', 'Stop', 'GotoPreset'):
+            assert 'onvif PTZ: ' + operation in log, (
+                f'camera never received {operation}; see onvif-camera.log'
+            )
+
     cases = [auth, users, system, snapshot, program, compositor, detection, llm]
-    for i, fn in enumerate(cases + [mixer, transport, playback], 1):
+    for i, fn in enumerate(cases + [mixer, transport, playback, pipe, onvif], 1):
         s.test(f'T4.{i}', 'coverage', fn)
 
 
@@ -513,7 +640,7 @@ def speech_sample(s):
         == 'yes'
     ):
         return installed
-    local = pathlib.Path(__file__).resolve().parents[3] / SPEECH_WAV
+    local = ROOT / SPEECH_WAV
     if not local.is_file():
         raise Skip(f'ASR sample missing on the board ({installed}) and locally ({local})')
     target = s.remote + '/results/speech.wav'

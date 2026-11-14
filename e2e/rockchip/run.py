@@ -51,7 +51,7 @@ def main():
     groups = (
         ['all', 'T0', 'T1', 'T2', 'T3', 'T4', 'T5']
         + [f'T1.{i}' for i in range(1, 10)]
-        + [f'T2.{i}' for i in range(1, 12)]
+        + [f'T2.{i}' for i in range(1, 14)]
         + [f'T3.{i}' for i in range(1, 6)]
         + [f'T4.{i}' for i in range(1, 12)]
         + ['T5.1']

@@ -60,6 +60,7 @@ class Suite:
         self.users = []
         self.transports = []
         self.mixers = []
+        self.pipes = []
         self.unavailable = False
         self.restarts = 0
         self.uptime_start = None
@@ -592,6 +593,12 @@ class Suite:
             try:
                 self.api('POST', '/api/audiomixer/bus/remove', {'bus_id': bus})
                 self.mixers.remove(bus)
+            except Exception as error:
+                errors.append(str(error))
+        for id_ in self.pipes[:]:
+            try:
+                self.api('GET', '/api/pipe/remove/' + id_)
+                self.pipes.remove(id_)
             except Exception as error:
                 errors.append(str(error))
         for username in self.users[:]:
