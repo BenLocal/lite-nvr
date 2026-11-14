@@ -15,11 +15,12 @@ import urllib.request
 
 from suite import Skip
 
-# SenseVoice's bundled sample says 开放时间早上9点至下午5点。
+# SenseVoice's bundled sample says 开放时间早上9点至下午5点。 After AAC transport
+# the first word varies (派饭/待饭时间), so match the stable time phrase.
 SPEECH_WAV = (
     'third_party/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/test_wavs/zh.wav'
 )
-SPEECH_TEXT = '开放时间'
+SPEECH_TEXT = '早上9点'
 
 
 def request(s, path, method='GET', token=None):
