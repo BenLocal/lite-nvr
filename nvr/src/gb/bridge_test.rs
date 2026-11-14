@@ -234,3 +234,21 @@ async fn unregister_waits_for_pending_pull() {
     client.shutdown();
     answerer.abort();
 }
+
+#[tokio::test]
+async fn owns_stream_only_for_registered_mappings() {
+    let scfg = GbServerConfig::new(PLATFORM, DOMAIN, "127.0.0.1:0".parse().unwrap());
+    let (server, _ev) = GbServer::bind(scfg).await.unwrap();
+    let control = crate::zlm::cmd::ZlmControl::spawn();
+    let bridge = GbBridge::new(
+        server,
+        "127.0.0.1".into(),
+        Box::new(FakeReceiver::default()),
+        control,
+    );
+    assert!(!bridge.owns_stream("cam1"));
+    bridge.register_mapping("cam1", DEVICE, CHANNEL, gb28181::Transport::Udp);
+    assert!(bridge.owns_stream("cam1"));
+    bridge.unregister_mapping("cam1").await;
+    assert!(!bridge.owns_stream("cam1"));
+}

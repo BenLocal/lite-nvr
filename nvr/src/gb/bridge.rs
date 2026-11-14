@@ -116,6 +116,12 @@ impl GbBridge {
         self.streams.set_transport(stream_id, transport)
     }
 
+    /// Whether `stream_id` is a gb stream, i.e. a not-found play request should
+    /// wait for the pull instead of failing.
+    pub fn owns_stream(&self, stream_id: &str) -> bool {
+        self.streams.get(stream_id).is_some()
+    }
+
     /// Remove the mapping and tear down any live session for it.
     pub async fn unregister_mapping(&self, stream_id: &str) {
         let _operation = self.operations.lock(stream_id).await;

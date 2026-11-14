@@ -49,9 +49,11 @@
 - **`stream_id` 就是 nvr 设备 id，不是 GB 编码**
   - 钩子只按 stream 名匹配，与 app 无关。
   - 可播 URL 走 `/media` 反代（`build_gb_flv_url`），不是直连 `127.0.0.1:8553`。
-- **`on_media_not_found` 拉流失败也返回 true**
-  - 流是我们负责的，ZLM 应该继续等。
-  - 失败时 `active` 里什么都没插，ZLM 再次触发就会自然重试。
+- **`on_media_not_found` 钩子对 gb 流返回 false（让 ZLM 等流注册）**
+  - ZLM C API 约定：返回 1 立即关闭播放器（客户端拿到 404），返回 0 等待流注册。rszlm 把回调的 `bool` 原样转成 int，所以 `true` 就是关闭。
+  - 不归 gb 管的流（或 GB 未启用）返回 true，立即 404。
+  - 2026-11-14 前钩子误返回 true，第一个观众必定 404，要等流注册后再刷新才能播；e2e T4.17 首次直连 FLV 时发现。
+  - 拉流失败时 `active` 里什么都没插，ZLM 再次触发就会自然重试。
 - **transport 按次请求**
   - `POST /gb/play {device_id, transport?}` 只改映射上的 transport 并返回 URL，真正的拉流仍是惰性的。
   - 被否决的方案：按设备配置、全局默认、编码进 stream_id。

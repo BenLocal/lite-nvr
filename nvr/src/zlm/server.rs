@@ -123,16 +123,21 @@ pub(crate) fn start_zlm_server(
                     let app = media.url_info.app();
                     let stream = media.url_info.stream();
                     log::info!("ZLM: media not found, app: {app}, stream: {stream}");
+                    // ZLM's contract: return true (1) closes the player at once,
+                    // false (0) keeps it waiting for the stream to register.
                     let Some(bridge) = crate::gb::bridge() else {
-                        return true; // GB disabled: nothing to provide, but don't error
+                        return true; // GB disabled: nothing will provide the stream
                     };
+                    if !bridge.owns_stream(&stream) {
+                        return true;
+                    }
                     let runtime_inner = runtime_nf.clone();
                     // The hook is synchronous; do the async pull on the runtime
-                    // and return true so ZLM keeps the request open.
+                    // and keep the player waiting so the first viewer gets the stream.
                     runtime_inner.spawn(async move {
                         bridge.handle_media_not_found(&stream).await;
                     });
-                    true
+                    false
                 });
                 let runtime_nr = runtime.clone();
                 events.on_media_no_reader(move |media| {
