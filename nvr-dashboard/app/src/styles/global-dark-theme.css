@@ -211,6 +211,11 @@
   display: inline-block;
   max-width: 100%;
   white-space: nowrap;
+
+  /* Clip inside fixed-width table cells; the full text stays in `title`. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
 }
 
 .ellipsis-text {
