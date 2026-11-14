@@ -23,9 +23,9 @@ SPEECH_WAV = (
 SPEECH_TEXT = '早上9点'
 
 
-def request(s, path, method='GET', token=None):
+def request(s, path, method='GET', token=None, headers=None):
     """Raw status, content type and bytes; some routes are not BaseResponse JSON."""
-    request = urllib.request.Request(s.base + path, method=method)
+    request = urllib.request.Request(s.base + path, method=method, headers=headers or {})
     if token is None:
         token = s.token
     if token:
@@ -38,6 +38,7 @@ def request(s, path, method='GET', token=None):
     with response:
         body = response.read()
         s.last = f'HTTP {response.code} {response.headers.get("Content-Type")} {len(body)} bytes'
+        s.last_headers = response.headers
         return response.code, response.headers.get('Content-Type', ''), body
 
 
@@ -66,6 +67,62 @@ def second_device(s, suffix):
     s.add(p)
     s.wait_running(p['id'])
     return p
+
+
+# Answers only the login exchange FTP targets use for their connectivity test, and
+# accepts exactly one password, so a passing test proves which password was stored.
+FTP_STUB = r"""
+import socket, sys, time
+base, password = sys.argv[1], sys.argv[2]
+server = socket.socket()
+server.bind(('127.0.0.1', 0))
+server.listen(4)
+server.settimeout(5)
+open(base + '.port', 'w').write(str(server.getsockname()[1]))
+deadline = time.time() + 180
+while time.time() < deadline:
+    try:
+        conn, _ = server.accept()
+    except OSError:
+        continue
+    conn.settimeout(10)
+    stream = conn.makefile('rwb', 0)
+    stream.write(b'220 e2e\r\n')
+    try:
+        for line in stream:
+            verb, _, arg = line.decode().strip().partition(' ')
+            verb = verb.upper()
+            if verb == 'USER':
+                stream.write(b'331 password\r\n')
+            elif verb == 'PASS':
+                stream.write(b'230 ok\r\n' if arg == password else b'530 denied\r\n')
+            elif verb == 'QUIT':
+                stream.write(b'221 bye\r\n')
+                break
+            else:
+                stream.write(b'502 unsupported\r\n')
+    except OSError:
+        pass
+    conn.close()
+"""
+
+
+def start_ftp_stub(s, password):
+    """Start FTP_STUB beside the NVR (host network) and return (port, pid), or None."""
+    if s.board('command -v python3 || true').strip() == '':
+        return None
+    base = f'/tmp/{s.prefix}-ftp'
+    pid = s.board(
+        f'nohup python3 -c {shlex.quote(FTP_STUB)} {base} {shlex.quote(password)} '
+        '>/dev/null 2>&1 & echo $!'
+    ).strip()
+    for _ in range(20):
+        port = s.board(f'cat {base}.port 2>/dev/null || true').strip()
+        if port:
+            s.board(f'rm -f {base}.port')
+            return int(port), pid
+        time.sleep(0.5)
+    raise AssertionError('FTP stub did not start on the board')
 
 
 def coverage_cases(s):
@@ -262,7 +319,189 @@ def coverage_cases(s):
         text = (message.get('content') or '') + (message.get('reasoning_content') or '')
         assert text.strip(), reply
 
-    for i, fn in enumerate([auth, users, system, snapshot, program, compositor, detection, llm], 1):
+    def mixer():
+        state = s.api('GET', '/api/audiomixer/list')
+        if state['buses']:
+            raise Skip('instance already has a mixer bus; the console allows only one')
+        bus = s.prefix + '-mix'
+
+        def create(inputs):
+            return s.api(
+                'POST', '/api/audiomixer/bus/create', dict(id=bus, inputs=inputs), expected=500
+            )['message']
+
+        assert 'at least one input' in create([]), s.last
+        assert '音量不能超过 400%' in create([dict(source_id='alsa:x', volume=401)]), s.last
+        assert '音频源不存在' in create([dict(source_id=s.prefix + '-absent')]), s.last
+        for path, body in (
+            ('/api/audiomixer/bus/remove', dict(bus_id=bus)),
+            ('/api/audiomixer/bus/input/volume', dict(bus_id=bus, source_id='x', volume=50)),
+            ('/api/audiomixer/bus/input/mute', dict(bus_id=bus, source_id='x', muted=True)),
+        ):
+            s.api('POST', path, body, expected=500)
+        assert s.api('GET', '/api/audiomixer/list')['buses'] == [], s.last
+        sources = s.api('GET', '/api/audiomixer/sources')
+        if not sources:
+            raise Skip('no ALSA capture input visible to the NVR; only validation was tested')
+        source = sources[0]['id']
+        s.mixers.append(bus)
+        data = s.api(
+            'POST', '/api/audiomixer/bus/create', dict(id=bus, inputs=[dict(source_id=source)])
+        )
+        created = next(b for b in data['buses'] if b['id'] == bus)
+        assert f':{os.environ["RK_RTMP_PORT"]}/mixer/{bus}' in created['publish_url'], created
+        assert created['flv_url'] == f'/media/mixer/{bus}.live.flv', created
+        s.api(
+            'POST',
+            '/api/audiomixer/bus/input/volume',
+            dict(bus_id=bus, source_id=source, volume=50),
+        )
+        s.api(
+            'POST', '/api/audiomixer/bus/input/mute', dict(bus_id=bus, source_id=source, muted=True)
+        )
+        bus_state = next(b for b in s.api('GET', '/api/audiomixer/list')['buses'] if b['id'] == bus)
+        assert [(i['source_id'], i['volume'], i['muted']) for i in bus_state['inputs']] == [
+            (source, 50, True)
+        ], bus_state
+        time.sleep(3)
+        streams = json.loads(
+            s.execute(
+                ['ffprobe', '-v', 'error', '-rtsp_transport', 'tcp', '-show_streams', '-of', 'json']
+                + [s.rtsp(bus, 'mixer')],
+                timeout=30,
+            )
+        )['streams']
+        assert any(st['codec_type'] == 'audio' for st in streams), streams
+        s.api('POST', '/api/audiomixer/bus/remove', dict(bus_id=bus))
+        s.mixers.remove(bus)
+
+    def transport():
+        capabilities = s.api('GET', '/api/transport/capabilities')
+        assert isinstance(capabilities['smb_enabled'], bool), capabilities
+        password = 'e2e-secret-' + s.prefix[-8:]
+        stub = start_ftp_stub(s, password)
+        try:
+            config = dict(
+                host='127.0.0.1',
+                port=stub[0] if stub else 1,
+                username='e2e',
+                password=password,
+                base_path='e2e',
+                # Disabled and routed to no real device: the target never uploads recordings.
+                stream_ids=[s.prefix + '-none'],
+            )
+            target = dict(name=s.prefix + '-ftp', kind='ftp', enabled=False, config=config)
+            for bad in (
+                dict(target, kind='nfs'),
+                dict(target, name=' '),
+                dict(target, config=dict(config, host='')),
+                dict(target, config=dict(config, stream_ids=[' '])),
+            ):
+                s.api('POST', '/api/transport/target/add', bad, expected=500)
+            if not capabilities['smb_enabled']:
+                smb = dict(target, kind='smb', enabled=True, config=dict(config, share='e2e'))
+                message = s.api('POST', '/api/transport/target/add', smb, expected=500)['message']
+                assert 'SMB' in message, message
+            added = s.api('POST', '/api/transport/target/add', target)
+            id_ = added['id']
+            s.transports.append(id_)
+            assert added['config']['password'] == '', 'password returned in add response'
+            listed = next(t for t in s.api('GET', '/api/transport/targets') if t['id'] == id_)
+            assert listed['config']['password'] == '', 'password returned in target list'
+            assert (listed['enabled'], listed['done'], listed['failed'], listed['pending']) == (
+                False,
+                0,
+                0,
+                0,
+            ), listed
+            assert s.api('GET', '/api/transport/jobs/' + id_) == [], s.last
+            if stub:
+                s.api('POST', '/api/transport/target/test/' + id_)
+                # A blank password (what the dashboard round-trips) keeps the stored one.
+                renamed = dict(target, name=target['name'] + '-2', config=dict(config, password=''))
+                updated = s.api('POST', '/api/transport/target/update/' + id_, renamed)
+                assert updated['name'] == renamed['name'], updated
+                s.api('POST', '/api/transport/target/test/' + id_)
+                wrong = dict(target, config=dict(config, password='wrong'))
+                s.api('POST', '/api/transport/target/update/' + id_, wrong)
+                message = s.api('POST', '/api/transport/target/test/' + id_, expected=500)[
+                    'message'
+                ]
+                assert 'login' in message, message
+            else:
+                message = s.api('POST', '/api/transport/target/test/' + id_, expected=500)[
+                    'message'
+                ]
+                assert 'connect ftp' in message, message
+            s.api('POST', '/api/transport/target/remove/' + id_)
+            s.transports.remove(id_)
+            assert all(t['id'] != id_ for t in s.api('GET', '/api/transport/targets'))
+            s.api('POST', '/api/transport/target/test/' + id_, expected=500)
+        finally:
+            if stub:
+                s.board(f'kill {int(stub[1])} 2>/dev/null || true')
+        if not stub:
+            raise Skip('python3 missing on the board; FTP login and password retention untested')
+
+    def playback():
+        p = s.payload('playback', input_value='testsrc2=size=640x360:rate=25,realtime', record=True)
+        s.add(p)
+        try:
+            s.wait_running(p['id'])
+            deadline = time.monotonic() + int(os.environ.get('RK_RECORD_TIMEOUT', '210'))
+            segments = []
+            while time.monotonic() < deadline:
+                data = s.api('GET', '/api/playback/device/' + p['id'] + '/segments?page_size=100')
+                segments = sorted(data['items'], key=lambda item: item['start_time'])
+                if len(segments) >= 2:
+                    break
+                s.check_boot()
+                time.sleep(3)
+            assert len(segments) >= 2, f'expected >=2 recording segments, actual {len(segments)}'
+            first, second = segments[:2]
+            devices = s.api('GET', '/api/playback/device/list?page_size=100')['items']
+            item = next((d for d in devices if d['device_id'] == p['id']), None)
+            assert item and item['segment_count'] >= 2, item
+            today = {seg['id'] for seg in s.api('GET', f'/api/playback/device/{p["id"]}/today')}
+            assert {first['id'], second['id']} <= today, today
+
+            code, kind, body = request(s, f'/api/playback/playlist/{p["id"]}?token={s.token}')
+            text = body.decode()
+            assert code == 200 and kind == 'application/vnd.apple.mpegurl', s.last
+            assert '#EXT-X-DISCONTINUITY' in text and text.rstrip().endswith('#EXT-X-ENDLIST'), text
+            for seg in (first, second):
+                assert f'/api/playback/segment/{seg["id"]}?token={s.token}' in text, text
+            code, _, _ = request(s, f'/api/playback/playlist/{s.prefix}-absent')
+            assert code == 500, s.last
+
+            path = '/api/playback/segment/' + first['id']
+            code, kind, body = request(s, path, headers={'Range': 'bytes=0-187'})
+            assert (code, kind, len(body)) == (206, 'video/mp2t', 188), s.last
+            assert body[0] == 0x47, 'segment does not start with a TS sync byte'
+            assert s.last_headers['Content-Range'] == f'bytes 0-187/{first["file_size"]}', (
+                s.last_headers['Content-Range'],
+                first,
+            )
+            code, _, _ = request(s, path, headers={'Range': f'bytes={first["file_size"]}-'})
+            assert code == 416, s.last
+
+            deleted = s.api('POST', f'/api/playback/segment/{first["id"]}/delete')
+            assert deleted['deleted'] == 1, deleted
+            code, _, _ = request(s, path)
+            assert code == 500, s.last
+            deleted = s.api(
+                'POST', '/api/playback/segments/delete', {'ids': [second['id'], s.prefix + '-x']}
+            )
+            assert deleted['deleted'] == 1, deleted
+            left = s.api('GET', '/api/playback/device/' + p['id'] + '/segments?page_size=100')
+            assert not {first['id'], second['id']} & {i['id'] for i in left['items']}, left
+        finally:
+            if p['id'] in s.devices:
+                s.remove(p['id'])
+            s.api('POST', f'/api/playback/device/{p["id"]}/segments/delete')
+
+    cases = [auth, users, system, snapshot, program, compositor, detection, llm]
+    for i, fn in enumerate(cases + [mixer, transport, playback], 1):
         s.test(f'T4.{i}', 'coverage', fn)
 
 

@@ -58,6 +58,8 @@ class Suite:
         self.compositors = []
         self.programs = []
         self.users = []
+        self.transports = []
+        self.mixers = []
         self.unavailable = False
         self.restarts = 0
         self.uptime_start = None
@@ -580,6 +582,18 @@ class Suite:
                     items.remove(id_)
                 except Exception as error:
                     errors.append(str(error))
+        for id_ in self.transports[:]:
+            try:
+                self.api('POST', '/api/transport/target/remove/' + id_)
+                self.transports.remove(id_)
+            except Exception as error:
+                errors.append(str(error))
+        for bus in self.mixers[:]:
+            try:
+                self.api('POST', '/api/audiomixer/bus/remove', {'bus_id': bus})
+                self.mixers.remove(bus)
+            except Exception as error:
+                errors.append(str(error))
         for username in self.users[:]:
             try:
                 self.api('POST', '/api/user/remove/' + username)

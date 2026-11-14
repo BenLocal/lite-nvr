@@ -53,7 +53,7 @@ def main():
         + [f'T1.{i}' for i in range(1, 10)]
         + [f'T2.{i}' for i in range(1, 12)]
         + [f'T3.{i}' for i in range(1, 6)]
-        + [f'T4.{i}' for i in range(1, 9)]
+        + [f'T4.{i}' for i in range(1, 12)]
         + ['T5.1']
     )
     parser = argparse.ArgumentParser(description=__doc__)

@@ -111,6 +111,9 @@ HTTP 与 RTSP 分别探测；任何一路不通就为两者建立 SSH 隧道，�
 | T4.5 | 导播建、切换、错误源拒绝、删除；推流地址使用实例配置的 RTMP 端口，且 `switcher/<id>` 切换前后都真解码 | 导播 |
 | T4.6 | 合成器显式 region、switch、relayout、add/remove-source 后的配置回显与真解码 | 合成器 |
 | T4.7–8 | 检测 capabilities 与 models 一致；LLM health/models、错误请求 400、一次非流式补全非空（未启用 LLM 时 SKIP） | 检测 / LLM |
+| T4.9 | 混音台：空输入、音量超 400%、不存在的音源被拒绝，操作不存在的总线报错；有 ALSA 采集输入时再建总线、调音量 / 静音并解码 `mixer/<id>` 音频（看不到声卡时 SKIP；实例已有总线时不碰） | 混音 |
+| T4.10 | 转存目标：非法 kind / 空名 / 空 host / 空设备 ID 拒绝，未编入 SMB 时启用 SMB 拒绝；新增、列表与回显均不返回密码；板上用 python3 起只应答登录的 FTP 桩，验证连通测试通过、空密码更新保留原密码、错误密码登录失败；目标始终禁用且只路由到不存在的设备（板上无 python3 时 SKIP） | 转存 |
+| T4.11 | 录像回放接口：录满两段后，设备列表计数、今日片段、整天 m3u8（带 `DISCONTINUITY` 与 `?token=`）、Range 206 / 416、单个与批量删除；结束删除设备并按设备删除已入库录像（删设备时正在写的最后一段可能留在磁盘，和其他测试录像一样保留） | 回放 |
 | T5.1 | SenseVoice 中文样例推 RTSP，`/asr` Socket.IO 先收到 partial，60 秒内 final 含「早上9点」（首词识别不稳定，不作断言），句子与时长字段、segment id 递增；停止幂等，不存在的 pipe 404 | ASR 字幕 |
 
 业务错误沿用当前 HTTP 500 和 `{code,message,data}` 包装；鉴权失败是 401。`config.output=None` 在 JSON 中省略，空对象不是其回显。T1.6 覆盖保存前拒绝更新，不声称覆盖写库后的回滚分支。output 保持比例、只缩小；lavfi 属于 raw 采集，不作为编码透传基线。
