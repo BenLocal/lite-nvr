@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import shlex
+import signal
 import socket
 import subprocess
 import threading
@@ -129,6 +130,47 @@ def start_ftp_stub(s, password):
     raise AssertionError('FTP stub did not start on the board')
 
 
+def test_host(s):
+    """Address the board reaches this host on: the source of its SSH session."""
+    return os.environ.get('RK_TEST_HOST') or s.board('echo "${SSH_CONNECTION%% *}"').strip()
+
+
+def start_gb_camera(s, device_id):
+    """Run dummy-camera on this host, registering to the board's GB platform."""
+    binary = os.environ.get('RK_GB_CAMERA') or str(ROOT / 'target/debug/dummy-camera')
+    if not os.access(binary, os.X_OK):
+        raise Skip(f'{binary} missing; run cargo build -p dummy-camera or set RK_GB_CAMERA')
+    host = test_host(s)
+    with socket.socket(type=socket.SOCK_DGRAM) as probe:
+        probe.bind((host, 0))
+        sip_port = probe.getsockname()[1]
+    args = [
+        binary,
+        '--server-addr',
+        f'{os.environ["RK_HOST"]}:{os.environ.get("RK_GB_PORT", "5060")}',
+        '--server-id',
+        os.environ.get('RK_GB_SIP_ID', '34020000002000000001'),
+        '--device-id',
+        device_id,
+        '--media-ip',
+        host,
+        # Bind the board-reachable address: on 0.0.0.0 the Contact may name another
+        # interface (e.g. a VPN), and in-dialog BYEs to it never arrive.
+        '--listen',
+        f'{host}:{sip_port}',
+        '--expires',
+        '120',
+        '--keepalive',
+        '10',
+    ]
+    if os.environ.get('RK_GB_PASSWORD'):
+        args += ['--password', os.environ['RK_GB_PASSWORD']]
+    log = open(s.artifacts / 'gb-camera.log', 'wb')
+    process = subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT)
+    log.close()
+    return process
+
+
 def start_onvif_camera(s, rtsp_url):
     """Run dummy-onvif-camera on this host, reachable from the board; return (process, host, port)."""
     binary = os.environ.get('RK_ONVIF_CAMERA') or str(ROOT / 'target/debug/dummy-onvif-camera')
@@ -136,8 +178,7 @@ def start_onvif_camera(s, rtsp_url):
         raise Skip(
             f'{binary} missing; run cargo build -p dummy-onvif-camera or set RK_ONVIF_CAMERA'
         )
-    # The address the board's SSH session came from is the one it can reach us on.
-    host = os.environ.get('RK_TEST_HOST') or s.board('echo "${SSH_CONNECTION%% *}"').strip()
+    host = test_host(s)
     with socket.socket() as probe:
         probe.bind(('', 0))
         port = probe.getsockname()[1]
@@ -627,8 +668,160 @@ def coverage_cases(s):
                 f'camera never received {operation}; see onvif-camera.log'
             )
 
+    def settings():
+        player = s.api('GET', '/api/system/settings')
+        cleanup = s.api('GET', '/api/system/cleanup')
+        try:
+            other = 'auto' if player['player'] != 'auto' else 'jessibuca'
+            assert s.api('POST', '/api/system/settings', {'player': f' {other} '}) == {
+                'player': other
+            }, s.last
+            assert s.api('GET', '/api/system/settings') == {'player': other}, s.last
+            response = s.api('POST', '/api/system/settings', {'player': 'vlc'}, expected=500)
+            assert 'invalid player backend' in response['message'], response
+            # Keep retention disabled so saving a policy can never prune real recordings.
+            policy = dict(enabled=False, max_age_days=7, max_total_gb=3, interval_minutes=0)
+            saved = s.api('POST', '/api/system/cleanup', policy)
+            assert saved == dict(policy, interval_minutes=1), saved
+            assert s.api('GET', '/api/system/cleanup') == saved, s.last
+        finally:
+            s.api('POST', '/api/system/settings', player)
+            s.api('POST', '/api/system/cleanup', cleanup)
+        assert s.api('GET', '/api/system/settings') == player, s.last
+        assert s.api('GET', '/api/system/cleanup') == cleanup, s.last
+
+    def formats():
+        def names(kind, direction):
+            items = s.api(
+                'GET', '/api/system/list/device/formats', dict(kind=kind, direction=direction)
+            )
+            # FFmpeg lists aliases together, e.g. 'video4linux2,v4l2'.
+            return {name for item in items for name in item['format'].split(',')}
+
+        assert {'v4l2', 'lavfi'} <= names(0, 0), s.last
+        assert 'alsa' in names(1, 0), s.last
+        assert names(0, 1) and names(1, 1), s.last
+        for bad in (dict(kind=2, direction=0), dict(kind=0, direction=2)):
+            response = s.api('GET', '/api/system/list/device/formats', bad, expected=500)
+            assert 'invalid' in response['message'], response
+        nodes = s.api('GET', '/api/system/list/v4l2/devices')
+        assert all(n['path'].startswith('/dev/video') for n in nodes), nodes
+
+    def detection_tap():
+        absent = s.prefix + '-absent'
+        code, _, body = request(s, f'/api/detect/{absent}/start', 'POST')
+        assert (code, body) == (500, b'pipe not found'), s.last
+        code, _, body = request(s, f'/api/detect/{absent}/latest')
+        assert (code, body) == (404, b'no result yet'), s.last
+        # Bodiless like the dashboard: a JSON Content-Type with no body is a 400.
+        assert request(s, f'/api/detect/{absent}/stop', 'POST')[::2] == (200, b'not running')
+        response = s.api(
+            'POST', f'/api/detect/{absent}/start', {'models': ['']}, expected=400, raw=True
+        )
+        assert 'must not be empty' in response, response
+        p = s.ensure_pattern()
+        models = s.api('GET', '/api/detect/models', raw=True)
+        if json.loads(models) == []:
+            code, _, body = request(s, f'/api/detect/{p["id"]}/start', 'POST')
+            assert code == 500, s.last
+            raise Skip('no detection models configured; only control errors were tested')
+        code, _, body = request(s, f'/api/detect/{p["id"]}/start', 'POST')
+        assert (code, body) == (200, b'started'), s.last
+        lease = s.last_headers['x-detection-tap-lease']
+        try:
+            assert request(s, f'/api/detect/{p["id"]}/start', 'POST')[2] == b'already running'
+            deadline = time.monotonic() + 30
+            while True:
+                code, _, body = request(s, f'/api/detect/{p["id"]}/latest')
+                if code == 200:
+                    break
+                assert time.monotonic() < deadline, 'no detection result in 30s: ' + s.last
+                time.sleep(1)
+            frame = json.loads(body)
+            assert (frame['frame_w'], frame['frame_h']) == (1920, 1080), frame
+            assert {m['name'] for m in frame['models']} <= set(json.loads(models)), frame
+            assert all(m['error'] is None for m in frame['models']), frame
+            (s.artifacts / 'detect-latest.json').write_text(json.dumps(frame, indent=2))
+            response = s.api(
+                'POST', f'/api/detect/{p["id"]}/stop', {'lease': 'x'}, expected=400, raw=True
+            )
+            assert response == 'invalid tap lease', response
+        finally:
+            stopped = s.api('POST', f'/api/detect/{p["id"]}/stop', {'lease': lease}, raw=True)
+        assert stopped == 'stopped', stopped
+        assert request(s, f'/api/detect/{p["id"]}/stop', 'POST')[::2] == (200, b'not running')
+
+    def gb28181():
+        absent = s.prefix + '-absent'
+        message = s.api('POST', '/api/gb/play', {'device_id': absent}, expected=500)['message']
+        if 'not enabled' in message:
+            assert s.api('GET', '/api/gb/devices') == [], s.last
+            raise Skip('GB28181 is not enabled on this instance (NVR_GB_ENABLE)')
+        assert 'no gb stream mapping' in message, message
+        # A per-run 20-digit device code: type 132 (IPC) plus the run's clock.
+        code = '340200000013290' + f'{int(time.time()) % 100000:05d}'
+        camera = start_gb_camera(s, code)
+        try:
+            deadline = time.monotonic() + 20
+            while not any(
+                d['device_id'] == code and d['online'] for d in s.api('GET', '/api/gb/devices')
+            ):
+                assert camera.poll() is None, 'dummy-camera exited; see gb-camera.log'
+                assert time.monotonic() < deadline, 'dummy-camera did not register in 20s'
+                time.sleep(1)
+            catalog = s.api('GET', '/api/gb/catalog/' + code, timeout=20)
+            assert catalog == [dict(channel_id=code, name='dummy-camera', status='ON')], catalog
+
+            p = s.payload(
+                'gb',
+                input_type='gb28181',
+                input_value=json.dumps(dict(device_id=code, channel_id=code)),
+            )
+            for transport in ('udp', 'tcp_passive', 'tcp_active'):
+                s.add(p)
+                response = s.api(
+                    'POST', '/api/gb/play', dict(device_id=p['id'], transport='quic'), expected=500
+                )
+                assert 'unknown transport' in response['message'], response
+                played = s.api('POST', '/api/gb/play', dict(device_id=p['id'], transport=transport))
+                assert played['url'] == f'/media/rtp/{p["id"]}.live.flv', played
+                # The first viewer waits for the on-demand INVITE instead of getting 404.
+                s.probe(s.base + played['url'], rtsp=False, seconds=3)
+                stream = next(
+                    x for x in s.api('GET', '/api/gb/streams') if x['stream_id'] == p['id']
+                )
+                assert (stream['transport'], stream['live']) == (transport, True), stream
+                assert stream['rtp'] and stream['rtp']['exist'], stream
+                # Removing the device tears the session down at once (BYE, port released).
+                s.remove(p['id'])
+                assert all(x['stream_id'] != p['id'] for x in s.api('GET', '/api/gb/streams'))
+
+            ptz = dict(device_id=code, channel_id=code)
+            for command in (dict(command='left', speed=200), dict(command='stop')):
+                s.api('POST', '/api/gb/ptz', dict(ptz, **command))
+            s.api('POST', '/api/gb/ptz', dict(ptz, command='preset_call', preset=1))
+            for bad in (dict(command='spin'), dict(command='preset_call')):
+                response = s.api('POST', '/api/gb/ptz', dict(ptz, **bad), expected=500)
+                assert 'unknown ptz command' in response['message'], response
+        finally:
+            camera.send_signal(signal.SIGINT)  # dummy-camera unregisters on Ctrl-C
+            try:
+                camera.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                camera.kill()
+                camera.wait()
+        deadline = time.monotonic() + 10
+        while any(d['device_id'] == code for d in s.api('GET', '/api/gb/devices')):
+            assert time.monotonic() < deadline, 'device still registered after unregister'
+            time.sleep(1)
+        log = (s.artifacts / 'gb-camera.log').read_text(errors='replace')
+        for transport in ('Play Udp', 'Play TcpPassive', 'Play TcpActive'):
+            assert transport in log, f'camera never received {transport}; see gb-camera.log'
+        assert log.count('PTZ command for') >= 3, 'camera did not receive 3 PTZ commands'
+
     cases = [auth, users, system, snapshot, program, compositor, detection, llm]
-    for i, fn in enumerate(cases + [mixer, transport, playback, pipe, onvif], 1):
+    cases += [mixer, transport, playback, pipe, onvif, settings, formats, detection_tap, gb28181]
+    for i, fn in enumerate(cases, 1):
         s.test(f'T4.{i}', 'coverage', fn)
 
 

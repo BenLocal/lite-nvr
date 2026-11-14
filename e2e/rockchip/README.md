@@ -62,6 +62,8 @@ T5.1 需要 `python-socketio[client]`（装进上面的 `.cache/rockchip-e2e-pyt
 
 T4.13 在本机运行 `dummy-onvif-camera`（`cargo build -p dummy-onvif-camera`，默认找 `target/debug/dummy-onvif-camera`，也可用 `RK_ONVIF_CAMERA` 指定），板子需要能连回本机：地址默认取板上 SSH 会话的来源 IP，可用 `RK_TEST_HOST` 覆盖。找不到程序时 SKIP。
 
+T4.17 在本机运行 `dummy-camera`（`cargo build -p dummy-camera`，默认 `target/debug/dummy-camera`，或 `RK_GB_CAMERA`），实例需配置 `NVR_GB_ENABLE=1` 等（见 `docs/agents-dot-md/design-gb28181.md`），且 `NVR_GB_MEDIA_IP` 是本机能访问到的板子地址。平台参数用 `RK_GB_PORT`（默认 5060）、`RK_GB_SIP_ID`（默认 `34020000002000000001`）、`RK_GB_PASSWORD`（实例设了共享密码时必填）。
+
 ### 语音对话
 
 `chat.py` 连接已运行实例的 Socket.IO `/chat`（需 `NVR_LLM_MODEL` 和 TTS 模型），用 WAV 按住说话或直接发文字，输出识别结果、回复、松开后首句语音延迟，并把回复语音存成 WAV；有错误或某轮没有语音时非零退出。依赖 `python-socketio[client]` 和 `requests`，可装进上面的 `.cache/rockchip-e2e-python`。API 账号沿用 `RK_API_USER` / `RK_API_PASSWORD`。
@@ -118,6 +120,10 @@ HTTP 与 RTSP 分别探测；任何一路不通就为两者建立 SSH 隧道，�
 | T4.11 | 录像回放接口：录满两段后，设备列表计数、今日片段、整天 m3u8（带 `DISCONTINUITY` 与 `?token=`）、Range 206 / 416、单个与批量删除；结束删除设备并按设备删除已入库录像（删设备时正在写的最后一段可能留在磁盘，和其他测试录像一样保留） | 回放 |
 | T4.12 | 底层管线 `/api/pipe`：缺输出、缺 zlm/net 配置、不支持的输入类型拒绝；lavfi 编码后同时出到 ZLM 和 RTMP 推流，两路都解码为 640 宽 H.264；重复添加拒绝；`status` 由 `true` 变 `not found` | media pipe |
 | T4.13 | ONVIF：本机模拟摄像头，probe 读出设备信息与 profile、错误密码报鉴权失败；以 `onvif` 设备接入后解码 `device/<id>`；presets、PTZ 移动 / 停止 / 调预置位（模拟器日志确认收到），非法动词、缺 token、非 ONVIF 设备报错；删设备后 registry 清除；discover 返回列表 | ONVIF |
+| T4.14 | 播放器设置与录像清理策略：保存会去空格 / 把间隔钳到 ≥1 并回读一致，非法播放器拒绝；清理策略只写禁用状态，结束还原原值并核对 | 系统设置 |
+| T4.15 | FFmpeg 设备格式列表（视频输入含 v4l2 / lavfi，音频输入含 alsa，输出非空），非法 kind / direction 报错；V4L2 节点路径 | 设备格式 |
+| T4.16 | 检测启停：不存在的 pipe 启动 500、latest 404、stop 幂等，空模型名 400；配置了模型时在测试图案上启动、重复启动、30 秒内拿到 1920×1080 结果且各模型无错误，错误 lease 400，凭 lease 停止（未配置模型时只测错误路径并 SKIP） | 目标检测 |
+| T4.17 | GB28181：本机 `dummy-camera` 注册到实例（共享密码时走 digest），设备在线、Catalog 返回通道；接入 `gb28181` 设备后按 udp / tcp_passive / tcp_active 各点播一次，**首个观众直接解码 FLV**（不靠重试），`/gb/streams` 显示 live 与 RTP 信息，删设备立即拆流；PTZ 方向 / 停止 / 调预置位（模拟器日志确认），非法 transport / 命令报错；Ctrl-C 后设备注销（实例未开 GB 时 SKIP） | GB28181 |
 | T5.1 | SenseVoice 中文样例推 RTSP，`/asr` Socket.IO 先收到 partial，60 秒内 final 含「早上9点」（首词识别不稳定，不作断言），句子与时长字段、segment id 递增；停止幂等，不存在的 pipe 404 | ASR 字幕 |
 
 业务错误沿用当前 HTTP 500 和 `{code,message,data}` 包装；鉴权失败是 401。`config.output=None` 在 JSON 中省略，空对象不是其回显。T1.6 覆盖保存前拒绝更新，不声称覆盖写库后的回滚分支。output 保持比例、只缩小；lavfi 属于 raw 采集，不作为编码透传基线。
