@@ -32,7 +32,7 @@ class PackageTest(unittest.TestCase):
         self.write("scripts/with-rockchip-patch.sh", '"$@"\n')
         for arch in ["amd64", "arm64", "rockchip"]:
             self.write(
-                f"target/cross-deps/{arch}/zlm/.release", "autobuild-2026-10-21\n"
+                f"target/cross-deps/{arch}/zlm/.release", "autobuild-2026-11-23\n"
             )
             for file in [
                 "ffmpeg/include/libavcodec/avcodec.h",

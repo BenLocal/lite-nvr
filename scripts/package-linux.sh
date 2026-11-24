@@ -73,7 +73,7 @@ for arch in "${architectures[@]}"; do
         tar -xJf "$deps/ffmpeg.archive" -C "$deps/ffmpeg" --strip-components=1
     fi
     # Keep in sync with ZLM_VERSION in scripts/pre_install_deps.sh; `.release` invalidates older caches.
-    zlm_release=autobuild-2026-10-21
+    zlm_release=autobuild-2026-11-23
     if [[ ! -f "$deps/zlm/lib/libmk_api.so" || "$(cat "$deps/zlm/.release" 2>/dev/null)" != "$zlm_release" ]]; then
         rm -rf "$deps/zlm" && mkdir -p "$deps/zlm"
         curl -fL --retry 3 -o "$deps/zlm.archive" "https://github.com/BenLocal/ZLMediaKit-Build/releases/download/$zlm_release/zlmediakit_master_linux_${dependency_arch}_noffmpeg_latest.tar.gz"
