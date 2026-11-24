@@ -32,10 +32,24 @@ if [[ "$(uname -s)" == Darwin ]]; then
     build_https_proxy="${build_https_proxy//127.0.0.1/host.docker.internal}"
     build_https_proxy="${build_https_proxy//localhost/host.docker.internal}"
 fi
-docker build --platform "$build_platform" \
-    --build-arg "HTTP_PROXY=$build_http_proxy" --build-arg "HTTPS_PROXY=$build_https_proxy" \
-    --build-arg "APT_MIRROR=${APT_MIRROR:-}" \
-    -t "$native_image" -t lite-nvr-cross:host-native -f scripts/Dockerfile.cross-native scripts
+native_image_stamp="target/cross-deps/.native-image-$build_arch.sha256"
+native_image_key=$( {
+    printf 'arch=%s\napt_mirror=%s\n' "$build_arch" "${APT_MIRROR:-}"
+    for f in scripts/Dockerfile.cross-native scripts/cross-pre-build.sh; do
+        [[ -f "$f" ]] && cat "$f"
+    done
+} | shasum -a 256 | awk '{print $1}')
+if [[ "${FORCE_REBUILD_IMAGE:-0}" != 1 ]] && docker image inspect "$native_image" >/dev/null 2>&1 &&
+   [[ ! -f "$native_image_stamp" || "$(cat "$native_image_stamp")" == "$native_image_key" ]]; then
+    printf '%s\n' "$native_image_key" > "$native_image_stamp"
+    echo "Reusing build image: $native_image"
+else
+    docker build --platform "$build_platform" \
+        --build-arg "HTTP_PROXY=$build_http_proxy" --build-arg "HTTPS_PROXY=$build_https_proxy" \
+        --build-arg "APT_MIRROR=${APT_MIRROR:-}" \
+        -t "$native_image" -t lite-nvr-cross:host-native -f scripts/Dockerfile.cross-native scripts
+    printf '%s\n' "$native_image_key" > "$native_image_stamp"
+fi
 echo "Build container platform: $build_platform"
 python3 scripts/package-cache.py frontend
 version=$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' nvr/Cargo.toml)

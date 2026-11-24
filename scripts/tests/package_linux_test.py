@@ -17,6 +17,8 @@ class PackageTest(unittest.TestCase):
         for name in [
             "scripts/package-linux.sh",
             "scripts/package-cache.py",
+            "scripts/Dockerfile.cross-native",
+            "scripts/cross-pre-build.sh",
             "packaging/common/start.sh",
         ]:
             self.write(name, (ROOT / name).read_text())
@@ -59,7 +61,21 @@ if name=='cross':
     output.parent.mkdir(parents=True,exist_ok=True)
     content=pathlib.Path('nvr-dashboard/app/src/main.ts').read_text()+str(output)
     if not output.exists() or output.read_text()!=content: output.write_text(content)
-elif name=='docker' and args[:2]==['image','inspect']: print('sha256:image1')
+elif name=='docker' and args[:2]==['image','inspect']:
+    if '--format' in args:
+        print('sha256:image1')
+    else:
+        img = args[-1]
+        built = pathlib.Path('.built_images')
+        if not built.exists() or img not in built.read_text().splitlines():
+            sys.exit(1)
+elif name=='docker' and args[0]=='build':
+    built = pathlib.Path('.built_images')
+    existing = built.read_text().splitlines() if built.exists() else []
+    for i, a in enumerate(args):
+        if a == '-t' and i + 1 < len(args):
+            existing.append(args[i + 1])
+    built.write_text('\\n'.join(existing) + '\\n')
 elif name=='docker' and args[0]=='run':
     if '/project/scripts/bundle-linux-runtime.sh' in args: sys.exit(0)
     volume=args[args.index('-v')+1].split(':')[0]
@@ -89,6 +105,7 @@ else:
             if key.startswith("CROSS_") or key in [
                 "APT_MIRROR",
                 "FORCE_REBUILD",
+                "FORCE_REBUILD_IMAGE",
                 "PACKAGE_ARCHIVE",
             ]:
                 self.env.pop(key)
@@ -100,11 +117,12 @@ else:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
 
-    def run_package(self, archive=False, offline=False):
+    def run_package(self, archive=False, offline=False, force_rebuild_image=False):
         env = dict(
             self.env,
             PACKAGE_ARCHIVE="1" if archive else "0",
             PACKAGE_OFFLINE="1" if offline else "0",
+            FORCE_REBUILD_IMAGE="1" if force_rebuild_image else "0",
         )
         result = subprocess.run(
             ["bash", "scripts/package-linux.sh", "amd64", "arm64", "rockchip"],
@@ -245,6 +263,21 @@ root = pathlib.Path('target/cross-deps/offline') / sys.argv[1]
         self.write("packaging/rockchip/nvr.env", "RUST_LOG=trace\n")
         self.run_package(archive=True)
         self.assertNotEqual(before, archive.stat().st_mtime_ns)
+
+    def test_native_image_is_reused_until_dockerfile_changes(self):
+        self.run_package()
+        self.assertEqual((self.root / "calls").read_text().count("docker build "), 1)
+        self.run_package()
+        self.assertEqual((self.root / "calls").read_text().count("docker build "), 1)
+        self.write(
+            "scripts/Dockerfile.cross-native",
+            (self.root / "scripts/Dockerfile.cross-native").read_text()
+            + "\n# changed\n",
+        )
+        self.run_package()
+        self.assertEqual((self.root / "calls").read_text().count("docker build "), 2)
+        self.run_package(force_rebuild_image=True)
+        self.assertEqual((self.root / "calls").read_text().count("docker build "), 3)
 
 
 if __name__ == "__main__":
