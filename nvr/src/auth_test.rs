@@ -18,11 +18,15 @@ static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Initialize the process-wide APP_DB once (all tests share one binary) with
 /// an in-memory database carrying the `kvs` table sessions live in, and take
-/// the serialization lock for the calling test.
+/// the serialization lock for the calling test. The table is created before
+/// APP_DB is published: tests that only read APP_DB when it is set (the GB
+/// bridge pull) would otherwise hit "no such table: kvs" in between.
 pub(crate) async fn ensure_test_db() -> tokio::sync::MutexGuard<'static, ()> {
     static INIT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
     INIT.get_or_init(|| async {
-        let db = crate::db::init_app_db(":memory:").await.unwrap();
+        let db = nvr_db::db::NvrDatabase::new(&nvr_db::db::DatabaseConfig::new(":memory:"))
+            .await
+            .unwrap();
         let conn = db.connect().unwrap();
         conn.execute_batch(
             r#"CREATE TABLE kvs (
@@ -36,6 +40,7 @@ pub(crate) async fn ensure_test_db() -> tokio::sync::MutexGuard<'static, ()> {
         )
         .await
         .unwrap();
+        crate::db::set_app_db(db).unwrap();
     })
     .await;
     DB_LOCK.lock().await

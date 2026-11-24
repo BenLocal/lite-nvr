@@ -15,6 +15,15 @@ pub(crate) async fn init_app_db(url: &str) -> anyhow::Result<&'static NvrDatabas
     Ok(APP_DB.get().unwrap())
 }
 
+/// Publish an already prepared database as APP_DB, so tests can create their
+/// tables before any other test can observe it.
+#[cfg(test)]
+pub(crate) fn set_app_db(db: NvrDatabase) -> anyhow::Result<()> {
+    APP_DB
+        .set(db)
+        .map_err(|_| anyhow::anyhow!("Failed to set APP_DB"))
+}
+
 fn get_app_db() -> anyhow::Result<&'static NvrDatabase> {
     APP_DB
         .get()
